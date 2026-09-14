@@ -42,4 +42,12 @@ export const GRADING_SCALE_PRESETS: { label: string; scale: GradingScale }[] = [
       excellent: 'Fully correct and shows clear, precise understanding.',
     },
   },
+  {
+    label: 'Permissive (first-contact labs)',
+    scale: {
+      off_track: 'Blank, off-topic, or reflects a fundamental misunderstanding of the concept -- not just rough or imprecise, but pointing in the wrong direction entirely.',
+      good_enough:
+        "On the right track and not far from reality. Give the benefit of the doubt on precision, completeness, and phrasing -- this is a student's first contact with the material, so the bar is 'grasped the core idea', not 'polished or complete answer'.",
+    },
+  },
 ]
