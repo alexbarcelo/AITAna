@@ -1,0 +1,85 @@
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  # mongo-express official image is deprecated, this feels as close as
+  # we can get to a GUI for MongoDB without having to install it locally
+  dbgate:
+    image: dbgate/dbgate
+    ports:
+      - 8081:3000
+    environment:
+      CONNECTIONS: mongo
+      LABEL_mongo: MongoDB
+      SERVER_mongo: mongo
+      ENGINE_mongo: mongo@dbgate-plugin-mongo
+    depends_on:
+      - mongo
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+      - ./configs:/app/configs
+    command: ["uvicorn", "aitana.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      - mongo
+      - minio
+      - redis
+
+  worker:
+    build: .
+    env_file: .env
+    volumes:
+      - ./src:/app/src
+      - ./configs:/app/configs
+    command: ["celery", "-A", "aitana.worker.celery_app.celery_app", "worker", "--loglevel=info"]
+    depends_on:
+      - mongo
+      - minio
+      - redis
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+    environment:
+      VITE_API_URL: http://localhost:8000
+    depends_on:
+      - api
+
+volumes:
+  mongo_data:
+  minio_data:

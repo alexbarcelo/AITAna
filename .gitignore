@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.~lock.*#
+
+# Grading output -- likely contains student data, don't commit by accident.
+results.csv
+*.csv
+configs/
+
+# Local dev volumes if ever bind-mounted outside docker-compose's named volumes
+.mongo-data/
+.minio-data/
