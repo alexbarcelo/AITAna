@@ -420,29 +420,29 @@ async def test_upload_rubric_yaml_with_edition_slug_key(client):
 # ---- POST /rubrics/{id}/test-answer ----
 # Interactive "try this rubric" endpoint: grades one free-typed answer
 # against a single question, synchronously, with no Submission/MinIO/Celery
-# involved. Same `with_structured_output(schema).invoke(messages)` fake
-# shape as tests/test_grading.py -- the fake ignores the dynamic schema
-# argument and just returns a preset Grade.
-
-
-class _FakeStructuredModel:
-    def __init__(self, grade: Grade):
-        self._grade = grade
-
-    def invoke(self, messages):
-        return self._grade
+# involved. Same fake `create_agent` shape as tests/test_grading.py -- the
+# fake ignores the model/tools/response_format it's called with and just
+# returns a preset Grade as the agent's structured_response.
 
 
 class _FakeChatModel:
-    def __init__(self, grade: Grade):
-        self._grade = grade
-
-    def with_structured_output(self, schema):
-        return _FakeStructuredModel(self._grade)
+    """Stands in for get_chat_model()'s return value. grade_answer() always
+    routes through create_agent (patched below) rather than calling any
+    method on this directly, so it only needs to be a distinguishable
+    placeholder object."""
 
 
 def _patch_chat_model(monkeypatch, grade: Grade) -> None:
-    monkeypatch.setattr("aitana.api.routers.rubrics.get_chat_model", lambda provider, model: _FakeChatModel(grade))
+    monkeypatch.setattr("aitana.api.routers.rubrics.get_chat_model", lambda provider, model: _FakeChatModel())
+
+    class _FakeCompiledAgent:
+        def invoke(self, state):
+            return {"structured_response": grade}
+
+    def _fake_create_agent(*, model, tools, response_format):
+        return _FakeCompiledAgent()
+
+    monkeypatch.setattr("aitana.grading.grading.create_agent", _fake_create_agent)
 
 
 async def test_test_rubric_answer_returns_grade(client, monkeypatch):

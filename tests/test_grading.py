@@ -6,20 +6,37 @@ from aitana.grading.grading import build_system_prompt, grade_answer
 from aitana.grading.models import DEFAULT_GRADING_SCALE, Grade, Question, grade_schema_for_scale
 
 
-class _FakeStructuredModel:
-    def __init__(self, grade: Grade):
-        self._grade = grade
-
-    def invoke(self, messages):
-        return self._grade
-
-
 class _FakeChatModel:
+    """Stands in for the `chat_model` argument. `grade_answer` always routes
+    through `create_agent` now (see grading._grade_with_tools), so this only
+    needs to be a distinguishable object to pass through as `model` -- tests
+    that reach the LLM call fake out `create_agent` itself rather than
+    relying on any real chat-model interface here."""
+
     def __init__(self, grade: Grade):
         self._grade = grade
 
-    def with_structured_output(self, schema):
-        return _FakeStructuredModel(self._grade)
+
+def _fake_create_agent(expected: Grade, captured: dict | None = None):
+    """Builds a fake `create_agent` replacement whose compiled "agent" just
+    returns `expected` as the structured_response, capturing the kwargs
+    create_agent was called with (and the invoke() state) into `captured`
+    for tests that want to assert on them."""
+    if captured is None:
+        captured = {}
+
+    class _FakeCompiledAgent:
+        def invoke(self, state):
+            captured["state"] = state
+            return {"structured_response": expected}
+
+    def _create_agent(*, model, tools, response_format):
+        captured["model"] = model
+        captured["tools"] = tools
+        captured["response_format"] = response_format
+        return _FakeCompiledAgent()
+
+    return _create_agent
 
 
 def _question(**overrides) -> Question:
@@ -57,10 +74,12 @@ def test_grade_answer_blank_short_circuit_uses_first_key_of_a_custom_scale():
     assert result.level == "fail"
 
 
-def test_grade_answer_returns_llm_structured_output_for_nonblank_answers():
+def test_grade_answer_returns_llm_structured_output_for_nonblank_answers(monkeypatch):
     question = _question()
     expected = Grade(level="almost_there", feedback="Close, but missing the fix.")
     fake_model = _FakeChatModel(expected)
+
+    monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected))
 
     result = grade_answer(fake_model, question, "My answer text", DEFAULT_GRADING_SCALE)
 
@@ -146,22 +165,22 @@ def test_build_system_prompt_includes_python_tool_section_when_needs_python_sand
     assert "Python sandbox" in prompt
 
 
-def test_grade_answer_uses_the_plain_structured_output_path_when_sandbox_not_needed(monkeypatch):
-    """A question that doesn't need the sandbox must never go through
-    create_agent -- that path requires a real tool-calling chat model,
-    which _FakeChatModel above deliberately isn't."""
+def test_grade_answer_passes_no_tools_to_create_agent_when_sandbox_not_needed(monkeypatch):
+    """A question that doesn't need the sandbox still goes through
+    create_agent (see grading._grade_with_tools) but with an empty tools
+    list, rather than skipping the agent path entirely."""
 
-    def _fail_if_called(*args, **kwargs):
-        raise AssertionError("create_agent should not be called for a non-sandbox question")
-
-    monkeypatch.setattr(grading, "create_agent", _fail_if_called)
     question = _question(needs_python_sandbox=False)
     expected = Grade(level="solid", feedback="Looks right.")
     fake_model = _FakeChatModel(expected)
+    captured: dict = {}
+
+    monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected, captured))
 
     result = grade_answer(fake_model, question, "My answer text", DEFAULT_GRADING_SCALE)
 
     assert result == expected
+    assert captured["tools"] == []
 
 
 def test_grade_answer_routes_through_create_agent_when_needs_python_sandbox(monkeypatch):
@@ -177,18 +196,7 @@ def test_grade_answer_routes_through_create_agent_when_needs_python_sandbox(monk
     expected = Grade(level="almost_there", feedback="Ran the code, close but off by one.")
     captured: dict = {}
 
-    class _FakeCompiledAgent:
-        def invoke(self, state):
-            captured["state"] = state
-            return {"structured_response": expected}
-
-    def _fake_create_agent(*, model, tools, response_format):
-        captured["model"] = model
-        captured["tools"] = tools
-        captured["response_format"] = response_format
-        return _FakeCompiledAgent()
-
-    monkeypatch.setattr(grading, "create_agent", _fake_create_agent)
+    monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected, captured))
     question = _question(needs_python_sandbox=True)
     fake_model = _FakeChatModel(Grade(level="solid", feedback="should never be returned"))
 

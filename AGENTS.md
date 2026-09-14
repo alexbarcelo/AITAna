@@ -261,18 +261,13 @@ one that does.
   langchain-core rather than pulling in an incompatible version range. If
   `langchain-sandbox` ever relaxes that pin, revisit whether carrying this
   separately is still worth it.
-- **Grading path**: `grade_answer` branches on `question.needs_python_sandbox`.
-  `False` (the default): unchanged, one `chat_model.with_structured_output(...)`
-  call. `True`: `_grade_with_sandbox` builds a `langchain.agents.create_agent`
-  agent (`model=chat_model, tools=[get_python_sandbox_tool()],
-  response_format=<the same per-scale schema>`) and reads the result back off
+- **Grading path**: `grade_answer` prepares the tools needed for the agent
+  (at the moment, it just checks `question.needs_python_sandbox` and prepares
+  the sandbox if needed). `_grade_with_tools` builds a `langchain.agents.create_agent`
+  agent including the tools required. The result is obtained with
   `result["structured_response"]` -- `create_agent` supports tool-calling and
   structured final output together (verified against the installed
-  `langchain` 1.4/`langchain-core` 1.6/`langgraph` 1.2), so this reuses the
-  exact same `grade_schema_for_scale` schema and `Grade` normalization either
-  way. `_grade_with_sandbox` is a separate function specifically so tests can
-  monkeypatch `create_agent` (`tests/test_grading.py`) without needing a real
-  tool-calling-capable chat model or a real Deno binary.
+  `langchain` 1.4/`langchain-core` 1.6/`langgraph` 1.2).
 - **Network permissions, verified manually against a real `deno` binary**:
   Pyodide needs `--allow-net=cdn.jsdelivr.net` even for something as trivial
   as `print(1+1)` -- it bootstraps `micropip`/`packaging` from jsdelivr on a
@@ -299,16 +294,6 @@ one that does.
   `_run` does, lazily -- so a rubric with no `needs_python_sandbox` questions
   never pays for the check, and unit tests can construct the tool without
   Deno installed as long as they don't actually invoke it.
-- **Not yet manually verified end-to-end through the actual grading/worker
-  flow** (a real `Submission` going through Celery with a
-  `needs_python_sandbox` question) -- the sandbox mechanism itself (Deno +
-  Pyodide, including the network-permission requirement above and both the
-  success and error-output JSON shapes) *was* verified manually against a
-  real `deno` binary, and `_grade_with_sandbox`'s wiring into `create_agent`
-  is unit-tested with a fake `create_agent`, but the two haven't been
-  exercised together against a real LLM that actually decides to call the
-  tool. If you touch this path, that combination is the next thing worth
-  checking by hand rather than assuming it just works.
 
 ## Creating rubrics (`api/routers/rubrics.py`)
 

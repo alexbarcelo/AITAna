@@ -7,8 +7,10 @@ Prompt split:
   - HUMAN message: the student's own answer text, verbatim.
 """
 
+from __future__ import annotations
 import logging
 import time
+from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -16,6 +18,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from .models import Grade, Question, grade_schema_for_scale
 from .sandbox import get_python_sandbox_tool
+
+if TYPE_CHECKING:
+    from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
 
@@ -81,17 +86,14 @@ def build_system_prompt(question: Question, grading_scale: dict[str, str]) -> st
     )
 
 
-def _grade_with_sandbox(chat_model: BaseChatModel, system_prompt: str, student_answer: str, schema: type) -> object:
-    """The `needs_python_sandbox` path: an agent that can call the Python
-    sandbox tool zero or more times before answering, instead of one
-    `with_structured_output` call. Separate function (rather than an
-    `if`/`else` inline in `grade_answer`) so tests can monkeypatch
-    `create_agent` here without needing a real tool-calling-capable chat
-    model or a real Deno binary -- see tests/test_grading.py.
+def _grade_with_tools(chat_model: BaseChatModel, tools: list[BaseTool], system_prompt: str, student_answer: str, schema: type) -> object:
+    """Call an agent with the available tools for this answer.
+    Note that this is typically overkill for no-tool answers, but
+    you know: DRY.
     """
     agent = create_agent(
         model=chat_model,
-        tools=[get_python_sandbox_tool()],
+        tools=tools,
         response_format=schema,
     )
     result = agent.invoke({"messages": [SystemMessage(content=system_prompt), HumanMessage(content=student_answer)]})
@@ -116,16 +118,13 @@ def grade_answer(chat_model: BaseChatModel, question: Question, student_answer: 
 
     logger.info("%s: calling LLM%s...", question.id, " (with python sandbox)" if question.needs_python_sandbox else "")
     start = time.perf_counter()
+
+    tools = []
     if question.needs_python_sandbox:
-        raw = _grade_with_sandbox(chat_model, system_prompt, student_answer, schema)
-    else:
-        # TODO: with_structured_output relies on tool-calling support. Some
-        # (especially small local Ollama) models don't support it reliably --
-        # add a JSON-in-prompt fallback + try/except here if that turns out to
-        # be a real problem in practice.
-        structured_model = chat_model.with_structured_output(schema)
-        messages = [SystemMessage(content=system_prompt), HumanMessage(content=student_answer)]
-        raw = structured_model.invoke(messages)
+        tools.append(get_python_sandbox_tool())
+
+    raw = _grade_with_tools(chat_model, tools, system_prompt, student_answer, schema)
+
     # Normalize back to the stable `Grade` shape -- `raw` is an instance of
     # the one-off schema grade_schema_for_scale() just built, not `Grade`
     # itself (see that function's docstring for why the two are separate).

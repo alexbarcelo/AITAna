@@ -15,28 +15,26 @@ from aitana.grading.models import DEFAULT_GRADING_SCALE, Grade, Question
 from aitana.worker.tasks import _grade_answers
 
 
-class _FakeStructuredModel:
-    def __init__(self, chat_model: "_FakeChatModel"):
-        self._chat_model = chat_model
+def _fake_create_agent(grades: list[Grade]):
+    """Builds a fake `create_agent` replacement (see grading._grade_with_tools)
+    that pops from a *shared* queue. grade_answer() calls create_agent() fresh
+    for every question, so each call's agent.invoke() must consume the next
+    grade in order, not restart from the first (a fresh `iter(grades)` per
+    call would return "solid" three times instead of solid/almost_there/some_effort).
+    """
+    remaining = list(grades)
 
-    def invoke(self, messages):
-        # Pops from the *shared* queue on the chat model -- grade_answer()
-        # calls with_structured_output() fresh for every question, so each
-        # call must consume the next grade in order, not restart from the
-        # first (a fresh `iter(grades)` per call would return "solid" three
-        # times instead of solid/almost_there/some_effort).
-        return self._chat_model._grades.pop(0)
+    class _FakeCompiledAgent:
+        def invoke(self, state):
+            return {"structured_response": remaining.pop(0)}
 
+    def _create_agent(*, model, tools, response_format):
+        return _FakeCompiledAgent()
 
-class _FakeChatModel:
-    def __init__(self, grades: list[Grade]):
-        self._grades = list(grades)
-
-    def with_structured_output(self, schema):
-        return _FakeStructuredModel(self)
+    return _create_agent
 
 
-async def test_grade_answers_persists_every_question_not_just_the_first(mongo_db):
+async def test_grade_answers_persists_every_question_not_just_the_first(mongo_db, monkeypatch):
     course = Course(name="BDM", slug="bdm")
     await course.insert()
     edition = Edition(course=course, name="2026/27", slug="bdm_2026_27")
@@ -72,7 +70,8 @@ async def test_grade_answers_persists_every_question_not_just_the_first(mongo_db
         Grade(level="almost_there", feedback="f2"),
         Grade(level="some_effort", feedback="f3"),
     ]
-    await _grade_answers(submission, rubric.questions, _FakeChatModel(grades), DEFAULT_GRADING_SCALE)
+    monkeypatch.setattr("aitana.grading.grading.create_agent", _fake_create_agent(grades))
+    await _grade_answers(submission, rubric.questions, object(), DEFAULT_GRADING_SCALE)
 
     fresh = await Submission.get(submission.id)
     assert [a.grade.level if a.grade else None for a in fresh.answers] == [
