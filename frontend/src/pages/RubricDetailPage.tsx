@@ -96,8 +96,16 @@ export default function RubricDetailPage() {
         {rubric.questions.map((q, i) => (
           <div key={q.id} className="rounded-lg border border-slate-200 bg-white p-4">
             <div className="mb-2 flex items-center justify-between">
-              <h2 className="font-medium">
+              <h2 className="flex items-center gap-2 font-medium">
                 {i + 1}. {q.title}
+                {q.needs_python_sandbox && (
+                  <span
+                    className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-normal text-slate-500"
+                    title="The grading LLM gets a sandboxed Python code-execution tool for this question."
+                  >
+                    Python sandbox
+                  </span>
+                )}
               </h2>
               <span className="font-mono text-xs text-slate-400">
                 {q.id}

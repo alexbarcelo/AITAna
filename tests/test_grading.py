@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from aitana.grading import grading
 from aitana.grading.grading import build_system_prompt, grade_answer
 from aitana.grading.models import DEFAULT_GRADING_SCALE, Grade, Question, grade_schema_for_scale
 
@@ -126,3 +127,76 @@ def test_grade_schema_for_scale_accepts_only_configured_levels():
     assert schema(level="pass", feedback="ok").level == "pass"
     with pytest.raises(ValidationError):
         schema(level="almost_there", feedback="not a level in this scale")
+
+
+def test_build_system_prompt_omits_python_tool_section_by_default():
+    question = _question()
+
+    prompt = build_system_prompt(question, DEFAULT_GRADING_SCALE)
+
+    assert "# Tool available" not in prompt
+
+
+def test_build_system_prompt_includes_python_tool_section_when_needs_python_sandbox():
+    question = _question(needs_python_sandbox=True)
+
+    prompt = build_system_prompt(question, DEFAULT_GRADING_SCALE)
+
+    assert "# Tool available" in prompt
+    assert "Python sandbox" in prompt
+
+
+def test_grade_answer_uses_the_plain_structured_output_path_when_sandbox_not_needed(monkeypatch):
+    """A question that doesn't need the sandbox must never go through
+    create_agent -- that path requires a real tool-calling chat model,
+    which _FakeChatModel above deliberately isn't."""
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("create_agent should not be called for a non-sandbox question")
+
+    monkeypatch.setattr(grading, "create_agent", _fail_if_called)
+    question = _question(needs_python_sandbox=False)
+    expected = Grade(level="solid", feedback="Looks right.")
+    fake_model = _FakeChatModel(expected)
+
+    result = grade_answer(fake_model, question, "My answer text", DEFAULT_GRADING_SCALE)
+
+    assert result == expected
+
+
+def test_grade_answer_routes_through_create_agent_when_needs_python_sandbox(monkeypatch):
+    """The needs_python_sandbox path builds an agent (with the sandbox tool
+    bound in) instead of calling with_structured_output directly, and reads
+    the result back off the agent's `structured_response` state key.
+
+    Uses a fake create_agent rather than a real Deno/Pyodide sandbox -- see
+    grading/sandbox.py's `get_python_sandbox_tool` for why constructing the
+    tool itself never requires Deno to be installed, which is what makes
+    this fake safe to use without Deno present in the test environment.
+    """
+    expected = Grade(level="almost_there", feedback="Ran the code, close but off by one.")
+    captured: dict = {}
+
+    class _FakeCompiledAgent:
+        def invoke(self, state):
+            captured["state"] = state
+            return {"structured_response": expected}
+
+    def _fake_create_agent(*, model, tools, response_format):
+        captured["model"] = model
+        captured["tools"] = tools
+        captured["response_format"] = response_format
+        return _FakeCompiledAgent()
+
+    monkeypatch.setattr(grading, "create_agent", _fake_create_agent)
+    question = _question(needs_python_sandbox=True)
+    fake_model = _FakeChatModel(Grade(level="solid", feedback="should never be returned"))
+
+    result = grade_answer(fake_model, question, "My answer text", DEFAULT_GRADING_SCALE)
+
+    assert result == expected
+    assert captured["model"] is fake_model
+    assert len(captured["tools"]) == 1
+    assert captured["tools"][0].name == "python_sandbox"
+    messages = captured["state"]["messages"]
+    assert messages[1].content == "My answer text"

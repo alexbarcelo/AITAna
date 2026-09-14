@@ -119,6 +119,16 @@ class Question(BaseModel):
     # one, and `rubric` + `expected_points` remain the primary grading
     # criteria either way -- this is extra context, not a replacement.
     model_answer: str | None = None
+    # When set, grade_answer (grading.py) gives the LLM a sandboxed Python
+    # code-execution tool (grading/sandbox.py) instead of grading in one
+    # structured-output call -- for questions where the corrector genuinely
+    # benefits from running code (checking a claimed command's output,
+    # verifying a computation) rather than judging prose alone. Off by
+    # default: it's slower (an agent loop, not one call) and needs Deno
+    # installed wherever grading runs (see grading/sandbox.py), so it's an
+    # opt-in per question, not a rubric-wide switch -- most questions never
+    # need it even within a rubric that has one that does.
+    needs_python_sandbox: bool = False
 
     @property
     def answer_key(self) -> str:

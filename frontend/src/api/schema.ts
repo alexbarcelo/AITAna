@@ -454,6 +454,11 @@ export interface components {
             expected_points?: string[];
             /** Model Answer */
             model_answer?: string | null;
+            /**
+             * Needs Python Sandbox
+             * @default false
+             */
+            needs_python_sandbox: boolean;
         };
         /**
          * Rubric

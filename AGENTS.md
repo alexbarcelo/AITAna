@@ -231,6 +231,85 @@ out-of-the-box.
   top-level `grading_scale:` key, or omit it for the default. See
   `configs/AGENTS.md`.
 
+## Python sandbox for grading
+
+Per-question opt-in, not a rubric-wide setting: `Question.needs_python_sandbox`
+(`grading/models.py`, default `false`; see `configs/AGENTS.md` for the YAML
+key). When set, `grade_answer` (`grading/grading.py`) gives the grading LLM a
+sandboxed Python code-execution tool for that one question, instead of the
+default single `with_structured_output` call -- useful for a question whose
+rubric genuinely benefits from *running* something (checking a claimed
+command's output, verifying a computation) rather than judging prose alone.
+Most questions never need it, including most questions in a rubric that has
+one that does.
+
+- **Mechanism**: `grading/sandbox.py`'s `PythonSandboxTool` shells out to
+  `deno run <permissions> jsr:@langchain/pyodide-sandbox@0.0.4 -c <code>` --
+  Pyodide (CPython compiled to WASM) executing inside Deno's OS-level
+  permission sandbox, the same underlying mechanism the `langchain-sandbox`
+  PyPI package wraps. Stateless: each tool call is a fresh interpreter, no
+  variables carried between calls within one grading run -- grading is one
+  question at a time, so there's no session worth the complexity of
+  `langchain-sandbox`'s stateful mode (which needs a LangGraph checkpointer).
+- **Deliberately not the `langchain-sandbox` package itself.** It pins
+  `langchain-core<0.4.0`; this project is on `langchain>=1.3.14`
+  (`langchain-core>=1.6.0`, required for `create_agent` to exist at all).
+  Installing it would downgrade the whole langchain/langgraph stack.
+  `sandbox.py`'s module docstring has the full reasoning -- in short, the
+  Python-side wrapper is thin (spawn a subprocess, parse a JSON envelope off
+  stdout), so it's reimplemented directly against this project's own
+  langchain-core rather than pulling in an incompatible version range. If
+  `langchain-sandbox` ever relaxes that pin, revisit whether carrying this
+  separately is still worth it.
+- **Grading path**: `grade_answer` branches on `question.needs_python_sandbox`.
+  `False` (the default): unchanged, one `chat_model.with_structured_output(...)`
+  call. `True`: `_grade_with_sandbox` builds a `langchain.agents.create_agent`
+  agent (`model=chat_model, tools=[get_python_sandbox_tool()],
+  response_format=<the same per-scale schema>`) and reads the result back off
+  `result["structured_response"]` -- `create_agent` supports tool-calling and
+  structured final output together (verified against the installed
+  `langchain` 1.4/`langchain-core` 1.6/`langgraph` 1.2), so this reuses the
+  exact same `grade_schema_for_scale` schema and `Grade` normalization either
+  way. `_grade_with_sandbox` is a separate function specifically so tests can
+  monkeypatch `create_agent` (`tests/test_grading.py`) without needing a real
+  tool-calling-capable chat model or a real Deno binary.
+- **Network permissions, verified manually against a real `deno` binary**:
+  Pyodide needs `--allow-net=cdn.jsdelivr.net` even for something as trivial
+  as `print(1+1)` -- it bootstraps `micropip`/`packaging` from jsdelivr on a
+  cold cache every time, and lazily fetches any package the code actually
+  imports (numpy, pandas, ...) the same way, auto-detected from `import`
+  statements. `sandbox.py`'s `ALLOWED_NET_HOSTS` is scoped to exactly that
+  host, not `allow_net=True` -- the code being sandboxed is ultimately driven
+  by a student's submitted answer, so don't open it to arbitrary outbound
+  requests. No other Deno permission (`--allow-run`, `--allow-ffi`,
+  unrestricted `--allow-read`/`--allow-write`) is granted.
+- **Deno is a system dependency, not a Python package** -- must be on `PATH`
+  wherever grading actually runs (the `worker` container for real grading,
+  the `api` container for the `POST /rubrics/{id}/test-answer` "try it"
+  endpoint). The `Dockerfile` installs it (both containers build from the
+  same image) and does a best-effort build-time cache warmup so the first
+  real grading request isn't the one paying for a cold network fetch of
+  Pyodide's bootstrap wheels. Running `uvicorn`/`celery` directly on the host
+  instead (see "Environment variables" below) needs Deno installed locally
+  too -- `PythonSandboxTool._run` raises a clear `RuntimeError` (caught by
+  `_grade_submission`'s broad except, same as any other grading failure --
+  the submission ends up `failed` with that message) if it isn't, rather than
+  a cryptic `FileNotFoundError` from the subprocess call. Constructing the
+  tool itself (`get_python_sandbox_tool`) never checks for Deno -- only
+  `_run` does, lazily -- so a rubric with no `needs_python_sandbox` questions
+  never pays for the check, and unit tests can construct the tool without
+  Deno installed as long as they don't actually invoke it.
+- **Not yet manually verified end-to-end through the actual grading/worker
+  flow** (a real `Submission` going through Celery with a
+  `needs_python_sandbox` question) -- the sandbox mechanism itself (Deno +
+  Pyodide, including the network-permission requirement above and both the
+  success and error-output JSON shapes) *was* verified manually against a
+  real `deno` binary, and `_grade_with_sandbox`'s wiring into `create_agent`
+  is unit-tested with a fake `create_agent`, but the two haven't been
+  exercised together against a real LLM that actually decides to call the
+  tool. If you touch this path, that combination is the next thing worth
+  checking by hand rather than assuming it just works.
+
 ## Creating rubrics (`api/routers/rubrics.py`)
 
 Two creation paths, both creation-only (no update/edit endpoint; a duplicate

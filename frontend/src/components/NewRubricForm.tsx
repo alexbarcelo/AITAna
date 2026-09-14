@@ -166,10 +166,21 @@ type DraftQuestion = {
   rubric: string
   modelAnswer: string
   expectedPointsText: string
+  needsPythonSandbox: boolean
 }
 
 function emptyQuestion(): DraftQuestion {
-  return { id: '', field: '', title: '', question: '', context: '', rubric: '', modelAnswer: '', expectedPointsText: '' }
+  return {
+    id: '',
+    field: '',
+    title: '',
+    question: '',
+    context: '',
+    rubric: '',
+    modelAnswer: '',
+    expectedPointsText: '',
+    needsPythonSandbox: false,
+  }
 }
 
 function toQuestion(q: DraftQuestion): Question {
@@ -185,6 +196,7 @@ function toQuestion(q: DraftQuestion): Question {
       .split('\n')
       .map((line) => line.trim())
       .filter(Boolean),
+    needs_python_sandbox: q.needsPythonSandbox,
   }
 }
 
@@ -433,6 +445,17 @@ function ManualRubricForm({ onCreated }: { onCreated?: () => void }) {
               rows={2}
               className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
             />
+            <label
+              className="flex items-center gap-2 text-xs text-slate-600"
+              title="Gives the grading LLM a sandboxed Python code-execution tool for this question -- e.g. to check a claimed command's output. Slower, and needs Deno installed wherever grading runs; leave off unless this question genuinely benefits from it."
+            >
+              <input
+                type="checkbox"
+                checked={q.needsPythonSandbox}
+                onChange={(e) => updateQuestion(i, { needsPythonSandbox: e.target.checked })}
+              />
+              Corrector needs Python sandbox access to grade this question
+            </label>
           </div>
         ))}
       </div>

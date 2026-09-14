@@ -12,3 +12,8 @@ configs/
 # Local dev volumes if ever bind-mounted outside docker-compose's named volumes
 .mongo-data/
 .minio-data/
+
+# Deno/Pyodide cache when running the python-sandbox grading feature (see
+# grading/sandbox.py) with `uv run celery`/`uvicorn` directly on the host
+# instead of via docker-compose -- cached wheels, not source.
+/node_modules/

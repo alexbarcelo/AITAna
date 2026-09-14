@@ -10,10 +10,12 @@ Prompt split:
 import logging
 import time
 
+from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .models import Grade, Question, grade_schema_for_scale
+from .sandbox import get_python_sandbox_tool
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +32,25 @@ useful feedback for the student and teacher, not a precise score.
 {model_answer_section}
 # Points a good answer should cover
 {expected_points}
-
+{python_tool_section}
 # Grading
 Assign exactly one level:
 {grading_levels}
 
 Then give short (2-3 sentence), specific feedback addressed directly to the
 student: what they got right and, more importantly, what they are missing.
+"""
+
+# Only interpolated when Question.needs_python_sandbox is set (see
+# build_system_prompt) -- the tool's own description (grading/sandbox.py)
+# already tells the model how to call it; this just tells it *when* it's
+# worth bothering, since most rubric text alone wouldn't suggest running code.
+_PYTHON_TOOL_SECTION = """
+# Tool available
+You have a Python sandbox tool. Use it if running code would help you judge
+this answer -- e.g. to check a claimed command's output or verify a
+computation -- but it's optional: skip it if the rubric can be judged from
+the answer text alone.
 """
 
 
@@ -55,14 +69,33 @@ def build_system_prompt(question: Question, grading_scale: dict[str, str]) -> st
     # docstring) -- most questions don't, and omitting the heading entirely
     # avoids implying "no canonical answer" is itself meaningful feedback.
     model_answer_section = f"\n# Model answer\n{question.model_answer.strip()}\n" if question.model_answer else ""
+    python_tool_section = _PYTHON_TOOL_SECTION if question.needs_python_sandbox else ""
     return SYSTEM_PROMPT_TEMPLATE.format(
         question=question.question.strip(),
         context_section=context_section,
         rubric=question.rubric.strip(),
         model_answer_section=model_answer_section,
         expected_points=points,
+        python_tool_section=python_tool_section,
         grading_levels=build_grading_section(grading_scale),
     )
+
+
+def _grade_with_sandbox(chat_model: BaseChatModel, system_prompt: str, student_answer: str, schema: type) -> object:
+    """The `needs_python_sandbox` path: an agent that can call the Python
+    sandbox tool zero or more times before answering, instead of one
+    `with_structured_output` call. Separate function (rather than an
+    `if`/`else` inline in `grade_answer`) so tests can monkeypatch
+    `create_agent` here without needing a real tool-calling-capable chat
+    model or a real Deno binary -- see tests/test_grading.py.
+    """
+    agent = create_agent(
+        model=chat_model,
+        tools=[get_python_sandbox_tool()],
+        response_format=schema,
+    )
+    result = agent.invoke({"messages": [SystemMessage(content=system_prompt), HumanMessage(content=student_answer)]})
+    return result["structured_response"]
 
 
 def grade_answer(chat_model: BaseChatModel, question: Question, student_answer: str, grading_scale: dict[str, str]) -> Grade:
@@ -77,20 +110,22 @@ def grade_answer(chat_model: BaseChatModel, question: Question, student_answer: 
         logger.info("%s: blank answer, skipping LLM call", question.id)
         return Grade(level=worst_level, feedback="No answer was provided for this question.")
 
-    # TODO: with_structured_output relies on tool-calling support. Some
-    # (especially small local Ollama) models don't support it reliably --
-    # add a JSON-in-prompt fallback + try/except here if that turns out to
-    # be a real problem in practice.
-    structured_model = chat_model.with_structured_output(grade_schema_for_scale(grading_scale))
-    messages = [
-        SystemMessage(content=build_system_prompt(question, grading_scale)),
-        HumanMessage(content=student_answer),
-    ]
-    logger.debug("%s: system prompt:\n%s", question.id, messages[0].content)
+    schema = grade_schema_for_scale(grading_scale)
+    system_prompt = build_system_prompt(question, grading_scale)
+    logger.debug("%s: system prompt:\n%s", question.id, system_prompt)
 
-    logger.info("%s: calling LLM...", question.id)
+    logger.info("%s: calling LLM%s...", question.id, " (with python sandbox)" if question.needs_python_sandbox else "")
     start = time.perf_counter()
-    raw = structured_model.invoke(messages)
+    if question.needs_python_sandbox:
+        raw = _grade_with_sandbox(chat_model, system_prompt, student_answer, schema)
+    else:
+        # TODO: with_structured_output relies on tool-calling support. Some
+        # (especially small local Ollama) models don't support it reliably --
+        # add a JSON-in-prompt fallback + try/except here if that turns out to
+        # be a real problem in practice.
+        structured_model = chat_model.with_structured_output(schema)
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=student_answer)]
+        raw = structured_model.invoke(messages)
     # Normalize back to the stable `Grade` shape -- `raw` is an instance of
     # the one-off schema grade_schema_for_scale() just built, not `Grade`
     # itself (see that function's docstring for why the two are separate).
