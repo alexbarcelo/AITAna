@@ -164,11 +164,12 @@ type DraftQuestion = {
   question: string
   context: string
   rubric: string
+  modelAnswer: string
   expectedPointsText: string
 }
 
 function emptyQuestion(): DraftQuestion {
-  return { id: '', field: '', title: '', question: '', context: '', rubric: '', expectedPointsText: '' }
+  return { id: '', field: '', title: '', question: '', context: '', rubric: '', modelAnswer: '', expectedPointsText: '' }
 }
 
 function toQuestion(q: DraftQuestion): Question {
@@ -179,6 +180,7 @@ function toQuestion(q: DraftQuestion): Question {
     question: q.question,
     context: q.context || null,
     rubric: q.rubric,
+    model_answer: q.modelAnswer || null,
     expected_points: q.expectedPointsText
       .split('\n')
       .map((line) => line.trim())
@@ -415,6 +417,13 @@ function ManualRubricForm({ onCreated }: { onCreated?: () => void }) {
               value={q.rubric}
               onChange={(e) => updateQuestion(i, { rubric: e.target.value })}
               rows={3}
+              className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
+            />
+            <textarea
+              placeholder="Model answer (optional): a worked/canonical answer, for questions that have one."
+              value={q.modelAnswer}
+              onChange={(e) => updateQuestion(i, { modelAnswer: e.target.value })}
+              rows={2}
               className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
             />
             <textarea

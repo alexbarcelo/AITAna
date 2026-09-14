@@ -27,7 +27,7 @@ useful feedback for the student and teacher, not a precise score.
 {context_section}
 # Grading instructions
 {rubric}
-
+{model_answer_section}
 # Points a good answer should cover
 {expected_points}
 
@@ -51,10 +51,15 @@ def build_grading_section(grading_scale: dict[str, str]) -> str:
 def build_system_prompt(question: Question, grading_scale: dict[str, str]) -> str:
     points = "\n".join(f"- {p}" for p in question.expected_points) or "(none specified)"
     context_section = f"\n# Context\n{question.context.strip()}\n" if question.context else ""
+    # Only rendered when the question has one (see Question.model_answer's
+    # docstring) -- most questions don't, and omitting the heading entirely
+    # avoids implying "no canonical answer" is itself meaningful feedback.
+    model_answer_section = f"\n# Model answer\n{question.model_answer.strip()}\n" if question.model_answer else ""
     return SYSTEM_PROMPT_TEMPLATE.format(
         question=question.question.strip(),
         context_section=context_section,
         rubric=question.rubric.strip(),
+        model_answer_section=model_answer_section,
         expected_points=points,
         grading_levels=build_grading_section(grading_scale),
     )

@@ -452,6 +452,8 @@ export interface components {
             rubric: string;
             /** Expected Points */
             expected_points?: string[];
+            /** Model Answer */
+            model_answer?: string | null;
         };
         /**
          * Rubric

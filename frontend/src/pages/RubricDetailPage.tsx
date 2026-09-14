@@ -115,6 +115,12 @@ export default function RubricDetailPage() {
               <p className="text-xs font-medium uppercase text-slate-400">Grading instructions</p>
               <p className="whitespace-pre-wrap text-sm text-slate-600">{q.rubric}</p>
             </div>
+            {q.model_answer && (
+              <div className="mb-3 rounded bg-slate-50 p-3">
+                <p className="text-xs font-medium uppercase text-slate-400">Model answer</p>
+                <p className="whitespace-pre-wrap text-sm text-slate-600">{q.model_answer}</p>
+              </div>
+            )}
             {(q.expected_points?.length ?? 0) > 0 && (
               <div>
                 <p className="text-xs font-medium uppercase text-slate-400">Expected points</p>

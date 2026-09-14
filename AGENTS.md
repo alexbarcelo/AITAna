@@ -90,8 +90,11 @@ would tangle a pure function with ODM state for no benefit.
 `title` is never part of the grading prompt. `context` is optional
 environment/state info (mainly useful for a lab: what the student's
 environment already looks like at this point) included in the prompt only
-when set. See "Grading internals" below for exactly how these compose into
-the system prompt.
+when set. `model_answer` is likewise optional: a worked/canonical answer,
+for the subset of questions that actually have one (e.g. "what command
+fixes this") as opposed to an open-ended one -- also included in the prompt
+only when set. See "Grading internals" below for exactly how these compose
+into the system prompt.
 
 `Question.field` (exposed as the `answer_key` property, `field or id`) used
 to be called `pdf_field` -- renamed because it no longer means "PDF AcroForm
@@ -638,13 +641,16 @@ built per-call rather than a fixed `Grade` type).
 (`question.question`, the task as posed -- *not* `title`, which is UI-only
 and never sent to the LLM), an optional `# Context` block (only rendered
 when `question.context` is set -- omitted entirely otherwise, not left as
-an empty heading), `# Grading instructions` (`rubric`), `# Points a good
-answer should cover` (`expected_points`), and `# Grading` (the rubric's
-`grading_scale`, rendered by `build_grading_section` -- see "Pluggable
-grading scales" above). If you add another optional per-question field that
-should reach the prompt, follow the same pattern: build the block
-conditionally in Python and interpolate it as a single already-formatted
-chunk, don't try to make the template itself branch.
+an empty heading), `# Grading instructions` (`rubric`), an optional
+`# Model answer` block (only rendered when `question.model_answer` is set
+-- a worked/canonical answer for questions that have one; most don't, and
+`rubric`/`expected_points` remain the primary grading criteria either way),
+`# Points a good answer should cover` (`expected_points`), and `# Grading`
+(the rubric's `grading_scale`, rendered by `build_grading_section` -- see
+"Pluggable grading scales" above). If you add another optional per-question
+field that should reach the prompt, follow the same pattern: build the
+block conditionally in Python and interpolate it as a single
+already-formatted chunk, don't try to make the template itself branch.
 
 ## Environment variables
 

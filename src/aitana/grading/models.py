@@ -111,6 +111,14 @@ class Question(BaseModel):
     context: str | None = None
     rubric: str
     expected_points: list[str] = Field(default_factory=list)
+    # Optional worked/reference answer -- only set when the question has a
+    # more or less canonical answer (e.g. "what command fixes this") rather
+    # than an open-ended one where any number of phrasings are equally
+    # valid. When set, it's included in the prompt as-is (see
+    # grading/grading.py's build_system_prompt); most questions won't have
+    # one, and `rubric` + `expected_points` remain the primary grading
+    # criteria either way -- this is extra context, not a replacement.
+    model_answer: str | None = None
 
     @property
     def answer_key(self) -> str:
