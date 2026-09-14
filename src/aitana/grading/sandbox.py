@@ -114,6 +114,7 @@ class PythonSandboxTool(BaseTool):
         ]
 
         logger.info("Running python sandbox (%d char(s) of code)...", len(code))
+        logger.debug("Code:\n%s", code)
         start = time.perf_counter()
         try:
             proc = subprocess.run(  # noqa: S603 -- fixed argv, no shell, `code` passed as a single arg
@@ -136,9 +137,12 @@ class PythonSandboxTool(BaseTool):
         stderr = envelope.get("stderr")
         success = bool(envelope.get("success"))
         logger.info("Python sandbox finished in %.2fs (success=%s)", elapsed, success)
+        logger.debug("Python sandbox stdout:\n%s", stdout)
 
         if not success or stderr:
+            logger.debug("Python sandbox stderr:\n%s", stderr)
             return f"Execution failed:\n{stderr or stdout}"
+
         return stdout or "(no output -- did you forget to print()?)"
 
 
