@@ -9,6 +9,15 @@ class Student(Document):
     student_id: str  # institutional id, e.g. university NIU -- unique roster key
     name: str
     email: str | None = None
+    # Login/username from a roster export (e.g. Atenea's Moodle username) --
+    # purely informational metadata, not used as a lookup key anywhere
+    # (student_id fills that role). See "Batch student import" in AGENTS.md.
+    username: str | None = None
+    # Free-form roster grouping (e.g. a lab/seminar group from a roster
+    # export) -- purely informational metadata at the moment, not wired into
+    # editions/rubrics/submissions filtering. See "Batch student import"
+    # in AGENTS.md for where this is populated from.
+    group: str | None = None
     # Plain Edition ids, not Beanie Links: a student can be in many editions,
     # and Beanie's Link-list querying doesn't have the same query-sugar
     # support as a single Link field (see AGENTS.md) -- a plain array plays

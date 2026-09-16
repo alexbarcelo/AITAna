@@ -6,6 +6,8 @@ export type Grade = components['schemas']['Grade']
 export type AnsweredQuestion = components['schemas']['AnsweredQuestion']
 export type SubmissionStatus = components['schemas']['SubmissionStatus']
 export type SubmissionFormat = components['schemas']['SubmissionFormat']
+export type StudentImportFormat = components['schemas']['StudentImportFormat']
+export type StudentImportResult = components['schemas']['StudentImportResult']
 
 /**
  * `{level_id: description}`, worst -> best -- see `Rubric.grading_scale`'s
@@ -25,6 +27,16 @@ export type GradingScale = Record<string, string>
 export const FORMAT_FILE_INFO: Record<SubmissionFormat, { extension: string; accept: string; label: string }> = {
   pdf: { extension: '.pdf', accept: 'application/pdf', label: 'PDF' },
   notebook: { extension: '.ipynb', accept: '.ipynb,application/x-ipynb+json', label: 'Jupyter notebook (.ipynb)' },
+}
+
+/**
+ * Human labels for `StudentImportFormat`, kept next to the backend's own
+ * enum (`api/routers/students.py`'s `StudentImportFormat`) so the two don't
+ * drift -- add a label here whenever a new import format is registered
+ * there.
+ */
+export const STUDENT_IMPORT_FORMAT_LABELS: Record<StudentImportFormat, string> = {
+  atenea: 'Atenea export',
 }
 
 export type Course = components['schemas']['Course']

@@ -141,6 +141,13 @@ tests/           pytest suite (API routers + grading logic)
 ## API (first pass)
 
 - `POST /students`, `GET /students`, `GET /students/{id}`
+- `POST /students/import` (multipart: `file`, `format` -- currently only
+  `atenea`) -- bulk-create/update students from a roster CSV. `ID number`
+  and `First name` are required columns; matches existing students by `ID
+  number` and overwrites `name`/`username`/`email`/`group` wholesale. A row
+  missing `ID number` or `First name`, or two rows sharing an `ID number`,
+  aborts the whole import with `422` (nothing is written). See AGENTS.md's
+  "Batch student import" for the column mapping.
 - `PUT /students/{id}/editions` (JSON body: `edition_ids`) -- replace a
   student's edition enrollments wholesale (a student can be in several).
   Editions are global, so this records *when*, not *which course* -- there's

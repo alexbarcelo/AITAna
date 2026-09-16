@@ -382,6 +382,70 @@ Two things worth knowing if you touch this:
   credentials are wired up, and the frontend shows whatever message comes
   back.
 
+## Batch student import (`api/routers/students.py`)
+
+`POST /students/import` -- multipart (`file`, `format` form field). Bulk
+creates/updates roster entries from a CSV, alongside the existing one-at-a-
+time `POST /students`.
+
+- **`StudentImportFormat`** is the enum of supported CSV shapes -- currently
+  just `atenea` (UPC's Moodle instance's roster export). Same
+  registered-parser-function shape as `SubmissionFormat`/`_EXTRACTORS`
+  (`grading/extraction/__init__.py`, see "Pluggable submission formats"
+  above): `_IMPORT_PARSERS: dict[StudentImportFormat, Callable[[bytes],
+  list[_ImportedStudentRow]]]`. Add a new format by writing one
+  `(bytes) -> list[_ImportedStudentRow]` function and registering it there --
+  nothing else in the endpoint changes.
+- **`_parse_atenea_csv`** expects `ID number` and `First name` columns
+  (matched case-insensitively against the header row, see below for why
+  both are required); `Last name`/`Username`/`Email address`/`Group` are all
+  optional. `csv.Sniffer` picks the delimiter off the header line (comma or
+  tab both seen in the wild from Atenea's different export paths), falling
+  back to comma if sniffing is inconclusive.
+- **`ID number` and `First name` are the only required columns**, for two
+  different reasons, both enforced the same way (missing header column ->
+  `422` before any row is even read; missing/blank value in a data row ->
+  `422` that aborts the **whole** import, nothing written, not even rows
+  before it):
+  - `ID number` is the sole source of `Student.student_id` -- the unique
+    roster key every other endpoint (`Submission.student`, `PUT
+    /students/{id}/editions`, ...) already joins against. It can't be
+    relaxed to some other column as a fallback without a second, later
+    import silently minting a duplicate `Student` under a different key for
+    someone whose `ID number` merely wasn't in this particular export.
+  - `First name` exists so every imported student is identifiable by a real
+    name -- `Student.name` is required, and this project deliberately does
+    *not* fall back to `Username`/`ID number` as a stand-in name for a row
+    that omits it.
+  - Aborting the whole file rather than skipping just the bad row is the
+    same reasoning in both cases: silently dropping one student from an
+    otherwise-successful import is easy to miss, a hard failure that names
+    the row is not. Two rows sharing the same `ID number` within one file
+    are rejected the same way, before anything is written, since neither
+    one is inherently more current-looking than the other.
+- **`name`** is `First name` + `Last name` joined with a space when `Last
+  name` is present, else just `First name` (the task that requested this
+  format specifically wanted `First name` to work alone when `Last name` is
+  blank).
+- **`username: str | None`** and **`group: str | None`** (`documents/
+  student.py`) are both new, purely informational metadata -- neither is a
+  lookup key (`student_id` fills that role) and `group` is not an
+  `Edition`. Don't conflate `group` with an edition: a roster "group" here
+  is typically a lab/seminar subdivision *within* one edition, not a term,
+  and nothing else in the app (submission filtering, editions/courses)
+  reads it today.
+- **Existing-student handling is upsert-by-`student_id`, and it's a full
+  overwrite, not a merge**: `name`/`username`/`email`/`group` are all set to
+  whatever the row says, including clearing a field the row leaves blank. A
+  re-export is expected to be the current source of truth for the roster,
+  not something to be reconciled field-by-field against what's already
+  there. `edition_ids` is never touched by this endpoint either way --
+  enrollment stays a separate, explicit step (`PUT
+  /students/{id}/editions`).
+- Response (`StudentImportResult`: `created`, `updated`, `students`) lets
+  the frontend show a plain "N created, M updated" summary
+  (`StudentsPage.tsx`).
+
 ## Creating courses and editions (`api/routers/courses.py`, `editions.py`)
 
 Both are creation-only, same `409`-on-duplicate-slug shape as rubrics.

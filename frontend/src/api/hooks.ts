@@ -1,7 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { client } from './client'
 import { IN_PROGRESS_STATUSES } from './types'
-import type { Course, Edition, Grade, Question, Rubric, Student, Submission, SubmissionFormat, SubmissionStatus } from './types'
+import type {
+  Course,
+  Edition,
+  Grade,
+  Question,
+  Rubric,
+  Student,
+  StudentImportFormat,
+  StudentImportResult,
+  Submission,
+  SubmissionFormat,
+  SubmissionStatus,
+} from './types'
 
 async function unwrap<T>(promise: Promise<{ data?: T; error?: unknown }>): Promise<T> {
   const { data, error } = await promise
@@ -36,6 +48,28 @@ export function useCreateStudent() {
   return useMutation({
     mutationFn: (body: { student_id: string; name: string; email?: string }) =>
       unwrap(client.POST('/students', { body })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['students'] }),
+  })
+}
+
+export function useImportStudents() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ file, format }: { file: File; format: StudentImportFormat }) => {
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('format', format)
+      // See useCreateSubmission for why `body` is cast here: openapi-fetch
+      // types multipart bodies from the JSON-ish schema, but the actual
+      // wire format is a FormData instance, which it passes through
+      // untouched.
+      return unwrap(
+        client.POST('/students/import', {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          body: formData as any,
+        }),
+      ) as Promise<StudentImportResult>
+    },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['students'] }),
   })
 }

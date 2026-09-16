@@ -63,6 +63,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/students/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Students
+         * @description Bulk-create/update students from an uploaded roster CSV.
+         *
+         *     All rows are parsed and validated before anything is written: a single
+         *     bad row (missing ID number or First name, or an ID number reused by two
+         *     rows in the same file) 422s the whole import instead of leaving a
+         *     half-applied roster. An existing student (matched by `student_id`) has
+         *     `name`/`username`/`email`/`group` overwritten wholesale with the row's
+         *     values -- including clearing a field the row leaves blank -- rather than
+         *     merged field by field.
+         */
+        post: operations["import_students_students_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/courses": {
         parameters: {
             query?: never;
@@ -329,6 +357,12 @@ export interface components {
             rubric_id: components["schemas"]["PydanticObjectId"];
             edition_id?: components["schemas"]["PydanticObjectId"] | null;
         };
+        /** Body_import_students_students_import_post */
+        Body_import_students_students_import_post: {
+            /** File */
+            file: string;
+            format: components["schemas"]["StudentImportFormat"];
+        };
         /** Body_upload_rubric_yaml_rubrics_upload_post */
         Body_upload_rubric_yaml_rubrics_upload_post: {
             /** Yaml File */
@@ -536,6 +570,10 @@ export interface components {
             name: string;
             /** Email */
             email?: string | null;
+            /** Username */
+            username?: string | null;
+            /** Group */
+            group?: string | null;
             /** Edition Ids */
             edition_ids?: components["schemas"]["PydanticObjectId"][];
             /**
@@ -557,6 +595,24 @@ export interface components {
         StudentEditions: {
             /** Edition Ids */
             edition_ids: components["schemas"]["PydanticObjectId"][];
+        };
+        /**
+         * StudentImportFormat
+         * @description Which roster-export shape an uploaded CSV follows. Only one today
+         *     (Atenea, UPC's Moodle instance) -- add a new member plus a matching
+         *     `_parse_*` function registered in `_IMPORT_PARSERS` for another, same
+         *     shape as `SubmissionFormat`/`_EXTRACTORS` in grading/extraction/.
+         * @enum {string}
+         */
+        StudentImportFormat: "atenea";
+        /** StudentImportResult */
+        StudentImportResult: {
+            /** Created */
+            created: number;
+            /** Updated */
+            updated: number;
+            /** Students */
+            students: components["schemas"]["Student"][];
         };
         /**
          * Submission
@@ -767,6 +823,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Student"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_students_students_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_import_students_students_import_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudentImportResult"];
                 };
             };
             /** @description Validation Error */
