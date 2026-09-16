@@ -497,6 +497,262 @@ async def test_test_rubric_answer_unknown_question_id(client, monkeypatch):
     assert resp.status_code == 404
 
 
+# ---- PUT /rubrics/{id} (manual edit) ----
+
+
+async def test_update_rubric_manual_edit(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(course_id)
+
+    resp = await client.put(
+        f"/rubrics/{rubric.id}",
+        json={
+            "title": "Containers lab v2",
+            "slug": "containers",
+            "course_id": course_id,
+            "questions": [_question_payload(id="a1", title="New Q1")],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["title"] == "Containers lab v2"
+    assert body["slug"] == "containers"
+    assert len(body["questions"]) == 1
+    assert body["questions"][0]["title"] == "New Q1"
+
+
+async def test_update_rubric_not_found(client):
+    course_id = await _make_course(client)
+    resp = await client.put(
+        "/rubrics/000000000000000000000000",
+        json={"title": "X", "course_id": course_id, "questions": [_question_payload()]},
+    )
+    assert resp.status_code == 404
+
+
+async def test_update_rubric_unknown_course_404(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(course_id)
+    resp = await client.put(
+        f"/rubrics/{rubric.id}",
+        json={"title": "X", "course_id": "000000000000000000000000", "questions": [_question_payload()]},
+    )
+    assert resp.status_code == 404
+
+
+async def test_update_rubric_unchanged_slug_is_not_a_conflict(client):
+    """Saving a rubric back with its own current slug must not 409 against
+    itself -- only creation, and edits that collide with a *different*
+    rubric's slug, are conflicts."""
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(course_id)
+    resp = await client.put(
+        f"/rubrics/{rubric.id}",
+        json={"title": "Containers lab renamed", "slug": "containers", "course_id": course_id, "questions": [_question_payload()]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["slug"] == "containers"
+
+
+async def test_update_rubric_slug_conflicts_with_different_rubric(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(course_id)
+    await client.post(
+        "/rubrics",
+        json={"title": "Spark", "slug": "spark-lab", "course_id": course_id, "questions": [_question_payload(id="a1")]},
+    )
+    resp = await client.put(
+        f"/rubrics/{rubric.id}",
+        json={"title": "Containers", "slug": "spark-lab", "course_id": course_id, "questions": [_question_payload()]},
+    )
+    assert resp.status_code == 409
+
+
+async def test_update_rubric_with_empty_grading_scale_422(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(course_id)
+    resp = await client.put(
+        f"/rubrics/{rubric.id}",
+        json={
+            "title": "Containers",
+            "course_id": course_id,
+            "grading_scale": {},
+            "questions": [_question_payload()],
+        },
+    )
+    assert resp.status_code == 422
+
+
+# No positive-match test for "format change is blocked once a submission
+# exists": that requires `Submission.find(Submission.rubric.id == ...)` (the
+# same query shape used by `_guard_format_change`) to actually match an
+# existing row, which AGENTS.md's sharp edge #3 documents as untested (and,
+# per manual verification while building this, actually returns zero rows)
+# under mongomock -- a mongomock limitation in matching a DBRef subfield,
+# not a Beanie or app bug. `_guard_format_change` itself is the same
+# `Link.id ==` pattern already relied on (and only positive-verified against
+# real MongoDB) by `list_submissions`.
+
+
+async def test_update_rubric_format_change_allowed_without_submissions(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(course_id)
+    resp = await client.put(
+        f"/rubrics/{rubric.id}",
+        json={
+            "title": "Containers",
+            "course_id": course_id,
+            "format": "notebook",
+            "questions": [_question_payload()],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["format"] == "notebook"
+
+
+# ---- PUT /rubrics/{id}/upload (upload updated version) ----
+
+
+async def test_update_rubric_yaml_replaces_content(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(course_id)
+
+    updated_yaml = b"""\
+title: Containers lab (updated)
+questions:
+  - id: answer1
+    title: Updated question
+    question: What changed?
+    rubric: Explain the change.
+"""
+    resp = await client.put(
+        f"/rubrics/{rubric.id}/upload",
+        data={"course_id": course_id},
+        files={"yaml_file": ("whatever_name.yaml", updated_yaml, "application/x-yaml")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["title"] == "Containers lab (updated)"
+    assert body["slug"] == "containers"  # kept, not re-derived from the new filename
+    assert len(body["questions"]) == 1
+    assert body["questions"][0]["title"] == "Updated question"
+
+
+async def test_update_rubric_yaml_not_found(client):
+    course_id = await _make_course(client)
+    resp = await client.put(
+        "/rubrics/000000000000000000000000/upload",
+        data={"course_id": course_id},
+        files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC, "application/x-yaml")},
+    )
+    assert resp.status_code == 404
+
+
+async def test_update_rubric_yaml_with_slug_override(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(course_id)
+    resp = await client.put(
+        f"/rubrics/{rubric.id}/upload",
+        data={"slug": "containers-v2", "course_id": course_id},
+        files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC, "application/x-yaml")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["slug"] == "containers-v2"
+
+
+async def test_update_rubric_yaml_slug_conflicts_with_different_rubric(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(course_id)
+    await client.post(
+        "/rubrics",
+        json={"title": "Spark", "slug": "spark-lab", "course_id": course_id, "questions": [_question_payload(id="a1")]},
+    )
+    resp = await client.put(
+        f"/rubrics/{rubric.id}/upload",
+        data={"slug": "spark-lab", "course_id": course_id},
+        files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC, "application/x-yaml")},
+    )
+    assert resp.status_code == 409
+
+
+async def test_update_rubric_yaml_ignores_course_slug_key(client):
+    """A rubric's course isn't editable via the "upload updated version"
+    flow at all -- a `course_slug:` key in the re-uploaded file must be
+    ignored, not silently move the rubric to a different course, even when
+    that course exists. Only the `course_id` form field (which the frontend
+    pins to the rubric's current course) can set it."""
+    course_id = await _make_course(client, "BDM")
+    other_course_id = await _make_course(client, "Other course")
+    rubric = await _make_rubric(course_id)
+    yaml_with_other_course = YAML_RUBRIC + b"course_slug: other_course\n"
+
+    resp = await client.put(
+        f"/rubrics/{rubric.id}/upload",
+        data={"course_id": course_id},
+        files={"yaml_file": ("containers_questions.yaml", yaml_with_other_course, "application/x-yaml")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["course"]["id"] == course_id
+    assert resp.json()["course"]["id"] != other_course_id
+
+
+async def test_update_rubric_yaml_ignores_edition_slug_key(client):
+    """Same as course_slug above, but for edition: re-uploading a YAML file
+    that happens to carry an `edition_slug:` key must not attach an edition
+    to a rubric that doesn't have one."""
+    course_id = await _make_course(client)
+    await client.post("/editions", json={"name": "2026/27"})  # slug: 2026_27
+    rubric = await _make_rubric(course_id)
+    assert rubric.edition is None
+    yaml_with_edition = YAML_RUBRIC + b'edition_slug: "2026_27"\n'
+
+    resp = await client.put(
+        f"/rubrics/{rubric.id}/upload",
+        data={"course_id": course_id},
+        files={"yaml_file": ("containers_questions.yaml", yaml_with_edition, "application/x-yaml")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["edition"] is None
+
+
+async def test_update_rubric_yaml_without_course_id_422(client):
+    """Since a `course_slug:` key can't set the course during an edit (see
+    above), omitting `course_id` entirely on this endpoint must 422 -- not
+    fall back to the YAML the way creation does."""
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(course_id)
+    resp = await client.put(
+        f"/rubrics/{rubric.id}/upload",
+        files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC, "application/x-yaml")},
+    )
+    assert resp.status_code == 422
+
+
+# ---- DELETE /rubrics/{id} ----
+
+
+async def test_delete_rubric(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(course_id)
+    resp = await client.delete(f"/rubrics/{rubric.id}")
+    assert resp.status_code == 204
+
+    resp = await client.get(f"/rubrics/{rubric.id}")
+    assert resp.status_code == 404
+
+
+async def test_delete_rubric_not_found(client):
+    resp = await client.delete("/rubrics/000000000000000000000000")
+    assert resp.status_code == 404
+
+
+# No positive-match test for "delete is blocked once a submission/batch
+# exists" -- same mongomock `Link.id ==` limitation as
+# _guard_format_change's tests above (see that comment / AGENTS.md sharp
+# edge #3). test_delete_rubric above already covers the "no
+# submissions/batches -> deletes fine" path.
+
+
 async def test_test_rubric_answer_llm_failure_returns_502(client, monkeypatch):
     course_id = await _make_course(client)
     rubric = await _make_rubric(course_id)

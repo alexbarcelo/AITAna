@@ -171,6 +171,34 @@ export function useCreateRubric() {
   })
 }
 
+export function useUpdateRubric() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      rubricId,
+      ...body
+    }: {
+      rubricId: string
+      title: string
+      slug?: string
+      course_id: string
+      edition_id?: string
+      // See useCreateRubric for why this is required here rather than
+      // optional despite defaulting server-side.
+      format: SubmissionFormat
+      grading_scale?: Record<string, string>
+      questions: Question[]
+    }) =>
+      unwrap(
+        client.PUT('/rubrics/{rubric_id}', { params: { path: { rubric_id: rubricId } }, body }),
+      ) as Promise<Rubric>,
+    onSuccess: (rubric) => {
+      queryClient.setQueryData(['rubrics', rubric._id], rubric)
+      queryClient.invalidateQueries({ queryKey: ['rubrics'] })
+    },
+  })
+}
+
 export function useUploadRubricYaml() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -204,6 +232,59 @@ export function useUploadRubricYaml() {
       ) as Promise<Rubric>
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['rubrics'] }),
+  })
+}
+
+export function useUpdateRubricYaml() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({
+      rubricId,
+      file,
+      slug,
+      courseId,
+      editionId,
+      format,
+    }: {
+      rubricId: string
+      file: File
+      slug?: string
+      courseId?: string
+      editionId?: string
+      format?: SubmissionFormat
+    }) => {
+      const formData = new FormData()
+      formData.append('yaml_file', file)
+      if (slug) formData.append('slug', slug)
+      if (courseId) formData.append('course_id', courseId)
+      if (editionId) formData.append('edition_id', editionId)
+      if (format) formData.append('format', format)
+      // See useCreateSubmission for why `body` is cast here: openapi-fetch
+      // types multipart bodies from the JSON-ish schema, but the actual wire
+      // format is a FormData instance, which it passes through untouched.
+      return unwrap(
+        client.PUT('/rubrics/{rubric_id}/upload', {
+          params: { path: { rubric_id: rubricId } },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          body: formData as any,
+        }),
+      ) as Promise<Rubric>
+    },
+    onSuccess: (rubric) => {
+      queryClient.setQueryData(['rubrics', rubric._id], rubric)
+      queryClient.invalidateQueries({ queryKey: ['rubrics'] })
+    },
+  })
+}
+
+export function useDeleteRubric() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (rubricId: string) => unwrap(client.DELETE('/rubrics/{rubric_id}', { params: { path: { rubric_id: rubricId } } })),
+    onSuccess: (_data, rubricId) => {
+      queryClient.removeQueries({ queryKey: ['rubrics', rubricId] })
+      queryClient.invalidateQueries({ queryKey: ['rubrics'] })
+    },
   })
 }
 

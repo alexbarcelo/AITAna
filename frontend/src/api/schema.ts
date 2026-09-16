@@ -191,9 +191,28 @@ export interface paths {
         };
         /** Get Rubric */
         get: operations["get_rubric_rubrics__rubric_id__get"];
-        put?: never;
+        /**
+         * Update Rubric
+         * @description Edit an existing rubric in place from a JSON body -- the "Build
+         *     manually" edit path (same body shape as `POST /rubrics`, see
+         *     `RubricCreate`). Unlike creation, a duplicate `slug` only 409s if it
+         *     belongs to a *different* rubric -- resubmitting the form unchanged (or
+         *     changing everything except the slug) isn't a conflict with itself.
+         */
+        put: operations["update_rubric_rubrics__rubric_id__put"];
         post?: never;
-        delete?: never;
+        /**
+         * Delete Rubric
+         * @description Delete a rubric outright. Blocked with `409` if any `Submission` or
+         *     `Batch` already references it -- deleting out from under those would
+         *     leave them pointing at nothing (`Submission.rubric`/`Batch.rubric` are
+         *     both required `Link[Rubric]` fields, and every submission/batch view
+         *     reads `rubric.slug`/`.title`/`.questions` to render at all), silently
+         *     breaking history that already exists rather than just losing an unused
+         *     definition. A rubric with no submissions/batches yet (still being
+         *     drafted, or never actually used) deletes freely.
+         */
+        delete: operations["delete_rubric_rubrics__rubric_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -213,6 +232,37 @@ export interface paths {
          * @description Create a rubric from an uploaded YAML file (see README.md for the format).
          */
         post: operations["upload_rubric_yaml_rubrics_upload_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rubrics/{rubric_id}/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Update Rubric Yaml
+         * @description Edit an existing rubric in place by uploading a new YAML file -- the
+         *     "upload updated version" edit path. Same parsing as `POST
+         *     /rubrics/upload`, except:
+         *     - the slug (if not overridden by the form field or a `slug:` YAML key)
+         *       defaults to the rubric's *current* slug rather than being re-derived
+         *       from the uploaded filename -- re-uploading a differently-named file to
+         *       update an existing rubric shouldn't change its identity as a side
+         *       effect.
+         *     - a `course_slug:`/`edition_slug:` key in the file is ignored
+         *       (`honor_yaml_course_edition=False`) -- a rubric's course/edition
+         *       aren't editable via this flow at all (see `_parse_rubric_yaml`'s
+         *       docstring), only via the `course_id`/`edition_id` form fields.
+         */
+        put: operations["update_rubric_yaml_rubrics__rubric_id__upload_put"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -521,6 +571,16 @@ export interface components {
             /** File */
             file: string;
             format: components["schemas"]["StudentImportFormat"];
+        };
+        /** Body_update_rubric_yaml_rubrics__rubric_id__upload_put */
+        Body_update_rubric_yaml_rubrics__rubric_id__upload_put: {
+            /** Yaml File */
+            yaml_file: string;
+            /** Slug */
+            slug?: string | null;
+            course_id?: components["schemas"]["PydanticObjectId"] | null;
+            edition_id?: components["schemas"]["PydanticObjectId"] | null;
+            format?: components["schemas"]["SubmissionFormat"] | null;
         };
         /** Body_upload_rubric_yaml_rubrics_upload_post */
         Body_upload_rubric_yaml_rubrics_upload_post: {
@@ -1303,6 +1363,70 @@ export interface operations {
             };
         };
     };
+    update_rubric_rubrics__rubric_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rubric_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RubricCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Rubric"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_rubric_rubrics__rubric_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rubric_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     upload_rubric_yaml_rubrics_upload_post: {
         parameters: {
             query?: never;
@@ -1318,6 +1442,41 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Rubric"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_rubric_yaml_rubrics__rubric_id__upload_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rubric_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_update_rubric_yaml_rubrics__rubric_id__upload_put"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

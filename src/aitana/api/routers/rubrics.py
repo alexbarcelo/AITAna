@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -6,7 +7,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
 
-from ...documents import Course, Edition, Rubric
+from ...documents import Batch, Course, Edition, Rubric, Submission
 from ...grading.grading import grade_answer
 from ...grading.llm import get_chat_model
 from ...grading.models import DEFAULT_GRADING_SCALE, Grade, Question, SubmissionFormat
@@ -39,6 +40,48 @@ class RubricCreate(BaseModel):
     questions: list[Question]
 
 
+async def _check_slug_available(slug: str, *, exclude_id: PydanticObjectId | None = None) -> None:
+    """409 if `slug` is already taken by a *different* rubric. `exclude_id`
+    lets an update keep its own current slug (or re-save it unchanged)
+    without tripping over itself."""
+    existing = await Rubric.find_one(Rubric.slug == slug)
+    if existing is not None and existing.id != exclude_id:
+        raise HTTPException(status_code=409, detail=f"Rubric {slug!r} already exists")
+
+
+async def _guard_format_change(rubric: Rubric, new_format: SubmissionFormat) -> None:
+    """A rubric's `questions[].field` values only make sense under one
+    format (see Rubric.format's docstring / AGENTS.md's "Pluggable
+    submission formats"), and a submission never records its own format --
+    it's implicitly whatever `rubric.format` was when it was graded. Letting
+    an edit silently flip `format` out from under submissions already
+    extracted/graded against the old one would make those submissions
+    permanently unre-explainable (their stored answers were read under a
+    field-naming convention the rubric no longer documents). Block it
+    outright rather than guessing; a rubric with no submissions yet is free
+    to change format as many times as needed while it's still being drafted.
+    """
+    if new_format == rubric.format:
+        return
+    # .to_list() rather than .count(): the same `Submission.rubric.id == ...`
+    # filter shape is already relied on by api/routers/submissions.py's
+    # list_submissions -- .count() runs a separate aggregation path that
+    # isn't exercised the same way. Per AGENTS.md sharp edge #3, this
+    # `Link.id ==` filter is only *positively* verified against real
+    # MongoDB, not mongomock (which returns zero matches for it regardless
+    # of whether one exists -- a mongomock DBRef-matching limitation, not a
+    # Beanie/app bug); see tests/test_rubrics_api.py's comment by the
+    # format-change tests for why there's no positive-match unit test here.
+    if await Submission.find(Submission.rubric.id == rubric.id).to_list():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot change format from {rubric.format.value!r} to {new_format.value!r}: "
+                "submissions already exist against this rubric."
+            ),
+        )
+
+
 async def _insert_rubric(
     slug: str,
     title: str,
@@ -48,8 +91,7 @@ async def _insert_rubric(
     fmt: SubmissionFormat,
     grading_scale: dict[str, str],
 ) -> Rubric:
-    if await Rubric.find_one(Rubric.slug == slug):
-        raise HTTPException(status_code=409, detail=f"Rubric {slug!r} already exists")
+    await _check_slug_available(slug)
     try:
         # Rubric's own validators (e.g. grading_scale must be non-empty)
         # aren't FastAPI request-body validation -- catch them here so both
@@ -62,6 +104,41 @@ async def _insert_rubric(
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=f"Invalid rubric: {exc}") from exc
     await rubric.insert()
+    return rubric
+
+
+async def _apply_rubric_update(
+    rubric: Rubric,
+    slug: str,
+    title: str,
+    questions: list[Question],
+    course: Course,
+    edition: Edition | None,
+    fmt: SubmissionFormat,
+    grading_scale: dict[str, str],
+) -> Rubric:
+    """Update `rubric` in place with new field values -- shared by both edit
+    paths (the manual-edit PUT and the "upload updated version" YAML PUT)."""
+    if slug != rubric.slug:
+        await _check_slug_available(slug, exclude_id=rubric.id)
+    await _guard_format_change(rubric, fmt)
+
+    rubric.slug = slug
+    rubric.title = title
+    rubric.course = course
+    rubric.edition = edition
+    rubric.format = fmt
+    rubric.grading_scale = grading_scale
+    rubric.questions = questions
+    rubric.updated_at = datetime.now(UTC)
+    try:
+        # Beanie's Document.save() re-validates the whole document (same
+        # `validate_on_save` behavior worker/tasks.py's _grade_answers relies
+        # on) -- this is what actually re-runs Rubric's grading_scale
+        # validator, since plain attribute assignment above doesn't.
+        await rubric.save()
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid rubric: {exc}") from exc
     return rubric
 
 
@@ -95,6 +172,34 @@ async def create_rubric(payload: RubricCreate) -> Rubric:
     return await _insert_rubric(slug, payload.title, payload.questions, course, edition, payload.format, payload.grading_scale)
 
 
+@router.put("/{rubric_id}", response_model=Rubric)
+async def update_rubric(rubric_id: PydanticObjectId, payload: RubricCreate) -> Rubric:
+    """Edit an existing rubric in place from a JSON body -- the "Build
+    manually" edit path (same body shape as `POST /rubrics`, see
+    `RubricCreate`). Unlike creation, a duplicate `slug` only 409s if it
+    belongs to a *different* rubric -- resubmitting the form unchanged (or
+    changing everything except the slug) isn't a conflict with itself.
+    """
+    rubric = await Rubric.get(rubric_id)
+    if rubric is None:
+        raise HTTPException(status_code=404, detail="Rubric not found")
+
+    course = await Course.get(payload.course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    edition = None
+    if payload.edition_id is not None:
+        edition = await Edition.get(payload.edition_id)
+        if edition is None:
+            raise HTTPException(status_code=404, detail="Edition not found")
+
+    slug = payload.slug or slugify(payload.title)
+    return await _apply_rubric_update(
+        rubric, slug, payload.title, payload.questions, course, edition, payload.format, payload.grading_scale
+    )
+
+
 def _require_yaml_string(raw: dict, key: str) -> str | None:
     """Guard against a real YAML footgun: an unquoted scalar like `2026_27`
     is parsed by PyYAML as the *integer* 202627, not the string "2026_27" --
@@ -117,15 +222,33 @@ def _require_yaml_string(raw: dict, key: str) -> str | None:
     return value
 
 
-@router.post("/upload", response_model=Rubric, status_code=201)
-async def upload_rubric_yaml(
-    yaml_file: UploadFile = File(...),
-    slug: str | None = Form(None),
-    course_id: PydanticObjectId | None = Form(None),
-    edition_id: PydanticObjectId | None = Form(None),
-    format: SubmissionFormat | None = Form(None),
-) -> Rubric:
-    """Create a rubric from an uploaded YAML file (see README.md for the format)."""
+async def _parse_rubric_yaml(
+    yaml_file: UploadFile,
+    slug: str | None,
+    course_id: PydanticObjectId | None,
+    edition_id: PydanticObjectId | None,
+    format: SubmissionFormat | None,
+    *,
+    default_slug: str,
+    honor_yaml_course_edition: bool = True,
+) -> tuple[str, str, list[Question], Course, Edition | None, SubmissionFormat, dict[str, str]]:
+    """Shared YAML-body parsing for both `POST /rubrics/upload` (create) and
+    `PUT /rubrics/{rubric_id}/upload` (the "upload updated version" edit
+    flow) -- everything about interpreting the file/form fields is identical
+    between the two; only what `default_slug` falls back to (and what
+    happens with the result) differs, plus `honor_yaml_course_edition` (see
+    below).
+
+    `honor_yaml_course_edition`: whether a `course_slug:`/`edition_slug:` key
+    in the YAML body is even consulted for resolving course/edition. True
+    for creation (the whole point of those keys -- bulk-importing
+    `configs/*.yaml` files that carry them). False for the edit path: a
+    rubric's course/edition aren't something re-uploading a YAML file should
+    be able to change (see AGENTS.md's "Editing rubrics" -- the frontend
+    locks these fields during edit for the same reason), so only the
+    `course_id`/`edition_id` form fields can move them, same as those two
+    already take precedence over the YAML keys during creation too.
+    """
     try:
         raw = yaml.safe_load((await yaml_file.read()).decode("utf-8"))
     except (yaml.YAMLError, UnicodeDecodeError) as exc:
@@ -139,7 +262,7 @@ async def upload_rubric_yaml(
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=f"Invalid question(s): {exc}") from exc
 
-    course_slug = _require_yaml_string(raw, "course_slug")
+    course_slug = _require_yaml_string(raw, "course_slug") if honor_yaml_course_edition else None
     course: Course | None = None
     if course_id is not None:
         course = await Course.get(course_id)
@@ -150,9 +273,12 @@ async def upload_rubric_yaml(
         if course is None:
             raise HTTPException(status_code=404, detail=f"Course {course_slug!r} not found")
     if course is None:
-        raise HTTPException(status_code=422, detail="A course is required: pass course_id or a course_slug: key in the YAML")
+        detail = "A course is required: pass course_id"
+        if honor_yaml_course_edition:
+            detail += " or a course_slug: key in the YAML"
+        raise HTTPException(status_code=422, detail=detail)
 
-    edition_slug = _require_yaml_string(raw, "edition_slug")
+    edition_slug = _require_yaml_string(raw, "edition_slug") if honor_yaml_course_edition else None
     edition: Edition | None = None
     if edition_id is not None:
         edition = await Edition.get(edition_id)
@@ -163,8 +289,7 @@ async def upload_rubric_yaml(
         if edition is None:
             raise HTTPException(status_code=404, detail=f"Edition {edition_slug!r} not found")
 
-    filename_stem = Path(yaml_file.filename or "rubric").stem.removesuffix("_questions")
-    resolved_slug = slug or _require_yaml_string(raw, "slug") or slugify(filename_stem)
+    resolved_slug = slug or _require_yaml_string(raw, "slug") or default_slug
     title = raw.get("title") or resolved_slug.replace("_", " ").title()
 
     # Same "form field, then a YAML key, then a default" precedence as
@@ -184,10 +309,85 @@ async def upload_rubric_yaml(
     # No form-field equivalent (a dict doesn't fit a multipart field
     # cleanly) -- just the YAML key, else the default. Shape/emptiness
     # validation (must be a {level: description} mapping, non-empty) happens
-    # inside _insert_rubric's Rubric(...) construction, not here.
+    # inside _insert_rubric's/_apply_rubric_update's Rubric construction, not
+    # here.
     grading_scale = raw["grading_scale"] if raw.get("grading_scale") is not None else dict(DEFAULT_GRADING_SCALE)
 
+    return resolved_slug, title, questions, course, edition, resolved_format, grading_scale
+
+
+@router.post("/upload", response_model=Rubric, status_code=201)
+async def upload_rubric_yaml(
+    yaml_file: UploadFile = File(...),
+    slug: str | None = Form(None),
+    course_id: PydanticObjectId | None = Form(None),
+    edition_id: PydanticObjectId | None = Form(None),
+    format: SubmissionFormat | None = Form(None),
+) -> Rubric:
+    """Create a rubric from an uploaded YAML file (see README.md for the format)."""
+    filename_stem = Path(yaml_file.filename or "rubric").stem.removesuffix("_questions")
+    resolved_slug, title, questions, course, edition, resolved_format, grading_scale = await _parse_rubric_yaml(
+        yaml_file, slug, course_id, edition_id, format, default_slug=slugify(filename_stem)
+    )
     return await _insert_rubric(resolved_slug, title, questions, course, edition, resolved_format, grading_scale)
+
+
+@router.put("/{rubric_id}/upload", response_model=Rubric)
+async def update_rubric_yaml(
+    rubric_id: PydanticObjectId,
+    yaml_file: UploadFile = File(...),
+    slug: str | None = Form(None),
+    course_id: PydanticObjectId | None = Form(None),
+    edition_id: PydanticObjectId | None = Form(None),
+    format: SubmissionFormat | None = Form(None),
+) -> Rubric:
+    """Edit an existing rubric in place by uploading a new YAML file -- the
+    "upload updated version" edit path. Same parsing as `POST
+    /rubrics/upload`, except:
+    - the slug (if not overridden by the form field or a `slug:` YAML key)
+      defaults to the rubric's *current* slug rather than being re-derived
+      from the uploaded filename -- re-uploading a differently-named file to
+      update an existing rubric shouldn't change its identity as a side
+      effect.
+    - a `course_slug:`/`edition_slug:` key in the file is ignored
+      (`honor_yaml_course_edition=False`) -- a rubric's course/edition
+      aren't editable via this flow at all (see `_parse_rubric_yaml`'s
+      docstring), only via the `course_id`/`edition_id` form fields.
+    """
+    rubric = await Rubric.get(rubric_id)
+    if rubric is None:
+        raise HTTPException(status_code=404, detail="Rubric not found")
+
+    resolved_slug, title, questions, course, edition, resolved_format, grading_scale = await _parse_rubric_yaml(
+        yaml_file, slug, course_id, edition_id, format, default_slug=rubric.slug, honor_yaml_course_edition=False
+    )
+    return await _apply_rubric_update(rubric, resolved_slug, title, questions, course, edition, resolved_format, grading_scale)
+
+
+@router.delete("/{rubric_id}", status_code=204)
+async def delete_rubric(rubric_id: PydanticObjectId) -> None:
+    """Delete a rubric outright. Blocked with `409` if any `Submission` or
+    `Batch` already references it -- deleting out from under those would
+    leave them pointing at nothing (`Submission.rubric`/`Batch.rubric` are
+    both required `Link[Rubric]` fields, and every submission/batch view
+    reads `rubric.slug`/`.title`/`.questions` to render at all), silently
+    breaking history that already exists rather than just losing an unused
+    definition. A rubric with no submissions/batches yet (still being
+    drafted, or never actually used) deletes freely.
+    """
+    rubric = await Rubric.get(rubric_id)
+    if rubric is None:
+        raise HTTPException(status_code=404, detail="Rubric not found")
+
+    # Same `Link.id == ...` filter shape as `_guard_format_change` -- see
+    # its comment (and AGENTS.md's sharp edge #3) for why there's no
+    # positive-match unit test for this under mongomock.
+    if await Submission.find(Submission.rubric.id == rubric.id).to_list():
+        raise HTTPException(status_code=409, detail="Cannot delete: submissions already exist against this rubric.")
+    if await Batch.find(Batch.rubric.id == rubric.id).to_list():
+        raise HTTPException(status_code=409, detail="Cannot delete: batches already exist against this rubric.")
+
+    await rubric.delete()
 
 
 class TestAnswerRequest(BaseModel):

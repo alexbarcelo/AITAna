@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useRubrics } from '../api/hooks'
-import NewRubricForm from '../components/NewRubricForm'
+import RubricForm from '../components/RubricForm'
 import { formatDate } from '../lib/date'
 
 export default function RubricsPage() {
@@ -23,7 +23,7 @@ export default function RubricsPage() {
         </button>
       </div>
 
-      {showForm && <NewRubricForm onCreated={() => setShowForm(false)} />}
+      {showForm && <RubricForm onDone={() => setShowForm(false)} />}
 
       {isLoading && <p className="text-sm text-slate-500">Loading...</p>}
       {error && <p className="text-sm text-red-600">Failed to load rubrics.</p>}

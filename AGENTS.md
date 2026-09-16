@@ -139,11 +139,12 @@ the extraction step.
   /rubrics/upload`'s `format` form field / top-level `format:` YAML key,
   same precedence order as `course_slug`/`edition_slug` -- see
   `configs/AGENTS.md`), and defaults to `pdf` so every rubric created before
-  this existed keeps working unchanged. There's no rubric edit endpoint
-  (see "Creating rubrics" above), so this is effectively permanent for a
-  given rubric today -- if rubric editing is ever added, decide deliberately
-  whether changing `format` on an existing rubric (with submissions already
-  against it in a different format) should be allowed at all.
+  this existed keeps working unchanged. Editable via the edit endpoints (see
+  "Editing rubrics" below), but changing `format` on a rubric that already
+  has submissions against it is rejected with `409` (`_guard_format_change`)
+  -- a submission doesn't record its own format, only `rubric.format` at
+  grading time, so allowing the flip would make existing submissions'
+  stored answers permanently unre-explainable.
 - **Extraction is pluggable** (`grading/extraction/`): `__init__.py`
   exposes `extract_answers(fmt, path) -> dict[answer_key, text]`, dispatching
   to `pdf.py` or `notebook.py` via a `_EXTRACTORS` dict, plus
@@ -369,10 +370,78 @@ can't resolve them on a subsequent *read* (sharp edge #5) -- see the
 rubric-creation tests in `tests/test_rubrics_api.py` for why they can
 assert `resp.json()["course"]["name"]` directly.
 
-If you're asked to add rubric *editing* down the line, decide deliberately
-whether re-uploading/re-posting an existing slug should now upsert (replace
-`title`/`questions` in place) versus staying creation-only with a separate
-`PUT`/`PATCH` -- don't just relax the `409` without picking one.
+## Editing rubrics (`api/routers/rubrics.py`)
+
+A separate `PUT`, not an upsert on the creation endpoints: `POST /rubrics`
+and `POST /rubrics/upload` stay creation-only (a duplicate `slug` is still a
+plain `409` there, unconditionally). Two edit paths, mirroring the two
+creation paths and the frontend's two `NewRubricForm.tsx` modes:
+
+- **`PUT /rubrics/{rubric_id}`** -- JSON body, same shape as `RubricCreate`.
+  The "Build manually" edit path.
+- **`PUT /rubrics/{rubric_id}/upload`** -- multipart, same fields as `POST
+  /rubrics/upload`. The "upload updated version" edit path: the YAML
+  file's contents *replace* the rubric's `title`/`course`/`edition`/
+  `format`/`grading_scale`/`questions` wholesale, the same as re-running
+  "Build manually" with every field repopulated from the file. Unlike
+  creation, the slug (absent a form field or YAML `slug:` key) defaults to
+  the rubric's *current* slug, not one derived from the uploaded filename --
+  the point of this flow is updating an existing rubric's content, not
+  accidentally renaming it because the new file happens to be named
+  differently.
+
+Both share `_apply_rubric_update` (mirrors `_insert_rubric`): it mutates the
+existing `Rubric` document's fields directly and calls `.save()`, which
+re-validates the whole document the same way `.insert()` does (`ValidationError`
+-> `422`, same as creation) -- see `Document.save()`'s `validate_on_save`
+behavior, already relied on by `worker/tasks.py`'s `_grade_answers`.
+`updated_at` is bumped explicitly (unlike `created_at`, nothing does this
+for you on a plain attribute-assignment + `save()`).
+
+Two things an edit does differently from creation:
+
+- **Slug conflicts only 409 against a *different* rubric**
+  (`_check_slug_available(slug, exclude_id=rubric.id)`) -- saving a rubric
+  back with its own unchanged slug, or changing every field except the
+  slug, isn't a conflict with itself the way it would be during creation.
+- **Format changes are guarded** (`_guard_format_change`) -- see
+  `Rubric.format`'s docstring / "Pluggable submission formats" above for
+  why: `409` if the rubric already has any `Submission` against it and the
+  edit tries to change `format`. A rubric with zero submissions yet (still
+  being drafted) can change format freely.
+
+Nothing about `slug`/`course_id`/`edition_id` is protected from being
+changed on edit *at the API level* -- `PUT /rubrics/{id}` still takes all
+three in the body, same shape as creation, and `PUT /rubrics/{id}/upload`
+still takes `course_id`/`edition_id` form fields (just not `course_slug:`/
+`edition_slug:` YAML keys, see above) and a `slug` form field. The
+*frontend* (`RubricForm.tsx`) locks all three to the rubric's current values
+during edit -- greyed-out `<select>`s for course/edition, a disabled slug
+input pre-filled with the current slug rather than left blank -- deliberately,
+not because the API enforces it: changing a rubric's course/edition
+mid-life is a bigger structural move than "edit this rubric's content," and
+changing `slug` changes which `configs/<slug>_questions.yaml` a future
+re-upload is expected to match. If a script/API caller genuinely needs to
+move a rubric to a different course or rename its slug, `PUT /rubrics/{id}`
+still allows it directly -- only the UI's manual/YAML edit forms don't
+expose it.
+
+## Deleting rubrics
+
+`DELETE /rubrics/{rubric_id}` (`delete_rubric`) -- `204` on success, `404`
+if the rubric doesn't exist. Blocked with `409` if any `Submission` or
+`Batch` already references it (`Submission.rubric`/`Batch.rubric` are both
+required `Link[Rubric]` fields that every submission/batch view resolves to
+render `rubric.slug`/`.title`/`.questions` -- deleting out from under them
+would leave dangling references, not just remove an unused definition). A
+rubric nobody has submitted anything against yet (still being drafted, or
+created and abandoned) deletes freely. Same `Link.id == ...` query shape
+(and the same "can't positively unit-test this under mongomock" situation,
+sharp edge #3) as `_guard_format_change`.
+
+The frontend (`RubricDetailPage.tsx`) exposes this as a "Delete" button next
+to "Edit", behind a native `confirm()` -- there's no undo, and a `409` here
+means "go deal with the submissions/batches first," not "retry."
 
 ### Interactively testing a rubric (`POST /rubrics/{id}/test-answer`)
 
@@ -734,7 +803,18 @@ MongoDB, same field-path mechanics as `==`, just `$in` instead of an
 implicit equality. Not exercised under `mongomock` for the same reason
 `==` isn't (see the `course_id`/`edition_id` tests in
 `tests/test_submissions_api.py`, which only assert the "no matches -> empty
-list" case).
+list" case). Confirmed hands-on while building rubric editing's
+`_guard_format_change` (`api/routers/rubrics.py`): even the exact filter
+dict Beanie builds for `Submission.rubric.id == some_id`
+(`{"rubric.$id": ObjectId(...)}`) returns zero rows against `mongomock` when
+run as a raw `collection.find(...)`, for a document that demonstrably
+matches it -- this is `mongomock` failing to match inside a stored `DBRef`,
+not a Beanie translation bug. Same story for `fetch_links=True` combined
+with `nesting_depths_per_field` capping (`sharp edge #6`'s workaround
+doesn't help here either). If you add another endpoint that needs to check
+"does any X reference this Y" via a Link filter, expect the same
+can't-positively-unit-test-it-under-mongomock situation `_guard_format_change`
+is in.
 
 **4. `mongomock`/`mongomock-motor` need three test-only compatibility
 shims** (`tests/conftest.py`, module-level, applied once on import):

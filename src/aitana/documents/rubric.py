@@ -20,9 +20,13 @@ class Rubric(Document):
     # years), while an exam is typically unique to one edition (set it).
     course: Link[Course]
     edition: Link[Edition] | None = None
-    # Which file format submissions against this rubric are graded from --
-    # decided once, at rubric-creation time (there's no rubric edit endpoint
-    # yet; see AGENTS.md). Defaults to `pdf` since that's this project's
+    # Which file format submissions against this rubric are graded from.
+    # Editable (`PUT /rubrics/{id}`, `PUT /rubrics/{id}/upload`), but guarded:
+    # changing it once submissions already exist against this rubric 409s
+    # (see `_guard_format_change` in api/routers/rubrics.py) -- a submission
+    # never records its own format, only `rubric.format` at grading time, so
+    # flipping it after the fact would make existing submissions
+    # unre-explainable. Defaults to `pdf` since that's this project's
     # original/only format. A rubric's `questions[].field` values only make
     # sense under this one format (see SubmissionFormat's docstring) -- don't
     # let a submission upload pick a different one per-file.

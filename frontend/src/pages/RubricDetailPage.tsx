@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { useRubric, useTestRubricAnswer } from '../api/hooks'
+import { useNavigate, useParams } from 'react-router-dom'
+import { useDeleteRubric, useRubric, useTestRubricAnswer } from '../api/hooks'
 import type { GradingScale } from '../api/types'
 import GradeBadge from '../components/GradeBadge'
+import RubricForm from '../components/RubricForm'
 import { formatDate } from '../lib/date'
 
 function QuestionTestPanel({
@@ -72,23 +73,71 @@ function QuestionTestPanel({
 
 export default function RubricDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const { data: rubric, isLoading, error } = useRubric(id)
+  const [editing, setEditing] = useState(false)
+  const deleteRubric = useDeleteRubric()
 
   if (isLoading) return <p className="text-sm text-slate-500">Loading...</p>
   if (error || !rubric) return <p className="text-sm text-red-600">Failed to load this rubric.</p>
 
+  function handleDelete() {
+    if (!rubric) return
+    if (!window.confirm(`Delete "${rubric.title}"? This can't be undone.`)) return
+    deleteRubric.mutate(rubric._id, { onSuccess: () => navigate('/rubrics') })
+  }
+
+  if (editing) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-semibold">Edit {rubric.title}</h1>
+          <button
+            onClick={() => setEditing(false)}
+            className="rounded-md bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-600"
+          >
+            Cancel
+          </button>
+        </div>
+        <RubricForm rubric={rubric} onDone={() => setEditing(false)} />
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">{rubric.title}</h1>
-        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-500">
-          <span>
-            Slug: <code className="rounded bg-slate-100 px-1 font-mono text-xs">{rubric.slug}</code>
-          </span>
-          <span>Course: {rubric.course.name}</span>
-          <span>Edition: {rubric.edition ? rubric.edition.name : 'any (reusable across editions)'}</span>
-          <span>Created: {formatDate(rubric.created_at)}</span>
-          <span>Last updated: {formatDate(rubric.updated_at)}</span>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-xl font-semibold">{rubric.title}</h1>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-500">
+            <span>
+              Slug: <code className="rounded bg-slate-100 px-1 font-mono text-xs">{rubric.slug}</code>
+            </span>
+            <span>Course: {rubric.course.name}</span>
+            <span>Edition: {rubric.edition ? rubric.edition.name : 'any (reusable across editions)'}</span>
+            <span>Created: {formatDate(rubric.created_at)}</span>
+            <span>Last updated: {formatDate(rubric.updated_at)}</span>
+          </div>
+          {deleteRubric.isError && (
+            <p className="mt-1 text-sm text-red-600">
+              {(deleteRubric.error as { message?: string })?.message ?? 'Failed to delete this rubric.'}
+            </p>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setEditing(true)}
+            className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white"
+          >
+            Edit
+          </button>
+          <button
+            onClick={handleDelete}
+            disabled={deleteRubric.isPending}
+            className="rounded-md bg-red-50 px-3 py-1.5 text-sm font-medium text-red-600 disabled:opacity-50"
+          >
+            {deleteRubric.isPending ? 'Deleting...' : 'Delete'}
+          </button>
         </div>
       </div>
 
