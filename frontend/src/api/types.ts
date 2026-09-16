@@ -8,6 +8,7 @@ export type SubmissionStatus = components['schemas']['SubmissionStatus']
 export type SubmissionFormat = components['schemas']['SubmissionFormat']
 export type StudentImportFormat = components['schemas']['StudentImportFormat']
 export type StudentImportResult = components['schemas']['StudentImportResult']
+export type BatchType = components['schemas']['BatchType']
 
 /**
  * `{level_id: description}`, worst -> best -- see `Rubric.grading_scale`'s
@@ -37,6 +38,15 @@ export const FORMAT_FILE_INFO: Record<SubmissionFormat, { extension: string; acc
  */
 export const STUDENT_IMPORT_FORMAT_LABELS: Record<StudentImportFormat, string> = {
   atenea: 'Atenea export',
+}
+
+/**
+ * Human labels for `BatchType`, kept next to the backend's own enum
+ * (`documents/batch.py`'s `BatchType`) so the two don't drift -- add a
+ * label here whenever a new batch zip layout is registered there.
+ */
+export const BATCH_TYPE_LABELS: Record<BatchType, string> = {
+  atenea: 'Atenea (per-assignment submissions export)',
 }
 
 export type Course = components['schemas']['Course']
@@ -72,33 +82,67 @@ export interface Rubric {
 }
 
 /**
- * `Submission.rubric` is narrower than the standalone `Rubric` above: the
- * backend caps its fetch_links depth on this field to 1 (`_SHALLOW_LINKS`
- * in api/routers/submissions.py) since submission views never use
+ * `Submission.rubric`/`Batch.rubric` are narrower than the standalone
+ * `Rubric` above: the backend caps their fetch_links depth to 1
+ * (`_SHALLOW_LINKS` in api/routers/submissions.py, `_BATCH_SHALLOW_LINKS`
+ * in api/routers/batches.py) since these views never use
  * rubric.course/rubric.edition, only rubric.slug/title/questions.
  */
 export type SubmissionRubric = Omit<Rubric, 'course' | 'edition'>
 
 /**
- * The generated `Submission.student`/`.rubric`/`.edition` types are a leaky
- * union in the raw OpenAPI schema -- Beanie's `Link[T]` schema can't
- * statically express "this is either an unresolved reference or a fully
- * resolved document." Every submissions endpoint used here calls Mongo with
- * `fetch_links=True`, so at runtime these are always full embedded
- * documents (modulo the narrower `SubmissionRubric` shape noted above) --
- * this type reflects that actual shape.
+ * One zip upload (`api/routers/batches.py`) -- see its docstring and
+ * AGENTS.md's "Batch submission import" for the zip layout this produces
+ * submissions from.
+ */
+export interface Batch {
+  _id: string
+  rubric: SubmissionRubric
+  edition: Edition
+  type: BatchType
+  original_filename: string | null
+  item_count: number
+  created_at: string
+}
+
+/**
+ * The generated `Submission.student`/`.rubric`/`.edition`/`.batch` types
+ * are a leaky union in the raw OpenAPI schema -- Beanie's `Link[T]` schema
+ * can't statically express "this is either an unresolved reference or a
+ * fully resolved document." Every submissions endpoint used here calls
+ * Mongo with `fetch_links=True`, so at runtime these are always full
+ * embedded documents (modulo the narrower `SubmissionRubric` shape noted
+ * above) -- this type reflects that actual shape. `student` and `batch`
+ * are nullable: a submission created by a batch upload has no matched
+ * student yet (see `Submission.student`'s docstring, `documents/
+ * submission.py`), while one created through the single-file upload flow
+ * has no batch at all.
  */
 export interface Submission {
   _id: string
-  student: Student
+  student: Student | null
   rubric: SubmissionRubric
   edition: Edition
+  batch: Batch | null
+  batch_internal_id: string | null
   file_object_key: string
   status: SubmissionStatus
   answers: AnsweredQuestion[]
   error?: string | null
   created_at: string
   updated_at: string
+}
+
+/** Response of `POST /batches` -- mirrors `StudentImportResult`'s shape. */
+export interface BatchUploadResult {
+  batch: Batch
+  created: number
+  submissions: Submission[]
+}
+
+/** Response of `POST /batches/{batch_id}/regrade`. */
+export interface BatchRegradeResult {
+  regraded: number
 }
 
 export const IN_PROGRESS_STATUSES: SubmissionStatus[] = ['pending', 'extracting', 'grading']

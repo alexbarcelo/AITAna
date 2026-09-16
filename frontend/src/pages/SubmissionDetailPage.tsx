@@ -1,7 +1,8 @@
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { API_URL } from '../api/client'
 import { useRegradeSubmission, useSubmission } from '../api/hooks'
 import GradeBadge from '../components/GradeBadge'
+import MatchStudentDialog from '../components/MatchStudentDialog'
 import StatusBadge from '../components/StatusBadge'
 import { FORMAT_FILE_INFO, IN_PROGRESS_STATUSES } from '../api/types'
 
@@ -21,11 +22,24 @@ export default function SubmissionDetailPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">
-            {submission.student.name} &middot; {submission.rubric.title}
+          <h1 className="flex items-center gap-1 text-xl font-semibold">
+            {submission.student ? submission.student.name : 'Unmatched'} &middot; {submission.rubric.title}
+            {submission.batch_internal_id && (
+              <MatchStudentDialog submissionId={submission._id} currentStudentId={submission.student?.student_id} />
+            )}
           </h1>
           <p className="text-sm text-slate-500">
-            {submission.student.student_id} &middot; {submission.edition.name}
+            {submission.student ? submission.student.student_id : submission.batch_internal_id} &middot;{' '}
+            {submission.edition.name}
+            {submission.batch && (
+              <>
+                {' '}
+                &middot;{' '}
+                <Link to={`/batches/${submission.batch._id}`} className="hover:underline">
+                  batch
+                </Link>
+              </>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-3">

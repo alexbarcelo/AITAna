@@ -1,4 +1,6 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
+import BatchDetailPage from './pages/BatchDetailPage'
+import BatchesPage from './pages/BatchesPage'
 import CoursesPage from './pages/CoursesPage'
 import EditionsPage from './pages/EditionsPage'
 import RubricDetailPage from './pages/RubricDetailPage'
@@ -38,6 +40,9 @@ export default function App() {
             <NavLink to="/upload" className={navLinkClass}>
               Upload submission
             </NavLink>
+            <NavLink to="/batches" className={navLinkClass}>
+              Batches
+            </NavLink>
           </nav>
         </div>
       </header>
@@ -51,6 +56,8 @@ export default function App() {
           <Route path="/rubrics" element={<RubricsPage />} />
           <Route path="/rubrics/:id" element={<RubricDetailPage />} />
           <Route path="/upload" element={<UploadSubmissionPage />} />
+          <Route path="/batches" element={<BatchesPage />} />
+          <Route path="/batches/:id" element={<BatchDetailPage />} />
           <Route path="/submissions/:id" element={<SubmissionDetailPage />} />
         </Routes>
       </main>

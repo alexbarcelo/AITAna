@@ -1,6 +1,7 @@
 from beanie import Link, PydanticObjectId
 from beanie.operators import In
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
+from pydantic import BaseModel
 
 from ... import storage
 from ...documents import Edition, Rubric, Student, Submission, SubmissionStatus
@@ -13,10 +14,11 @@ router = APIRouter(prefix="/submissions", tags=["submissions"])
 # nested `course`/`edition` links -- capping fetch_links depth on `rubric`
 # avoids resolving that extra hop (a real, if small, saving) and avoids the
 # nested-pipeline $lookup mongomock can't run (see AGENTS.md sharp edge #6).
-# `edition` needs no cap of its own: Edition is global and carries no Link
-# fields at all anymore (see documents/edition.py), so resolving it fully
-# never produces a nested pipeline in the first place.
-_SHALLOW_LINKS = {"rubric": 1}
+# `batch` needs the same cap for the same reason (Batch.rubric/.edition are
+# themselves Links). `edition` needs no cap of its own: Edition is global and
+# carries no Link fields at all anymore (see documents/edition.py), so
+# resolving it fully never produces a nested pipeline in the first place.
+_SHALLOW_LINKS = {"rubric": 1, "batch": 1}
 
 
 async def _resolve_edition(rubric: Rubric, edition_id: PydanticObjectId | None) -> Edition:
@@ -88,6 +90,7 @@ async def list_submissions(
     rubric_id: PydanticObjectId | None = None,
     course_id: PydanticObjectId | None = None,
     edition_id: PydanticObjectId | None = None,
+    batch_id: PydanticObjectId | None = None,
     status: SubmissionStatus | None = None,
 ) -> list[Submission]:
     filters = []
@@ -95,6 +98,8 @@ async def list_submissions(
         filters.append(Submission.student.id == student_id)
     if rubric_id is not None:
         filters.append(Submission.rubric.id == rubric_id)
+    if batch_id is not None:
+        filters.append(Submission.batch.id == batch_id)
     if status is not None:
         filters.append(Submission.status == status)
     if course_id is not None:
@@ -119,6 +124,33 @@ async def get_submission(submission_id: PydanticObjectId) -> Submission:
     return submission
 
 
+class SetSubmissionStudent(BaseModel):
+    student_id: PydanticObjectId
+
+
+@router.put("/{submission_id}/student", response_model=Submission)
+async def set_submission_student(submission_id: PydanticObjectId, payload: SetSubmissionStudent) -> Submission:
+    """Manually set (or correct) which student a submission belongs to --
+    mainly for a batch-created submission whose folder name didn't
+    auto-match anyone, or matched the wrong person (see
+    api/routers/batches.py's `_match_student`), but works for any
+    submission."""
+    submission = await Submission.get(submission_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    student = await Student.get(payload.student_id)
+    if student is None:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    # Assign the just-fetched Student object directly rather than re-fetching
+    # the submission afterwards -- the in-memory `student` field already
+    # holds the full document, no second round-trip needed to serialize it
+    # back out.
+    submission.student = student
+    await submission.save()
+    return submission
+
+
 @router.get("/{submission_id}/file")
 async def download_submission_file(submission_id: PydanticObjectId) -> Response:
     submission = await Submission.get(submission_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS)
@@ -127,7 +159,11 @@ async def download_submission_file(submission_id: PydanticObjectId) -> Response:
 
     extension, content_type = FORMAT_FILE_INFO[submission.rubric.format]
     file_bytes = storage.download_bytes(submission.file_object_key)
-    filename = f"{submission.student.student_id}_{submission.rubric.slug}{extension}"
+    # A batch-created submission has no student yet (see Submission.student's
+    # docstring) -- fall back to its batch folder name, or the submission id
+    # as a last resort, so this never breaks on a null student.
+    identifier = submission.student.student_id if submission.student else (submission.batch_internal_id or str(submission.id))
+    filename = f"{identifier}_{submission.rubric.slug}{extension}"
     return Response(
         content=file_bytes,
         media_type=content_type,

@@ -65,8 +65,9 @@ this section before touching any of `Course`, `Edition`, `Rubric.course`/
   4-level scale) is the `{level_id: description}` the LLM grades against --
   see "Pluggable grading scales" below. `questions: list[Question]` is
   embedded, not referenced.
-- **`Submission`** -- one per student x rubric. `student`, `rubric`, and
-  `edition` are all Beanie `Link` fields. `edition` is set on *every*
+- **`Submission`** -- normally one per student x rubric. `student`,
+  `rubric`, `edition`, and `batch` are all Beanie `Link` fields; `student`
+  and `batch` are the only optional ones. `edition` is set on *every*
   submission, even when its rubric has no fixed edition of its own -- see
   "Creating a submission" below for exactly how it's resolved; this is what
   makes `edition_id` filtering direct (sharp edge #3) instead of needing to
@@ -74,7 +75,25 @@ this section before touching any of `Course`, `Edition`, `Rubric.course`/
   file in MinIO (name is format-agnostic on purpose -- not `pdf_object_key`
   -- since it might be a notebook; see "Pluggable submission formats"
   below). `answers: list[AnsweredQuestion]` is embedded and grows/fills in
-  as grading progresses, `status` drives the frontend's polling.
+  as grading progresses, `status` drives the frontend's polling. `student`
+  is unset for a submission created by a batch upload (see `Batch` below
+  and "Batch submission import"): the zip's per-item folder name isn't
+  necessarily identifiable against the roster at upload time, and grading
+  doesn't need `student` at all, so this doesn't block it. `batch: Link[
+  Batch] | None` and `batch_internal_id: str | None` are set together, only
+  for a batch-created submission -- `batch_internal_id` is that item's
+  per-student folder name from the zip, kept verbatim (e.g., for an Atenea
+  batch, `<surname(s)> <name>_<internal_id>_assignsubmission_file`) for a
+  later feedback-export feature to key off of when writing grades back into
+  the originating LMS.
+- **`Batch`** -- one per zip upload (`api/routers/batches.py`). `rubric:
+  Link[Rubric]` and `edition: Link[Edition]` are both required, resolved
+  the same way a single submission's are (see "Batch submission import"
+  below) -- no `course` field, same reasoning as `Rubric`/`Submission`
+  never storing one either (always derivable via `rubric.course`). `type:
+  BatchType` records which zip layout was used (`atenea` today).
+  `item_count` is set once, at creation, from however many submissions the
+  zip actually produced.
 
 `Question` and `Grade` live in `src/aitana/grading/models.py`, *not* in
 `documents/`, on purpose: they're plain Pydantic models (not Beanie
@@ -446,7 +465,89 @@ time `POST /students`.
   the frontend show a plain "N created, M updated" summary
   (`StudentsPage.tsx`).
 
-## Creating courses and editions (`api/routers/courses.py`, `editions.py`)
+## Batch submission import (`api/routers/batches.py`)
+
+`POST /batches` -- multipart (`file` zip, `rubric_id`, optional
+`edition_id`, `type` form field). Creates one `Batch` plus one `Submission`
+per subfolder in the zip, each enqueued for grading immediately, same as
+`POST /submissions`.
+
+- A batch always picks a **rubric**, not a bare course -- a batch upload is
+  always a single deliverable's worth of submissions (one exam sitting, one
+  lab's worth of hand-ins), same as a single `POST /submissions` call. The
+  course is implied by `rubric.course`, same as everywhere else in this
+  data model. `edition_id` is resolved via the exact same
+  `_resolve_edition` helper `create_submission` uses (the rubric's own
+  edition if it has one, else the uploader must supply one) -- imported
+  from `submissions.py` rather than duplicated.
+- **`BatchType`** is the enum of supported zip layouts -- currently just
+  `atenea` (UPC's Moodle instance's per-assignment "download all
+  submissions" export). Same registered-parser-function shape as
+  `StudentImportFormat`/`_IMPORT_PARSERS` above:
+  `_BATCH_PARSERS: dict[BatchType, Callable[[zipfile.ZipFile],
+  list[_BatchItem]]]`. Add a new layout by writing one
+  `(zipfile.ZipFile) -> list[_BatchItem]` function and registering it there.
+- **`_parse_atenea_zip`** expects one top-level folder per student
+  submission, each folder containing exactly one file. An Atenea export
+  names each folder `<surname(s)> <name>_<internal_id>_assignsubmission_
+  file` -- this is stored **verbatim**, not parsed into its name/
+  internal-id parts, as `Submission.batch_internal_id`. A later, separate
+  feedback-export feature reads that id back off the submission to write
+  grades into the originating Atenea assignment against the same item --
+  this is the reason the id is kept as-is rather than normalized. A folder
+  is read off its own directory entry in the zip (not merely inferred from
+  file paths), so a folder with zero files (e.g. a student who never
+  submitted) is still reported as an offending folder, same as one holding
+  more than one file -- everything is validated before anything is
+  written, same fail-fast-before-writing shape as `import_students`.
+  `__MACOSX/` entries and dotfiles are skipped as export junk; any entry
+  path containing a `..` segment is rejected outright (zip-slip).
+- Each item's filename extension is checked against the rubric's expected
+  one (`FORMAT_FILE_INFO[rubric.format]`), the same early check
+  `create_submission` does for a single file, catching an obviously wrong
+  zip before grading starts on every item.
+- Created submissions have **no `student`** by default -- see
+  `Submission.student`'s docstring in "Data model" above. Grading runs
+  anyway (`worker/tasks.py` never touches `submission.student`); only
+  per-student attribution is deferred.
+- **`_match_student`** makes a best-effort auto-match right at upload time,
+  so most items don't stay unmatched: it strips Atenea's fixed `_<internal_
+  id>_assignsubmission_file` suffix off the folder name, tokenizes what's
+  left into lowercase, accent-folded words (`_name_tokens`), and compares
+  that *set* against each roster student's `Student.name` tokenized the
+  same way. Set comparison, not string comparison, because Atenea's folder
+  names are "surname(s) first name" while `Student.name` (see "Batch
+  student import" above) is "first name surname(s)" -- token order differs,
+  token *content* doesn't. Only commits when **exactly one** student's
+  tokens match; zero or more-than-one (e.g. two students sharing a name)
+  is left `None` rather than risk a wrong guess. The whole roster is loaded
+  once (`Student.find_all()`) and matched in memory against every item,
+  not queried per item.
+- Batch items are stored under `storage.batch_object_key(rubric_slug,
+  submission_id, extension)` (`f"{rubric_slug}/_batch/{submission_id}
+  {extension}"`) rather than `storage.object_key`, since there's no student
+  id to namespace by yet.
+- Response (`BatchUploadResult`: `batch`, `created`, `submissions`) mirrors
+  `StudentImportResult`'s shape.
+- Whatever `_match_student` couldn't resolve (or got wrong) is fixed up
+  through `PUT /submissions/{submission_id}/student` (`api/routers/
+  submissions.py`, body `{student_id}`) -- works on any submission, not
+  just a batch-created one. It fetches the submission once with
+  `fetch_links=True` (same `_SHALLOW_LINKS` cap as every other submissions
+  endpoint), overwrites `.student` with the freshly-`Student.get()`-fetched
+  document, and returns that same in-memory object rather than re-fetching
+  afterwards -- a second `Submission.get(..., fetch_links=True)` right
+  after `.save()` is exactly the nested-`$lookup`-under-mongomock gap
+  (sharp edge #6) again, and re-fetching buys nothing a plain in-memory
+  assignment doesn't already give for free.
+- `POST /batches/{batch_id}/regrade` is the bulk version of `POST
+  /submissions/{id}/regrade` -- same per-submission reset (`status` back to
+  `pending`, `error` cleared, re-enqueued), just applied to every submission
+  `Submission.find(Submission.batch.id == batch_id)` returns instead of
+  one. Response is `{regraded: <count>}`. This is the same Beanie Link-query
+  pattern as the `batch_id` filter on `GET /submissions` above (verified
+  against real MongoDB, not exercised end-to-end under mongomock -- see
+  `test_regrade_batch` in `tests/test_batches_api.py`).
 
 Both are creation-only, same `409`-on-duplicate-slug shape as rubrics.
 `POST /courses` takes just `name` (+ optional `slug`). `POST /editions`
@@ -711,6 +812,22 @@ The fix has two parts, and you need **both**:
 If you add a *new* Link field whose target type has its own Links and hit
 this again, the fix is the same shape: `nesting_depths_per_field={"<field>":
 <depth that stops before the nested link>}` on every fetch of it.
+
+**7. A resolved Link's embedded document serializes its id as `id`, not
+`_id` -- only the outer, top-level response document gets the `_id` alias.**
+Verified directly: `POST /submissions`' response has `_id` at the top level
+(`response_model=Submission`, FastAPI applies the alias there), but its
+nested `student` object -- a real `Student` instance assigned straight to
+the Link field, not fetched via `$lookup` -- comes back as `{"id": ...,
+"student_id": ..., "name": ..., ...}`. This isn't a `mongomock`-only quirk
+(sharp edge #5 above): it's the same whether the nested document came from
+a direct in-memory assignment (`create_submission`, `_match_student` in
+`batches.py`) or a resolved `fetch_links` Link. Nothing in this app relied
+on a nested id before `_match_student`/`set_submission_student` -- every
+existing frontend page reads `.name`/`.title`/`.student_id`/... off a
+nested `student`/`rubric`, never `.student._id`. If you need to compare or
+key by a nested document's id, use a business key that's unambiguous either
+way (`Student.student_id`, `Rubric.slug`) rather than `_id`/`id`.
 
 
 ## Frontend/backend contract

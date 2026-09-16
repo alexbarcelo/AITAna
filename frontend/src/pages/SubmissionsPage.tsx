@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useCourses, useEditions, useRubrics, useStudents, useSubmissions } from '../api/hooks'
+import { useBatches, useCourses, useEditions, useRubrics, useStudents, useSubmissions } from '../api/hooks'
+import MatchStudentDialog from '../components/MatchStudentDialog'
 import StatusBadge from '../components/StatusBadge'
 import { formatDate } from '../lib/date'
 
@@ -8,11 +9,13 @@ export default function SubmissionsPage() {
   const { data: students } = useStudents()
   const { data: rubrics } = useRubrics()
   const { data: courses } = useCourses()
+  const { data: batches } = useBatches()
 
   const [studentId, setStudentId] = useState('')
   const [rubricId, setRubricId] = useState('')
   const [courseId, setCourseId] = useState('')
   const [editionId, setEditionId] = useState('')
+  const [batchId, setBatchId] = useState('')
 
   // Editions are global (see Edition's doc comment in api/types.ts), so
   // course and edition are independent filters -- picking one no longer
@@ -28,6 +31,7 @@ export default function SubmissionsPage() {
     rubric_id: rubricId || undefined,
     course_id: courseId || undefined,
     edition_id: editionId || undefined,
+    batch_id: batchId || undefined,
   })
 
   return (
@@ -103,13 +107,29 @@ export default function SubmissionsPage() {
             ))}
           </select>
         </div>
-        {(studentId || rubricId || courseId || editionId) && (
+        <div>
+          <label className="block text-xs font-medium text-slate-600">Batch</label>
+          <select
+            value={batchId}
+            onChange={(e) => setBatchId(e.target.value)}
+            className="mt-1 rounded-md border border-slate-300 px-2 py-1 text-sm"
+          >
+            <option value="">All batches</option>
+            {batches?.map((batch) => (
+              <option key={batch._id} value={batch._id}>
+                {batch.rubric.title} ({formatDate(batch.created_at)})
+              </option>
+            ))}
+          </select>
+        </div>
+        {(studentId || rubricId || courseId || editionId || batchId) && (
           <button
             onClick={() => {
               setStudentId('')
               setRubricId('')
               setCourseId('')
               setEditionId('')
+              setBatchId('')
             }}
             className="mt-5 text-sm text-slate-500 hover:underline"
           >
@@ -135,9 +155,15 @@ export default function SubmissionsPage() {
             {submissions.map((s) => (
               <tr key={s._id} className="border-t border-slate-100 hover:bg-slate-50">
                 <td className="px-4 py-2">
-                  <Link to={`/submissions/${s._id}`} className="text-slate-900 hover:underline">
-                    {s.student.name}
-                  </Link>
+                  <div className="flex items-center gap-1">
+                    <Link to={`/submissions/${s._id}`} className="text-slate-900 hover:underline">
+                      {s.student ? s.student.name : <span className="text-slate-400">Unmatched</span>}
+                    </Link>
+                    {s.batch_internal_id && (
+                      <MatchStudentDialog submissionId={s._id} currentStudentId={s.student?.student_id} />
+                    )}
+                  </div>
+                  {s.batch_internal_id && <div className="text-xs text-slate-400">{s.batch_internal_id}</div>}
                 </td>
                 <td className="px-4 py-2">{s.rubric.title}</td>
                 <td className="px-4 py-2">

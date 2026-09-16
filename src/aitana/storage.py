@@ -46,6 +46,12 @@ def object_key(rubric_slug: str, student_id: str, submission_id: str, extension:
     return f"{rubric_slug}/{student_id}/{submission_id}{extension}"
 
 
+def batch_object_key(rubric_slug: str, submission_id: str, extension: str) -> str:
+    """Like `object_key`, for a batch-created submission that has no student
+    to namespace by yet (see `Submission.student`'s docstring)."""
+    return f"{rubric_slug}/_batch/{submission_id}{extension}"
+
+
 def upload_file(key: str, data: bytes, content_type: str) -> None:
     import io
 

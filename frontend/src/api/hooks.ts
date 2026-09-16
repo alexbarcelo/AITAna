@@ -2,6 +2,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { client } from './client'
 import { IN_PROGRESS_STATUSES } from './types'
 import type {
+  Batch,
+  BatchRegradeResult,
+  BatchType,
+  BatchUploadResult,
   Course,
   Edition,
   Grade,
@@ -224,6 +228,7 @@ export function useSubmissions(filters?: {
   rubric_id?: string
   course_id?: string
   edition_id?: string
+  batch_id?: string
   status?: SubmissionStatus
 }) {
   return useQuery({
@@ -270,6 +275,23 @@ export function useRegradeSubmission() {
   })
 }
 
+export function useSetSubmissionStudent() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ submissionId, studentId }: { submissionId: string; studentId: string }) =>
+      unwrap(
+        client.PUT('/submissions/{submission_id}/student', {
+          params: { path: { submission_id: submissionId } },
+          body: { student_id: studentId },
+        }),
+      ) as unknown as Promise<Submission>,
+    onSuccess: (submission) => {
+      queryClient.setQueryData(['submissions', submission._id], submission)
+      queryClient.invalidateQueries({ queryKey: ['submissions'] })
+    },
+  })
+}
+
 export function useCreateSubmission() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -299,6 +321,81 @@ export function useCreateSubmission() {
         }),
       ) as unknown as Promise<Submission>
     },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['submissions'] }),
+  })
+}
+
+// ---- Batches ----
+
+export function useBatches(filters?: { rubric_id?: string; edition_id?: string }) {
+  return useQuery({
+    queryKey: ['batches', filters],
+    queryFn: async () =>
+      byMostRecentFirst(
+        await (unwrap(
+          client.GET('/batches', { params: { query: filters ?? {} } }),
+        ) as unknown as Promise<Batch[]>),
+      ),
+  })
+}
+
+export function useBatch(id: string | undefined) {
+  return useQuery({
+    queryKey: ['batches', id],
+    queryFn: () =>
+      unwrap(
+        client.GET('/batches/{batch_id}', { params: { path: { batch_id: id! } } }),
+      ) as unknown as Promise<Batch>,
+    enabled: Boolean(id),
+  })
+}
+
+export function useCreateBatch() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({
+      file,
+      rubricId,
+      editionId,
+      type,
+    }: {
+      file: File
+      rubricId: string
+      editionId?: string
+      type: BatchType
+    }) => {
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('rubric_id', rubricId)
+      if (editionId) formData.append('edition_id', editionId)
+      formData.append('type', type)
+      // See useCreateSubmission for why `body` is cast here: openapi-fetch
+      // types multipart bodies from the JSON-ish schema, but the actual
+      // wire format is a FormData instance, which it passes through
+      // untouched.
+      return unwrap(
+        client.POST('/batches', {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          body: formData as any,
+        }),
+      ) as unknown as Promise<BatchUploadResult>
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['batches'] })
+      queryClient.invalidateQueries({ queryKey: ['submissions'] })
+    },
+  })
+}
+
+export function useRegradeBatch() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (batchId: string) =>
+      unwrap(
+        client.POST('/batches/{batch_id}/regrade', {
+          params: { path: { batch_id: batchId } },
+        }),
+      ) as unknown as Promise<BatchRegradeResult>,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['submissions'] }),
   })
 }

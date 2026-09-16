@@ -277,6 +277,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/submissions/{submission_id}/student": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Submission Student
+         * @description Manually set (or correct) which student a submission belongs to --
+         *     mainly for a batch-created submission whose folder name didn't
+         *     auto-match anyone, or matched the wrong person (see
+         *     api/routers/batches.py's `_match_student`), but works for any
+         *     submission.
+         */
+        put: operations["set_submission_student_submissions__submission_id__student_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/submissions/{submission_id}/file": {
         parameters: {
             query?: never;
@@ -320,6 +344,65 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Batches */
+        get: operations["list_batches_batches_get"];
+        put?: never;
+        /** Create Batch */
+        post: operations["create_batch_batches_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/batches/{batch_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Batch */
+        get: operations["get_batch_batches__batch_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/batches/{batch_id}/regrade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regrade Batch
+         * @description Force every submission in this batch back through extraction+grading
+         *     from scratch -- the bulk version of `POST /submissions/{id}/regrade`
+         *     (same per-submission reset: status back to `pending`, `error` cleared,
+         *     re-enqueued), for when a whole batch needs re-running (e.g. after fixing
+         *     the rubric, or a bad LLM provider config affected the whole run).
+         */
+        post: operations["regrade_batch_batches__batch_id__regrade_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -348,6 +431,82 @@ export interface components {
             /** Student Answer */
             student_answer: string;
             grade?: components["schemas"]["Grade"] | null;
+        };
+        /**
+         * Batch
+         * @description One batch-upload event: a zip containing one subfolder per student
+         *     submission, all against the same rubric. `rubric` (implying the course,
+         *     same as `Submission` never storing course directly) is required; `edition`
+         *     is required too, resolved the same way a single submission's edition is
+         *     (the rubric's own edition if it has one, else the uploader's explicit
+         *     choice). See `Submission.batch`/`.batch_internal_id` for how the
+         *     individual extracted items relate back to this.
+         */
+        Batch: {
+            /** @description MongoDB document ObjectID */
+            _id?: components["schemas"]["PydanticObjectId"] | null;
+            /** Rubric */
+            rubric: {
+                /** Id */
+                id: string;
+                /** Collection */
+                collection: string;
+            } | {
+                [key: string]: unknown;
+            };
+            /** Edition */
+            edition: {
+                /** Id */
+                id: string;
+                /** Collection */
+                collection: string;
+            } | {
+                [key: string]: unknown;
+            };
+            type: components["schemas"]["BatchType"];
+            /** Original Filename */
+            original_filename?: string | null;
+            /**
+             * Item Count
+             * @default 0
+             */
+            item_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+        };
+        /** BatchRegradeResult */
+        BatchRegradeResult: {
+            /** Regraded */
+            regraded: number;
+        };
+        /**
+         * BatchType
+         * @description Which zip layout a batch upload follows -- only one today (Atenea,
+         *     UPC's Moodle instance's assignment-submission export). Same shape as
+         *     `StudentImportFormat`/`_IMPORT_PARSERS` in `api/routers/students.py`:
+         *     add a member here plus a matching parser registered in
+         *     `api/routers/batches.py`'s `_BATCH_PARSERS` for another.
+         * @enum {string}
+         */
+        BatchType: "atenea";
+        /** BatchUploadResult */
+        BatchUploadResult: {
+            batch: components["schemas"]["Batch"];
+            /** Created */
+            created: number;
+            /** Submissions */
+            submissions: components["schemas"]["Submission"][];
+        };
+        /** Body_create_batch_batches_post */
+        Body_create_batch_batches_post: {
+            /** File */
+            file: string;
+            rubric_id: components["schemas"]["PydanticObjectId"];
+            edition_id?: components["schemas"]["PydanticObjectId"] | null;
+            type: components["schemas"]["BatchType"];
         };
         /** Body_create_submission_submissions_post */
         Body_create_submission_submissions_post: {
@@ -560,6 +719,10 @@ export interface components {
             /** Questions */
             questions: components["schemas"]["Question"][];
         };
+        /** SetSubmissionStudent */
+        SetSubmissionStudent: {
+            student_id: components["schemas"]["PydanticObjectId"];
+        };
         /** Student */
         Student: {
             /** @description MongoDB document ObjectID */
@@ -619,19 +782,27 @@ export interface components {
          * @description A student's deliverable against a rubric -- "correction" was a
          *     confusing name (it reads as "the fix," not "the thing graded"), and not
          *     every rubric is an exam, so "submission" fits both labs and exams.
+         *
+         *     Normally one per student x rubric -- but a submission created by a batch
+         *     upload (see `batch`/`batch_internal_id` below) starts out with no
+         *     `student`: the zip's per-item folder name isn't necessarily identifiable
+         *     against our roster at upload time, only `rubric`/`edition` are known.
+         *     Grading doesn't need `student` at all (see `worker/tasks.py`), so this
+         *     doesn't block a batch item from being graded -- only from being
+         *     attributed to a specific student until something matches it up later.
          */
         Submission: {
             /** @description MongoDB document ObjectID */
             _id?: components["schemas"]["PydanticObjectId"] | null;
             /** Student */
-            student: {
+            student?: {
                 /** Id */
                 id: string;
                 /** Collection */
                 collection: string;
             } | {
                 [key: string]: unknown;
-            };
+            } | null;
             /** Rubric */
             rubric: {
                 /** Id */
@@ -658,6 +829,17 @@ export interface components {
             answers?: components["schemas"]["AnsweredQuestion"][];
             /** Error */
             error?: string | null;
+            /** Batch */
+            batch?: {
+                /** Id */
+                id: string;
+                /** Collection */
+                collection: string;
+            } | {
+                [key: string]: unknown;
+            } | null;
+            /** Batch Internal Id */
+            batch_internal_id?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -1196,6 +1378,7 @@ export interface operations {
                 rubric_id?: components["schemas"]["PydanticObjectId"] | null;
                 course_id?: components["schemas"]["PydanticObjectId"] | null;
                 edition_id?: components["schemas"]["PydanticObjectId"] | null;
+                batch_id?: components["schemas"]["PydanticObjectId"] | null;
                 status?: components["schemas"]["SubmissionStatus"] | null;
             };
             header?: never;
@@ -1288,6 +1471,41 @@ export interface operations {
             };
         };
     };
+    set_submission_student_submissions__submission_id__student_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetSubmissionStudent"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Submission"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     download_submission_file_submissions__submission_id__file_get: {
         parameters: {
             query?: never;
@@ -1337,6 +1555,133 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Submission"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_batches_batches_get: {
+        parameters: {
+            query?: {
+                rubric_id?: components["schemas"]["PydanticObjectId"] | null;
+                edition_id?: components["schemas"]["PydanticObjectId"] | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Batch"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_batch_batches_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_create_batch_batches_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchUploadResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_batch_batches__batch_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Batch"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regrade_batch_batches__batch_id__regrade_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchRegradeResult"];
                 };
             };
             /** @description Validation Error */

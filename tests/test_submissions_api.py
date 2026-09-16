@@ -269,3 +269,51 @@ async def test_regrade_submission_resets_status_and_reenqueues(client):
 async def test_regrade_submission_not_found(client):
     resp = await client.post("/submissions/000000000000000000000000/regrade")
     assert resp.status_code == 404
+
+
+async def test_set_submission_student(client):
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id)
+    student_id = await _make_student(client)
+
+    # A batch-created submission starts with no student -- simulate one
+    # directly rather than going through /batches (covered in
+    # test_batches_api.py).
+    rubric = await Rubric.get(rubric_id)
+    edition = await Edition.get(edition_id)
+    submission = Submission(rubric=rubric, edition=edition, student=None, file_object_key="k")
+    await submission.insert()
+
+    resp = await client.put(f"/submissions/{submission.id}/student", json={"student_id": student_id})
+    assert resp.status_code == 200
+    # Nested Link resolution keys the embedded document by `id`, not `_id`
+    # -- compare on `student_id` instead, which is unambiguous either way.
+    assert resp.json()["student"]["student_id"] == "s1"
+
+
+async def test_set_submission_student_not_found(client):
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id)
+    student_id = await _make_student(client)
+    created = (
+        await client.post(
+            "/submissions",
+            data={"student_id": student_id, "rubric_id": rubric_id},
+            files={"file": ("answers.pdf", b"data", "application/pdf")},
+        )
+    ).json()
+
+    resp = await client.put(
+        f"/submissions/{created['_id']}/student", json={"student_id": "000000000000000000000000"}
+    )
+    assert resp.status_code == 404
+
+
+async def test_set_submission_student_submission_not_found(client):
+    student_id = await _make_student(client)
+    resp = await client.put(
+        "/submissions/000000000000000000000000/student", json={"student_id": student_id}
+    )
+    assert resp.status_code == 404
