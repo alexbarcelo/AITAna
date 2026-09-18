@@ -35,7 +35,7 @@ export default function SubmissionDetailPage() {
               <>
                 {' '}
                 &middot;{' '}
-                <Link to={`/batches/${submission.batch._id}`} className="hover:underline">
+                <Link to={`/?batch_id=${submission.batch._id}`} className="hover:underline">
                   batch
                 </Link>
               </>

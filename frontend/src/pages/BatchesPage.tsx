@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useBatches, useCreateBatch, useEditions, useRubrics } from '../api/hooks'
 import { BATCH_TYPE_LABELS } from '../api/types'
 import type { BatchType } from '../api/types'
-import { formatDate } from '../lib/date'
+import { formatDateTime } from '../lib/date'
 
 const BATCH_TYPE_OPTIONS = Object.keys(BATCH_TYPE_LABELS) as BatchType[]
 
@@ -37,14 +37,14 @@ export default function BatchesPage() {
             {batches.map((batch) => (
               <tr key={batch._id} className="border-t border-slate-100 hover:bg-slate-50">
                 <td className="px-4 py-2">
-                  <Link to={`/batches/${batch._id}`} className="text-slate-900 hover:underline">
+                  <Link to={`/?batch_id=${batch._id}`} className="text-slate-900 hover:underline">
                     {batch.rubric.title}
                   </Link>
                 </td>
                 <td className="px-4 py-2 text-slate-500">{batch.edition.name}</td>
                 <td className="px-4 py-2 text-slate-500">{BATCH_TYPE_LABELS[batch.type]}</td>
                 <td className="px-4 py-2 text-slate-500">{batch.item_count}</td>
-                <td className="px-4 py-2 text-slate-500">{formatDate(batch.created_at)}</td>
+                <td className="px-4 py-2 text-slate-500">{formatDateTime(batch.created_at)}</td>
               </tr>
             ))}
             {batches.length === 0 && (

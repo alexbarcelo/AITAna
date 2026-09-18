@@ -10,3 +10,15 @@ export function formatDate(iso: string): string {
   const dd = String(d.getDate()).padStart(2, '0')
   return `${yyyy}-${mm}-${dd}`
 }
+
+/**
+ * Same as `formatDate`, plus a local hh:mm -- used wherever "when was this
+ * created" needs to disambiguate same-day entries (e.g. several batches
+ * uploaded on the same date).
+ */
+export function formatDateTime(iso: string): string {
+  const d = new Date(iso)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const min = String(d.getMinutes()).padStart(2, '0')
+  return `${formatDate(iso)} ${hh}:${min}`
+}
