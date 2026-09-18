@@ -7,6 +7,7 @@ from ... import storage
 from ...documents import Edition, Rubric, Student, Submission, SubmissionStatus
 from ...grading.extraction import FORMAT_FILE_INFO
 from ...worker.tasks import grade_submission
+from ..feedback_export import feedback_filename, render_feedback_html
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
@@ -168,6 +169,23 @@ async def download_submission_file(submission_id: PydanticObjectId) -> Response:
         content=file_bytes,
         media_type=content_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{submission_id}/feedback.html")
+async def download_submission_feedback(submission_id: PydanticObjectId) -> Response:
+    """Standalone HTML export of this submission's graded feedback -- see
+    `feedback_export.render_feedback_html`'s docstring for why it's a single
+    self-contained file rather than e.g. rendering the same page the SPA
+    does."""
+    submission = await Submission.get(submission_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    return Response(
+        content=render_feedback_html(submission),
+        media_type="text/html",
+        headers={"Content-Disposition": f'attachment; filename="{feedback_filename(submission)}"'},
     )
 
 

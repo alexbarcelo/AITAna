@@ -1,4 +1,5 @@
 import { Link, useSearchParams } from 'react-router-dom'
+import { API_URL } from '../api/client'
 import { useBatch, useBatches, useCourses, useEditions, useRegradeBatch, useRubrics, useStudents, useSubmissions } from '../api/hooks'
 import GradingGrid from '../components/GradingGrid'
 import MatchStudentDialog from '../components/MatchStudentDialog'
@@ -118,14 +119,23 @@ export default function SubmissionsPage() {
               {batch.original_filename && <> &middot; {batch.original_filename}</>}
             </p>
           </div>
-          <button
-            onClick={() => regradeBatch.mutate(batch._id)}
-            disabled={!submissions?.length || anyInProgress || regradeBatch.isPending}
-            title="Force re-grading every submission in this batch: re-extracts each file and discards existing grades/feedback"
-            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-50"
-          >
-            {regradeBatch.isPending ? 'Re-grading...' : 'Regrade all'}
-          </button>
+          <div className="flex items-center gap-3">
+            <a
+              href={`${API_URL}/batches/${batch._id}/feedback.zip`}
+              title="Zip with one standalone feedback HTML per student, each inside that student's original submission folder"
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
+            >
+              Download feedback (zip)
+            </a>
+            <button
+              onClick={() => regradeBatch.mutate(batch._id)}
+              disabled={!submissions?.length || anyInProgress || regradeBatch.isPending}
+              title="Force re-grading every submission in this batch: re-extracts each file and discards existing grades/feedback"
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-50"
+            >
+              {regradeBatch.isPending ? 'Re-grading...' : 'Regrade all'}
+            </button>
+          </div>
         </div>
       )}
       {regradeBatch.isError && <p className="text-sm text-red-600">Failed to trigger re-grading.</p>}

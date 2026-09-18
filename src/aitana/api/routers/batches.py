@@ -18,14 +18,15 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 from ... import storage
 from ...documents import Batch, BatchType, Rubric, Student, Submission, SubmissionStatus
 from ...grading.extraction import FORMAT_FILE_INFO
 from ...worker.tasks import grade_submission
-from .submissions import _resolve_edition
+from ..feedback_export import render_feedback_html
+from .submissions import _SHALLOW_LINKS, _resolve_edition
 
 router = APIRouter(prefix="/batches", tags=["batches"])
 
@@ -223,6 +224,37 @@ async def get_batch(batch_id: PydanticObjectId) -> Batch:
     if batch is None:
         raise HTTPException(status_code=404, detail="Batch not found")
     return batch
+
+
+@router.get("/{batch_id}/feedback.zip")
+async def download_batch_feedback(batch_id: PydanticObjectId) -> Response:
+    """Zip of one standalone feedback HTML per submission in this batch,
+    each inside a folder named after `Submission.batch_internal_id` -- the
+    exact per-student folder name from the original upload (see its
+    docstring). Re-uploading this zip as-is into the originating LMS (e.g.
+    Moodle/Atenea's "upload multiple feedback files in a zip" for an
+    assignment) then lines each file back up with the right student, the
+    same way the LMS's own per-submission export named these folders in the
+    first place."""
+    batch = await Batch.get(batch_id, fetch_links=True, nesting_depths_per_field=_BATCH_SHALLOW_LINKS)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    submissions = await Submission.find(
+        Submission.batch.id == batch_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS
+    ).to_list()
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for submission in submissions:
+            folder = submission.batch_internal_id or str(submission.id)
+            zf.writestr(f"{folder}/feedback.html", render_feedback_html(submission))
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{batch.rubric.slug}_feedback.zip"'},
+    )
 
 
 class BatchRegradeResult(BaseModel):

@@ -278,6 +278,18 @@ async def test_get_batch_not_found(client):
     assert resp.status_code == 404
 
 
+async def test_download_batch_feedback_zip_not_found(client):
+    # The happy path needs `batch.rubric` and each submission's
+    # `.rubric`/`.student`/`.edition` actually resolved (fetch_links=True) to
+    # build the zip's filename and contents -- same
+    # can't-exercise-it-under-mongomock gap as `test_regrade_batch` above
+    # (see AGENTS.md sharp edge #5), verified instead via
+    # tests/test_feedback_export.py's direct, already-resolved-in-memory
+    # unit tests for the per-submission HTML this zips up.
+    resp = await client.get("/batches/000000000000000000000000/feedback.zip")
+    assert resp.status_code == 404
+
+
 async def test_regrade_batch(client):
     # Same DBRef-dotted-path-under-mongomock gap as
     # test_filter_submissions_by_unrelated_batch_is_empty above:

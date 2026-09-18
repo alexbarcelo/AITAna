@@ -368,6 +368,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/submissions/{submission_id}/feedback.html": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Submission Feedback
+         * @description Standalone HTML export of this submission's graded feedback -- see
+         *     `feedback_export.render_feedback_html`'s docstring for why it's a single
+         *     self-contained file rather than e.g. rendering the same page the SPA
+         *     does.
+         */
+        get: operations["download_submission_feedback_submissions__submission_id__feedback_html_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/submissions/{submission_id}/regrade": {
         parameters: {
             query?: never;
@@ -421,6 +444,33 @@ export interface paths {
         };
         /** Get Batch */
         get: operations["get_batch_batches__batch_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/batches/{batch_id}/feedback.zip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Batch Feedback
+         * @description Zip of one standalone feedback HTML per submission in this batch,
+         *     each inside a folder named after `Submission.batch_internal_id` -- the
+         *     exact per-student folder name from the original upload (see its
+         *     docstring). Re-uploading this zip as-is into the originating LMS (e.g.
+         *     Moodle/Atenea's "upload multiple feedback files in a zip" for an
+         *     assignment) then lines each file back up with the right student, the
+         *     same way the LMS's own per-submission export named these folders in the
+         *     first place.
+         */
+        get: operations["download_batch_feedback_batches__batch_id__feedback_zip_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1696,6 +1746,37 @@ export interface operations {
             };
         };
     };
+    download_submission_feedback_submissions__submission_id__feedback_html_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     regrade_submission_submissions__submission_id__regrade_post: {
         parameters: {
             query?: never;
@@ -1810,6 +1891,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Batch"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_batch_feedback_batches__batch_id__feedback_zip_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

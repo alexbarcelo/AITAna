@@ -236,6 +236,16 @@ async def test_download_submission_file_not_found(client):
     assert resp.status_code == 404
 
 
+async def test_download_submission_feedback_html_not_found(client):
+    # The happy path needs `submission.rubric`/`.student`/`.edition` actually
+    # resolved (fetch_links=True) to render anything -- same
+    # can't-exercise-it-under-mongomock gap as `/file` above (see AGENTS.md
+    # sharp edge #5), verified instead via tests/test_feedback_export.py's
+    # direct, already-resolved-in-memory unit tests.
+    resp = await client.get("/submissions/000000000000000000000000/feedback.html")
+    assert resp.status_code == 404
+
+
 async def test_regrade_submission_resets_status_and_reenqueues(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
