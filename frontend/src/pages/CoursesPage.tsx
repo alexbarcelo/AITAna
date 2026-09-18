@@ -84,7 +84,12 @@ function CourseEditions({ courseId }: { courseId: string }) {
 
   return (
     <div className="mt-4 border-t border-slate-100 pt-4">
-      <p className="mb-2 text-xs font-medium uppercase text-slate-400">Editions in use</p>
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-xs font-medium uppercase text-slate-400">Editions in use</p>
+        <Link to={`/rubrics?course_id=${courseId}`} className="text-xs text-slate-500 underline">
+          See rubrics
+        </Link>
+      </div>
       {editions.length === 0 ? (
         <p className="text-sm text-slate-400">
           No rubric of this course pins a specific edition yet --{' '}
@@ -96,8 +101,13 @@ function CourseEditions({ courseId }: { courseId: string }) {
       ) : (
         <ul className="flex flex-wrap gap-1">
           {editions.map((edition) => (
-            <li key={edition._id} className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-              {edition.name}
+            <li key={edition._id}>
+              <Link
+                to={`/rubrics?course_id=${courseId}&edition_id=${edition._id}`}
+                className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-200"
+              >
+                {edition.name}
+              </Link>
             </li>
           ))}
         </ul>

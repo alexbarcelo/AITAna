@@ -168,7 +168,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Rubrics */
+        /**
+         * List Rubrics
+         * @description Optionally filtered by the rubric's own `course`/`edition` links --
+         *     unlike `Submission`'s `course_id` filter (api/routers/submissions.py),
+         *     no two-step lookup is needed here: `Rubric.course`/`.edition` *are* the
+         *     relationship being filtered on, not one derived from another link. Same
+         *     `Link.id ==` pattern either way (AGENTS.md sharp edge #3), so a positive
+         *     match is only verified against real MongoDB, not mongomock -- see
+         *     tests/test_rubrics_api.py's filter tests.
+         */
         get: operations["list_rubrics_rubrics_get"];
         put?: never;
         /**
@@ -1331,7 +1340,10 @@ export interface operations {
     };
     list_rubrics_rubrics_get: {
         parameters: {
-            query?: never;
+            query?: {
+                course_id?: components["schemas"]["PydanticObjectId"] | null;
+                edition_id?: components["schemas"]["PydanticObjectId"] | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1345,6 +1357,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Rubric"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

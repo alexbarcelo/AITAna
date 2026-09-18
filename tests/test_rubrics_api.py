@@ -33,6 +33,31 @@ async def test_list_rubrics(client):
     assert body[0]["grading_scale"] == DEFAULT_GRADING_SCALE
 
 
+async def test_list_rubrics_filter_by_course_with_no_match(client):
+    course_id = await _make_course(client)
+    await _make_rubric(course_id)
+    other_course_id = await _make_course(client, "ML")
+
+    # No rubric belongs to this other course -- should come back empty
+    # rather than error. A *matching* course_id/edition_id filter isn't
+    # exercised here since Beanie's `Link.id ==` query isn't matched by
+    # mongomock's pure-Python matcher (see AGENTS.md sharp edge #3);
+    # verified separately against real MongoDB.
+    resp = await client.get("/rubrics", params={"course_id": other_course_id})
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_list_rubrics_filter_by_edition_with_no_match(client):
+    course_id = await _make_course(client)
+    await _make_rubric(course_id)
+    other_edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+
+    resp = await client.get("/rubrics", params={"edition_id": other_edition_id})
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
 async def test_get_rubric_not_found(client):
     resp = await client.get("/rubrics/000000000000000000000000")
     assert resp.status_code == 404

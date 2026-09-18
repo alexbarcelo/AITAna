@@ -1,11 +1,47 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
-import { useRubrics } from '../api/hooks'
+import { Link, useSearchParams } from 'react-router-dom'
+import { useCourses, useEditions, useRubrics } from '../api/hooks'
 import RubricForm from '../components/RubricForm'
 import { formatDate } from '../lib/date'
 
+const FILTER_KEYS = ['course_id', 'edition_id']
+
 export default function RubricsPage() {
-  const { data: rubrics, isLoading, error } = useRubrics()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const courseId = searchParams.get('course_id') ?? ''
+  const editionId = searchParams.get('edition_id') ?? ''
+  const hasFilters = FILTER_KEYS.some((k) => searchParams.get(k))
+
+  function setParam(key: string, value: string) {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (value) next.set(key, value)
+        else next.delete(key)
+        return next
+      },
+      { replace: true },
+    )
+  }
+
+  function clearFilters() {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        FILTER_KEYS.forEach((k) => next.delete(k))
+        return next
+      },
+      { replace: true },
+    )
+  }
+
+  const { data: courses } = useCourses()
+  const { data: editions } = useEditions()
+  const {
+    data: rubrics,
+    isLoading,
+    error,
+  } = useRubrics({ course_id: courseId || undefined, edition_id: editionId || undefined })
   const [showForm, setShowForm] = useState(false)
 
   return (
@@ -24,6 +60,44 @@ export default function RubricsPage() {
       </div>
 
       {showForm && <RubricForm onDone={() => setShowForm(false)} />}
+
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-4">
+        <div>
+          <label className="block text-xs font-medium text-slate-600">Course</label>
+          <select
+            value={courseId}
+            onChange={(e) => setParam('course_id', e.target.value)}
+            className="mt-1 rounded-md border border-slate-300 px-2 py-1 text-sm"
+          >
+            <option value="">All courses</option>
+            {courses?.map((course) => (
+              <option key={course._id} value={course._id ?? ''}>
+                {course.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-slate-600">Edition</label>
+          <select
+            value={editionId}
+            onChange={(e) => setParam('edition_id', e.target.value)}
+            className="mt-1 rounded-md border border-slate-300 px-2 py-1 text-sm"
+          >
+            <option value="">All editions</option>
+            {editions?.map((edition) => (
+              <option key={edition._id} value={edition._id ?? ''}>
+                {edition.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        {hasFilters && (
+          <button onClick={clearFilters} className="mb-1.5 text-sm text-slate-500 hover:underline">
+            Clear filters
+          </button>
+        )}
+      </div>
 
       {isLoading && <p className="text-sm text-slate-500">Loading...</p>}
       {error && <p className="text-sm text-red-600">Failed to load rubrics.</p>}
@@ -59,7 +133,7 @@ export default function RubricsPage() {
             {rubrics.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-4 py-6 text-center text-slate-400">
-                  No rubrics yet -- create one above.
+                  {hasFilters ? 'No rubrics match these filters.' : 'No rubrics yet -- create one above.'}
                 </td>
               </tr>
             )}

@@ -88,27 +88,29 @@ function EditionCourses({ editionId }: { editionId: string }) {
 
   return (
     <div className="mt-4 border-t border-slate-100 pt-4">
-      <p className="mb-2 text-xs font-medium uppercase text-slate-400">Used by</p>
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-xs font-medium uppercase text-slate-400">Used by</p>
+        <Link to={`/rubrics?edition_id=${editionId}`} className="text-xs text-slate-500 underline">
+          See rubrics
+        </Link>
+      </div>
       {courses.length === 0 ? (
         <p className="text-sm text-slate-400">No rubric uses this edition yet.</p>
       ) : (
         <ul className="flex flex-wrap gap-2">
           {courses.map((course) => (
             <li key={course._id}>
-              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+              <Link
+                to={`/rubrics?course_id=${course._id}&edition_id=${editionId}`}
+                className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-200"
+              >
                 {course.name}
-              </span>
+              </Link>
             </li>
           ))}
         </ul>
       )}
-      <p className="mt-2 text-xs text-slate-400">
-        Via {usingRubrics.length} rubric{usingRubrics.length === 1 ? '' : 's'} -- see{' '}
-        <Link to="/rubrics" className="underline">
-          Rubrics
-        </Link>{' '}
-        for details.
-      </p>
+      <p className="mt-2 text-xs text-slate-400">Via {usingRubrics.length} rubric{usingRubrics.length === 1 ? '' : 's'}.</p>
     </div>
   )
 }

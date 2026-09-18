@@ -370,6 +370,21 @@ can't resolve them on a subsequent *read* (sharp edge #5) -- see the
 rubric-creation tests in `tests/test_rubrics_api.py` for why they can
 assert `resp.json()["course"]["name"]` directly.
 
+## Listing/filtering rubrics (`api/routers/rubrics.py`)
+
+`GET /rubrics` takes optional `course_id`/`edition_id` query params, ANDed
+together when both are given. Unlike `Submission`'s `course_id` filter
+(which goes via the submission's rubric -- see "Filtering submissions by
+course vs. by edition" above), no indirection is needed here: `Rubric.course`
+and `Rubric.edition` *are* the relationship being filtered, so both are a
+direct `Rubric.course.id == course_id` / `Rubric.edition.id == edition_id`.
+Same "Beanie Link query, verified against real MongoDB" pattern as
+everywhere else in this codebase (sharp edge #3) -- a positive match isn't
+exercised under `mongomock`, only the "no match -> empty list" case (see
+`tests/test_rubrics_api.py`'s filter tests). The frontend's `RubricsPage.tsx`
+uses this to filter by course/edition, and it's how `CoursesPage.tsx`'s
+"See rubrics" link and `EditionsPage.tsx`'s "See rubrics" link work.
+
 ## Editing rubrics (`api/routers/rubrics.py`)
 
 A separate `PUT`, not an upsert on the creation endpoints: `POST /rubrics`

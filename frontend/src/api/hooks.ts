@@ -131,10 +131,13 @@ export function useCreateEdition() {
 
 // ---- Rubrics ----
 
-export function useRubrics() {
+export function useRubrics(filters?: { course_id?: string; edition_id?: string }) {
   return useQuery({
-    queryKey: ['rubrics'],
-    queryFn: () => unwrap(client.GET('/rubrics')) as Promise<Rubric[]>,
+    queryKey: ['rubrics', filters],
+    queryFn: () =>
+      unwrap(
+        client.GET('/rubrics', { params: { query: filters ?? {} } }),
+      ) as Promise<Rubric[]>,
   })
 }
 

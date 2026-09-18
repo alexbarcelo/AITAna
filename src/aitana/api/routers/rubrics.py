@@ -143,8 +143,24 @@ async def _apply_rubric_update(
 
 
 @router.get("", response_model=list[Rubric])
-async def list_rubrics() -> list[Rubric]:
-    return await Rubric.find(fetch_links=True).to_list()
+async def list_rubrics(
+    course_id: PydanticObjectId | None = None,
+    edition_id: PydanticObjectId | None = None,
+) -> list[Rubric]:
+    """Optionally filtered by the rubric's own `course`/`edition` links --
+    unlike `Submission`'s `course_id` filter (api/routers/submissions.py),
+    no two-step lookup is needed here: `Rubric.course`/`.edition` *are* the
+    relationship being filtered on, not one derived from another link. Same
+    `Link.id ==` pattern either way (AGENTS.md sharp edge #3), so a positive
+    match is only verified against real MongoDB, not mongomock -- see
+    tests/test_rubrics_api.py's filter tests.
+    """
+    filters = []
+    if course_id is not None:
+        filters.append(Rubric.course.id == course_id)
+    if edition_id is not None:
+        filters.append(Rubric.edition.id == edition_id)
+    return await Rubric.find(*filters, fetch_links=True).to_list()
 
 
 @router.get("/{rubric_id}", response_model=Rubric)
