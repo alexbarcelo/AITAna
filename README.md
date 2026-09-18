@@ -144,7 +144,7 @@ tests/           pytest suite (API routers + grading logic)
 - `POST /students/import` (multipart: `file`, `format` -- currently only
   `atenea`) -- bulk-create/update students from a roster CSV. `ID number`
   and `First name` are required columns; matches existing students by `ID
-  number` and overwrites `name`/`username`/`email`/`group` wholesale. A row
+  number` and overwrites `name`/`username`/`email` wholesale. A row
   missing `ID number` or `First name`, or two rows sharing an `ID number`,
   aborts the whole import with `422` (nothing is written). See AGENTS.md's
   "Batch student import" for the column mapping.

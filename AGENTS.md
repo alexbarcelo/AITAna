@@ -512,15 +512,12 @@ time `POST /students`.
   name` is present, else just `First name` (the task that requested this
   format specifically wanted `First name` to work alone when `Last name` is
   blank).
-- **`username: str | None`** and **`group: str | None`** (`documents/
-  student.py`) are both new, purely informational metadata -- neither is a
-  lookup key (`student_id` fills that role) and `group` is not an
-  `Edition`. Don't conflate `group` with an edition: a roster "group" here
-  is typically a lab/seminar subdivision *within* one edition, not a term,
-  and nothing else in the app (submission filtering, editions/courses)
-  reads it today.
+- **`username: str | None`** (`documents/student.py`) is purely
+  informational metadata -- not a lookup key (`student_id` fills that
+  role). A `Group` column in the CSV, if present, is silently ignored --
+  there is no `Student.group` field to put it in.
 - **Existing-student handling is upsert-by-`student_id`, and it's a full
-  overwrite, not a merge**: `name`/`username`/`email`/`group` are all set to
+  overwrite, not a merge**: `name`/`username`/`email` are all set to
   whatever the row says, including clearing a field the row leaves blank. A
   re-export is expected to be the current source of truth for the roster,
   not something to be reconciled field-by-field against what's already

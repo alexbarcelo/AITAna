@@ -56,9 +56,9 @@ export interface paths {
          *     bad row (missing ID number or First name, or an ID number reused by two
          *     rows in the same file) 422s the whole import instead of leaving a
          *     half-applied roster. An existing student (matched by `student_id`) has
-         *     `name`/`username`/`email`/`group` overwritten wholesale with the row's
-         *     values -- including clearing a field the row leaves blank -- rather than
-         *     merged field by field.
+         *     `name`/`username`/`email` overwritten wholesale with the row's values --
+         *     including clearing a field the row leaves blank -- rather than merged
+         *     field by field.
          */
         post: operations["import_students_students_import_post"];
         delete?: never;
@@ -829,8 +829,6 @@ export interface components {
             email?: string | null;
             /** Username */
             username?: string | null;
-            /** Group */
-            group?: string | null;
             /**
              * Created At
              * Format: date-time

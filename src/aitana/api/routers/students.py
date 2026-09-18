@@ -54,7 +54,6 @@ class _ImportedStudentRow(BaseModel):
     name: str
     username: str | None = None
     email: str | None = None
-    group: str | None = None
 
 
 # Column names as they appear in an Atenea roster export, matched
@@ -65,13 +64,13 @@ class _ImportedStudentRow(BaseModel):
 # student has at least a first name to be identified by (Student.name is
 # required and this project doesn't fall back to some other column, e.g.
 # Username, as a stand-in name). Every other column is optional and simply
-# left unset when absent.
+# left unset when absent. A "Group" column, if present, is ignored -- there
+# is no `Student.group` field to put it in.
 _ATENEA_ID_COLUMN = "id number"
 _ATENEA_FIRST_NAME_COLUMN = "first name"
 _ATENEA_LAST_NAME_COLUMN = "last name"
 _ATENEA_USERNAME_COLUMN = "username"
 _ATENEA_EMAIL_COLUMN = "email address"
-_ATENEA_GROUP_COLUMN = "group"
 
 
 def _parse_atenea_csv(raw: bytes) -> list[_ImportedStudentRow]:
@@ -122,7 +121,6 @@ def _parse_atenea_csv(raw: bytes) -> list[_ImportedStudentRow]:
                 name=name,
                 username=cell(row, _ATENEA_USERNAME_COLUMN) or None,
                 email=cell(row, _ATENEA_EMAIL_COLUMN) or None,
-                group=cell(row, _ATENEA_GROUP_COLUMN) or None,
             )
         )
 
@@ -153,9 +151,9 @@ async def import_students(
     bad row (missing ID number or First name, or an ID number reused by two
     rows in the same file) 422s the whole import instead of leaving a
     half-applied roster. An existing student (matched by `student_id`) has
-    `name`/`username`/`email`/`group` overwritten wholesale with the row's
-    values -- including clearing a field the row leaves blank -- rather than
-    merged field by field.
+    `name`/`username`/`email` overwritten wholesale with the row's values --
+    including clearing a field the row leaves blank -- rather than merged
+    field by field.
     """
     parser = _IMPORT_PARSERS[format]
     try:
@@ -178,16 +176,13 @@ async def import_students(
     for row in rows:
         existing = await Student.find_one(Student.student_id == row.student_id)
         if existing is None:
-            student = Student(
-                student_id=row.student_id, name=row.name, username=row.username, email=row.email, group=row.group
-            )
+            student = Student(student_id=row.student_id, name=row.name, username=row.username, email=row.email)
             await student.insert()
             created += 1
         else:
             existing.name = row.name
             existing.username = row.username
             existing.email = row.email
-            existing.group = row.group
             await existing.save()
             student = existing
             updated += 1

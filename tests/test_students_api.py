@@ -28,6 +28,8 @@ async def test_get_student_by_id(client):
     assert resp.json()["student_id"] == "s1"
 
 
+# Includes a "Group" column on purpose: Student has no `group` field, so
+# this doubles as a check that the column is silently ignored, not rejected.
 ATENEA_CSV = (
     b"First name,Last name,Username,ID number,Email address,Group\n"
     b"Ada,Lovelace,alovelace,s1,ada@example.com,Lab A\n"
@@ -51,7 +53,6 @@ async def test_import_students_atenea_csv(client):
     assert by_id["s1"]["name"] == "Ada Lovelace"
     assert by_id["s1"]["username"] == "alovelace"
     assert by_id["s1"]["email"] == "ada@example.com"
-    assert by_id["s1"]["group"] == "Lab A"
     assert by_id["s2"]["name"] == "Alan Turing"
 
 
@@ -109,7 +110,7 @@ async def test_import_students_update_clears_fields_left_blank(client):
     resp = (await client.get("/students")).json()[0]
     assert resp["email"] == "old@example.com"
 
-    # Full overwrite, not a merge: a re-import with no Email/Group/Username
+    # Full overwrite, not a merge: a re-import with no Email/Username
     # clears whatever was there before.
     csv_bytes = b"First name,ID number\nAda,s1\n"
     resp = await client.post(
@@ -123,7 +124,6 @@ async def test_import_students_update_clears_fields_left_blank(client):
     assert student["name"] == "Ada"
     assert student["email"] is None
     assert student["username"] is None
-    assert student["group"] is None
 
 
 async def test_import_students_missing_id_number_column(client):
