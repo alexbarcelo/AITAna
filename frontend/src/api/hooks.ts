@@ -11,7 +11,6 @@ import type {
   Grade,
   Question,
   Rubric,
-  Student,
   StudentImportFormat,
   StudentImportResult,
   Submission,
@@ -74,20 +73,6 @@ export function useImportStudents() {
         }),
       ) as Promise<StudentImportResult>
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['students'] }),
-  })
-}
-
-export function useSetStudentEditions() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: ({ studentId, editionIds }: { studentId: string; editionIds: string[] }) =>
-      unwrap(
-        client.PUT('/students/{student_id}/editions', {
-          params: { path: { student_id: studentId } },
-          body: { edition_ids: editionIds },
-        }),
-      ) as Promise<Student>,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['students'] }),
   })
 }

@@ -111,8 +111,7 @@ async def list_submissions(
         filters.append(In(Submission.rubric.id, rubric_ids))
     if edition_id is not None:
         # Direct, unlike course_id above: every Submission carries its own
-        # edition (see Submission.edition's docstring), so this doesn't need
-        # to go via Student enrollment at all.
+        # edition (see Submission.edition's docstring).
         filters.append(Submission.edition.id == edition_id)
     return await Submission.find(*filters, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS).to_list()
 

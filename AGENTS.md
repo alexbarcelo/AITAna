@@ -15,7 +15,7 @@ format specifically -- not repeated here.
 
 Five Beanie documents (`src/aitana/documents/`). Read
 this section before touching any of `Course`, `Edition`, `Rubric.course`/
-`.edition`, or `Student.edition_ids`/`Submission.edition`:
+`.edition`, or `Submission.edition`:
 
 - **`Course`** -- a subject, e.g. "BDM". `slug` (unique); same creation
   shape/helper (`slugify`, `src/aitana/slugify.py`, shared with `Rubric` and
@@ -32,25 +32,7 @@ this section before touching any of `Course`, `Edition`, `Rubric.course`/
   `course`/`edition` pairs (`frontend/src/lib/editions.ts`), shown on the
   Courses and Editions pages respectively.
 - **`Student`** -- roster entry. Unique index on `student_id` (the
-  institutional id, not the Mongo `_id`). `edition_ids:
-  list[PydanticObjectId]` is a **plain list of raw ids, not a Beanie
-  `Link[Edition]` list** -- deliberate: Beanie's query sugar for a *single*
-  `Link` field is solid, but querying a *list* of Links doesn't have the
-  same sugar and would reintroduce the `fetch_links`/`mongomock` gaps (sharp
-  edge #5) just to render a chip list of edition names. A plain id array
-  plays directly with Mongo's native "array contains scalar" equality
-  (`Student.find(Student.edition_ids == edition_id)` -- no aggregation, no
-  Link machinery, works identically under `mongomock` and real Mongo), at
-  the cost of doing edition-name lookups as a separate `GET /editions` call
-  from the frontend rather than embedding resolved edition docs. There is
-  **deliberately no `course_ids`** either -- and, since `Edition` carries no
-  course anymore, a student's course is no longer derivable from
-  `edition_ids` at all (it never told you *which* course's "2026/27" a
-  student was in anyway, once editions could be shared -- this enrollment
-  was always course-agnostic in spirit, just not in the data model until
-  now). This is *enrollment* only -- it is not consulted when filtering
-  submissions (see `Submission.edition` below, and "Creating courses and
-  editions").
+  institutional id, not the Mongo `_id`).
 - **`Rubric`** -- one per lab/exam. `slug` (unique) identifies it; see
   "Creating rubrics" below for how it's derived. `course: Link[Course]`
   (**required** -- every rubric belongs to a course) and `edition:
@@ -70,8 +52,8 @@ this section before touching any of `Course`, `Edition`, `Rubric.course`/
   and `batch` are the only optional ones. `edition` is set on *every*
   submission, even when its rubric has no fixed edition of its own -- see
   "Creating a submission" below for exactly how it's resolved; this is what
-  makes `edition_id` filtering direct (sharp edge #3) instead of needing to
-  go via `Student.edition_ids`. `file_object_key` points at the raw uploaded
+  makes `edition_id` filtering direct (sharp edge #3). `file_object_key`
+  points at the raw uploaded
   file in MinIO (name is format-agnostic on purpose -- not `pdf_object_key`
   -- since it might be a notebook; see "Pluggable submission formats"
   below). `answers: list[AnsweredQuestion]` is embedded and grows/fills in
@@ -511,8 +493,8 @@ time `POST /students`.
   `422` that aborts the **whole** import, nothing written, not even rows
   before it):
   - `ID number` is the sole source of `Student.student_id` -- the unique
-    roster key every other endpoint (`Submission.student`, `PUT
-    /students/{id}/editions`, ...) already joins against. It can't be
+    roster key every other endpoint (`Submission.student`, ...) already
+    joins against. It can't be
     relaxed to some other column as a fallback without a second, later
     import silently minting a duplicate `Student` under a different key for
     someone whose `ID number` merely wasn't in this particular export.
@@ -542,9 +524,7 @@ time `POST /students`.
   whatever the row says, including clearing a field the row leaves blank. A
   re-export is expected to be the current source of truth for the roster,
   not something to be reconciled field-by-field against what's already
-  there. `edition_ids` is never touched by this endpoint either way --
-  enrollment stays a separate, explicit step (`PUT
-  /students/{id}/editions`).
+  there.
 - Response (`StudentImportResult`: `created`, `updated`, `students`) lets
   the frontend show a plain "N created, M updated" summary
   (`StudentsPage.tsx`).
@@ -652,13 +632,9 @@ relationships -- don't conflate them:**
   means "submissions whose rubric belongs to BDM," regardless of who
   submitted them or which edition it was submitted under.
 - `edition_id` filters **directly** on the submission's own `edition`
-  field: `Submission.find(Submission.edition.id == edition_id)`. No
-  indirection through `Student.edition_ids` needed -- every submission
-  already carries its own definitive edition (see "Creating a submission"
-  below for how that's decided at creation time). This is simpler than the
-  original design (which went via student enrollment) and was changed
-  specifically because `Submission.edition` was introduced -- don't
-  reintroduce the indirect version.
+  field: `Submission.find(Submission.edition.id == edition_id)` -- every
+  submission carries its own definitive edition (see "Creating a
+  submission" below for how that's decided at creation time).
 
 Both `course_id`'s two-step lookup and the `edition_id` `==` are the same
 "Beanie Link query, verified against real MongoDB" pattern (see sharp edge

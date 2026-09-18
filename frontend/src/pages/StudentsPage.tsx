@@ -1,13 +1,12 @@
 import { useState } from 'react'
-import { useCreateStudent, useEditions, useImportStudents, useSetStudentEditions, useStudents } from '../api/hooks'
+import { useCreateStudent, useImportStudents, useStudents } from '../api/hooks'
 import { STUDENT_IMPORT_FORMAT_LABELS } from '../api/types'
-import type { Edition, Student, StudentImportFormat } from '../api/types'
+import type { StudentImportFormat } from '../api/types'
 
 const IMPORT_FORMAT_OPTIONS = Object.keys(STUDENT_IMPORT_FORMAT_LABELS) as StudentImportFormat[]
 
 export default function StudentsPage() {
   const { data: students, isLoading, error } = useStudents()
-  const { data: editions } = useEditions()
   const createStudent = useCreateStudent()
 
   const [studentId, setStudentId] = useState('')
@@ -87,7 +86,6 @@ export default function StudentsPage() {
               <th className="px-4 py-2">Username</th>
               <th className="px-4 py-2">Email</th>
               <th className="px-4 py-2">Group</th>
-              <th className="px-4 py-2">Editions</th>
             </tr>
           </thead>
           <tbody>
@@ -98,14 +96,11 @@ export default function StudentsPage() {
                 <td className="px-4 py-2 text-slate-500">{s.username ?? '—'}</td>
                 <td className="px-4 py-2 text-slate-500">{s.email ?? '—'}</td>
                 <td className="px-4 py-2 text-slate-500">{s.group ?? '—'}</td>
-                <td className="px-4 py-2">
-                  <StudentEditions student={s} editions={editions ?? []} />
-                </td>
               </tr>
             ))}
             {students.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-slate-400">
+                <td colSpan={5} className="px-4 py-6 text-center text-slate-400">
                   No students yet.
                 </td>
               </tr>
@@ -190,39 +185,3 @@ function ImportStudentsForm() {
   )
 }
 
-function StudentEditions({ student, editions }: { student: Student; editions: Edition[] }) {
-  const setStudentEditions = useSetStudentEditions()
-  const enrolled = new Set(student.edition_ids ?? [])
-
-  function toggle(editionId: string) {
-    const next = enrolled.has(editionId)
-      ? [...enrolled].filter((id) => id !== editionId)
-      : [...enrolled, editionId]
-    setStudentEditions.mutate({ studentId: student._id!, editionIds: next })
-  }
-
-  if (editions.length === 0) {
-    return <span className="text-xs text-slate-400">No editions yet</span>
-  }
-
-  return (
-    <div className="flex flex-wrap gap-1">
-      {editions.map((edition) => {
-        const isEnrolled = edition._id ? enrolled.has(edition._id) : false
-        return (
-          <button
-            key={edition._id}
-            onClick={() => edition._id && toggle(edition._id)}
-            disabled={setStudentEditions.isPending}
-            title={edition.name}
-            className={`rounded-full px-2 py-0.5 text-xs font-medium disabled:opacity-50 ${
-              isEnrolled ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-            }`}
-          >
-            {edition.name}
-          </button>
-        )
-      })}
-    </div>
-  )
-}

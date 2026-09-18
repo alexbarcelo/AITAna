@@ -8,11 +8,10 @@ from pymongo import IndexModel
 class Edition(Document):
     """A term, e.g. "2026/27" -- global, shared across every course taught
     that term, not owned by any one of them. Which course(s) an edition
-    actually applies to is expressed elsewhere, per use: a `Rubric` pins
-    itself to one course *and* (optionally) one edition (`Rubric.course`/
-    `.edition`), and a `Student` enrolls directly in editions
-    (`Student.edition_ids`) -- there is no `Edition.course` here to look
-    either of those up through. See AGENTS.md's "Data model" section for why
+    actually applies to is expressed elsewhere: a `Rubric` pins itself to
+    one course *and* (optionally) one edition (`Rubric.course`/`.edition`)
+    -- there is no `Edition.course` here to look it up through. See
+    AGENTS.md's "Data model" section for why
     this was pulled out of `Edition` (it used to belong to exactly one
     course, which meant "2026/27" had to be recreated once per course and
     then looked like two unrelated, identically-named editions everywhere in

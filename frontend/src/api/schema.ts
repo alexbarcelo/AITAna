@@ -39,30 +39,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/students/{student_id}/editions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /**
-         * Set Student Editions
-         * @description Replace a student's edition enrollments wholesale (a student can be in
-         *     several editions -- e.g. retaking a course, or across different courses).
-         *     Editions are global (see documents/edition.py), so this only records
-         *     *when*, not *which course* -- there is no "set course" endpoint at all;
-         *     course association lives on `Rubric`, not on the student/edition pair.
-         */
-        put: operations["set_student_editions_students__student_id__editions_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/students/import": {
         parameters: {
             query?: never;
@@ -680,11 +656,10 @@ export interface components {
          * Edition
          * @description A term, e.g. "2026/27" -- global, shared across every course taught
          *     that term, not owned by any one of them. Which course(s) an edition
-         *     actually applies to is expressed elsewhere, per use: a `Rubric` pins
-         *     itself to one course *and* (optionally) one edition (`Rubric.course`/
-         *     `.edition`), and a `Student` enrolls directly in editions
-         *     (`Student.edition_ids`) -- there is no `Edition.course` here to look
-         *     either of those up through. See AGENTS.md's "Data model" section for why
+         *     actually applies to is expressed elsewhere: a `Rubric` pins itself to
+         *     one course *and* (optionally) one edition (`Rubric.course`/`.edition`)
+         *     -- there is no `Edition.course` here to look it up through. See
+         *     AGENTS.md's "Data model" section for why
          *     this was pulled out of `Edition` (it used to belong to exactly one
          *     course, which meant "2026/27" had to be recreated once per course and
          *     then looked like two unrelated, identically-named editions everywhere in
@@ -856,8 +831,6 @@ export interface components {
             username?: string | null;
             /** Group */
             group?: string | null;
-            /** Edition Ids */
-            edition_ids?: components["schemas"]["PydanticObjectId"][];
             /**
              * Created At
              * Format: date-time
@@ -872,11 +845,6 @@ export interface components {
             name: string;
             /** Email */
             email?: string | null;
-        };
-        /** StudentEditions */
-        StudentEditions: {
-            /** Edition Ids */
-            edition_ids: components["schemas"]["PydanticObjectId"][];
         };
         /**
          * StudentImportFormat
@@ -1081,41 +1049,6 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Student"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    set_student_editions_students__student_id__editions_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                student_id: components["schemas"]["PydanticObjectId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["StudentEditions"];
-            };
-        };
         responses: {
             /** @description Successful Response */
             200: {
