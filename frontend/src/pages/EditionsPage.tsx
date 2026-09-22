@@ -83,7 +83,9 @@ export default function EditionsPage() {
  * and this edition together." */
 function EditionCourses({ editionId }: { editionId: string }) {
   const { data: rubrics } = useRubrics()
-  const usingRubrics = rubrics?.filter((r) => r.edition?._id === editionId) ?? []
+  // r.edition is a nested Link -- keyed by `.id`, not `._id` (see
+  // lib/editions.ts / types.ts's NestedEdition doc comment).
+  const usingRubrics = rubrics?.filter((r) => r.edition?.id === editionId) ?? []
   const courses = rubrics ? coursesForEdition(rubrics, editionId) : []
 
   return (
@@ -99,9 +101,9 @@ function EditionCourses({ editionId }: { editionId: string }) {
       ) : (
         <ul className="flex flex-wrap gap-2">
           {courses.map((course) => (
-            <li key={course._id}>
+            <li key={course.id}>
               <Link
-                to={`/rubrics?course_id=${course._id}&edition_id=${editionId}`}
+                to={`/rubrics?course_id=${course.id}&edition_id=${editionId}`}
                 className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-200"
               >
                 {course.name}

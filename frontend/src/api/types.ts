@@ -68,12 +68,26 @@ export interface Edition {
   created_at: string
 }
 
+/**
+ * A `Course`/`Edition` *nested* inside a `Rubric` (`.course`/`.edition`) --
+ * unlike the top-level `GET /courses`/`GET /editions` list responses, a
+ * resolved Link embedded inside another document does NOT get the `_id`
+ * alias (AGENTS.md's Mongo-driver sharp edge #7: "only the outer,
+ * top-level response document gets the `_id` alias"). It comes back as
+ * `id` instead, same set of other fields otherwise. Comparing/keying by
+ * `_id` on `rubric.course`/`rubric.edition` is always `undefined` -- use
+ * `.id`. (`RubricForm.tsx`'s course/edition prefill on edit, and
+ * `lib/editions.ts`'s course/edition derivation, both depend on this.)
+ */
+export type NestedCourse = Omit<Course, '_id'> & { id: string }
+export type NestedEdition = Omit<Edition, '_id'> & { id: string }
+
 export interface Rubric {
   _id: string
   slug: string
   title: string
-  course: Course
-  edition: Edition | null
+  course: NestedCourse
+  edition: NestedEdition | null
   format: SubmissionFormat
   grading_scale: GradingScale
   questions: Question[]

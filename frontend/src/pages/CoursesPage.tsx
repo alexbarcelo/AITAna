@@ -101,9 +101,9 @@ function CourseEditions({ courseId }: { courseId: string }) {
       ) : (
         <ul className="flex flex-wrap gap-1">
           {editions.map((edition) => (
-            <li key={edition._id}>
+            <li key={edition.id}>
               <Link
-                to={`/rubrics?course_id=${courseId}&edition_id=${edition._id}`}
+                to={`/rubrics?course_id=${courseId}&edition_id=${edition.id}`}
                 className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-200"
               >
                 {edition.name}

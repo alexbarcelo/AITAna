@@ -278,8 +278,8 @@ function UploadYamlForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => vo
   const mutation = isEdit ? updateRubricYaml : uploadRubric
   const [file, setFile] = useState<File | null>(null)
   const [slug, setSlug] = useState(rubric?.slug ?? '')
-  const [courseId, setCourseId] = useState(rubric?.course._id ?? '')
-  const [editionId, setEditionId] = useState(rubric?.edition?._id ?? '')
+  const [courseId, setCourseId] = useState(rubric?.course.id ?? '')
+  const [editionId, setEditionId] = useState(rubric?.edition?.id ?? '')
   const [format, setFormat] = useState<SubmissionFormat>(rubric?.format ?? 'pdf')
 
   function handleSubmit(e: React.FormEvent) {
@@ -382,8 +382,8 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
   const mutation = isEdit ? updateRubric : createRubric
   const [title, setTitle] = useState(rubric?.title ?? '')
   const [slug, setSlug] = useState(rubric?.slug ?? '')
-  const [courseId, setCourseId] = useState(rubric?.course._id ?? '')
-  const [editionId, setEditionId] = useState(rubric?.edition?._id ?? '')
+  const [courseId, setCourseId] = useState(rubric?.course.id ?? '')
+  const [editionId, setEditionId] = useState(rubric?.edition?.id ?? '')
   const [format, setFormat] = useState<SubmissionFormat>(rubric?.format ?? 'pdf')
   const [gradingScaleRows, setGradingScaleRows] = useState<GradingScaleRow[]>(
     presetToRows(rubric?.grading_scale ?? GRADING_SCALE_PRESETS[0].scale),
