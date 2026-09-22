@@ -297,6 +297,216 @@ one that does.
   never pays for the check, and unit tests can construct the tool without
   Deno installed as long as they don't actually invoke it.
 
+## Grading traces (`documents/grading_trace.py`, `api/routers/grading_traces.py`)
+
+Diagnostic record of every real `grade_answer()` call, kept for later
+"why did the LLM grade this the way it did" investigation -- backend only so
+far, no frontend consumes it yet.
+
+- **`GradeTrace`** (`grading/models.py`, next to `Grade`/`Question` for the
+  same DB-agnostic-reuse reason) is the transport shape: `provider`, `model`,
+  the exact `system_prompt` sent, the verbatim `student_answer`, the
+  resulting `grade`, `blank_short_circuit` (true when `grade_answer` never
+  called the LLM at all -- see "Pluggable grading scales"), best-effort
+  `thinking`, `tool_calls`, token usage, and `elapsed_seconds`. `grade_answer`
+  (`grading/grading.py`) builds one and hands it to an optional, keyword-only
+  `on_trace` callback -- both `provider`/`model` and `on_trace` default to
+  `None`/not-called, so every pre-existing call site (notably `POST
+  /rubrics/{id}/test-answer`) is unaffected and still persists nothing, per
+  that endpoint's existing docstring promise. `worker/tasks.py`'s
+  `_grade_answers` is the only caller that passes `on_trace` today.
+- **`thinking` is best-effort and `None` unless reasoning was explicitly
+  requested.** None of this project's four providers exposes reasoning
+  content unless the request asks for it -- see "Reasoning/thinking capture
+  across providers" below for exactly how `llm.py`'s `get_chat_model` turns
+  it on, and exactly what shape each provider sends back that
+  `_extract_thinking` (`grading.py`) then normalizes into one flat string.
+  `None` means "this provider/model/call didn't expose anything
+  recognizable" (including simply "reasoning wasn't requested at all," the
+  default), not a bug. `_extract_tool_calls` and `_extract_usage` do the
+  equivalent extraction for a `needs_python_sandbox` question's tool-call
+  transcript and LangChain's own standardized `usage_metadata` -- both are
+  already provider-agnostic *without* needing per-provider handling, since
+  `tool_calls`/`usage_metadata` are shapes every LangChain chat-model
+  integration normalizes to the same TypedDicts regardless of provider,
+  unlike reasoning content (no such standardization exists for that). All
+  three read off `result["messages"]`, the full `agent.invoke(...)` result
+  `grade_answer` keeps around instead of discarding everything but
+  `structured_response` (`_grade_with_tools`'s return type is the whole
+  result dict, not just the structured output).
+- **`GradingTrace`** (`documents/grading_trace.py`) is the persisted Beanie
+  Document: `submission: Link[Submission]`, `question_id`, `trace:
+  GradeTrace` (embedded, not flattened -- same has-a composition style as
+  `AnsweredQuestion.grade: Grade`), `created_at`. **Deliberately its own
+  collection, not embedded in `Submission`/`AnsweredQuestion`** -- this data
+  (full prompts, tool-call transcripts) is much larger than a `Grade` and
+  has no reason to ride along on every `Submission.save()`/serialization
+  the way an embedded field would (`Submission` already gets re-serialized
+  on every grading step, see sharp edge #1). `_grade_answers` inserts one
+  per question, right after `grade_answer` returns and *before*
+  `submission.save()` for that question -- so a trace survives even if
+  something about the submission save itself goes wrong.
+- **No TTL, by design** -- traceability is the point, so nothing expires on
+  its own (unlike, say, a cache). Cleanup is a deliberate, explicit action
+  instead: `DELETE /grading-traces` (`api/routers/grading_traces.py`) bulk-
+  deletes by `submission_id` and/or `before` (a cutoff datetime), ANDed
+  together when both are given, same as every other multi-filter list
+  endpoint in this app. It refuses to run with **no** filter at all unless
+  `all=true` is also passed -- a bare `DELETE /grading-traces` silently
+  wiping the whole collection would be an easy mistake otherwise. `GET
+  /grading-traces` (optionally filtered by `submission_id`/`question_id`)
+  and `GET /grading-traces/{id}` exist alongside it for inspecting what's
+  there before deciding what to prune -- both diagnostic-only, no frontend
+  page for either yet.
+- **`regrade_submission` does not clean up a submission's previous traces**
+  before re-grading -- old and new traces for the same submission/question
+  coexist, distinguishable by `created_at`. This is deliberate (comparing
+  "what did the LLM see before we fixed the rubric" against "what does it
+  see now" is exactly the kind of thing traceability is for), but does mean
+  a repeatedly-regraded submission accumulates traces until `DELETE
+  /grading-traces` is used deliberately.
+- Same "Beanie Link query, verified against real MongoDB" situation as
+  everywhere else Link-field filtering shows up (sharp edge #3):
+  `GradingTrace.submission.id == ...` (used by both the `GET` and `DELETE`
+  endpoints' `submission_id` filter) isn't exercised as a positive match
+  under `mongomock` in `tests/test_grading_traces_api.py` -- only the
+  "no/all matches" shapes are.
+- `GradingTrace` is registered in `documents.DOCUMENT_MODELS` like every
+  other Document -- if you add a new format/scale/whatever that touches the
+  documents package, remember this one exists too.
+
+## Pluggable LLM providers (`grading/llm.py`)
+
+Four providers: OpenAI, Anthropic, OpenRouter (an OpenAI-compatible proxy in
+front of many backends), and local Ollama. **All four are pluggable
+extras** (`pyproject.toml`'s `[project.optional-dependencies]`:
+`aitana[openai]`/`[ollama]`/`[anthropic]`/`[openrouter]`) -- none is a base
+dependency of the `aitana` package itself, so a bare `pip install aitana`
+gets no provider SDK at all. `get_chat_model`'s `_import_chat_*` helpers
+import each provider's package lazily, inside the function, specifically so
+importing `llm.py` (which happens transitively through most of the app --
+`worker/tasks.py`, `api/routers/rubrics.py`) never requires any of the four
+to be installed; picking a provider whose package isn't present raises a
+clear `RuntimeError` naming the exact `pip install 'aitana[...]'` fix, not
+an opaque `ImportError` surfacing from deep inside a grading task or the
+`test-answer` endpoint.
+
+- **`Dockerfile` installs `openai`, `ollama`, and `openrouter`** (matching
+  what `.env.example` documents and `Settings.llm_provider`'s `"openai"`
+  default expects to work out of the box) **but deliberately not
+  `anthropic`** -- both `api`/`worker` images come from this one Dockerfile
+  (see "Python sandbox for grading" above for the same pattern with Deno),
+  so this is the one place that decides which providers actually work in a
+  stock `docker compose up`. Wanting Anthropic in a real deployment means
+  adding `--extra anthropic` to both `uv sync` lines there (or a separate
+  image) -- setting `ANTHROPIC_API_KEY` alone is not enough.
+- **`pydantic`'s floor moved from `>=2.13.4` to `>=2.11.2`** to make
+  `aitana[openrouter]` installable at all: the `openrouter` SDK
+  (`langchain-openrouter`'s own dependency) caps at `pydantic<2.13` in its
+  newest releases. `2.13.4` was never a deliberate requirement -- nothing in
+  this dependency tree actually needs it (`langchain-core` itself only needs
+  `>=2.7.4`) -- so this is a genuine floor correction, not a forced
+  downgrade: a plain `pip install aitana` (no extras) still resolves the
+  newest compatible pydantic (2.13+) exactly as before; only environments
+  that request `[openrouter]` are affected, and even then, `uv`'s resolver
+  currently picks an older `openrouter` release (0.10.x, capped only at
+  `pydantic>=2.11.2` with no upper bound) that satisfies everything at
+  pydantic 2.13+ anyway -- verified by actually running `uv sync` and
+  checking the installed version, not assumed. If a future `openrouter`
+  release drops that unbounded option, this floor is what keeps the install
+  from being flatly unsatisfiable; it doesn't guarantee no downgrade forever.
+- **The dev dependency group installs all four extras**
+  (`aitana[openai,ollama,anthropic,openrouter]`) so `tests/test_llm.py` can
+  exercise every provider's actual *construction* path (right kwargs, right
+  class) for real -- never a live API call (no keys in CI/dev), just
+  `ChatOpenAI(...)`/`ChatAnthropic(...)`/etc. built with a fake API key and
+  inspected. The "package genuinely not installed" error path is tested
+  separately by forcing `sys.modules[<module>] = None`, which makes
+  Python's own import machinery raise `ImportError` regardless of whether
+  the package is actually present -- so that path is covered without
+  needing a second venv.
+
+### Reasoning/thinking capture across providers
+
+None of the four providers exposes reasoning/"thinking" content unless a
+request explicitly asks for it, and each does so in its own shape --
+`get_chat_model`'s `reasoning_effort` parameter (`"low"`/`"medium"`/`"high"`,
+or `None` -- the default, changing nothing) is what turns it on, and
+`grading.py`'s `_extract_thinking` is what reads it back off afterwards.
+Both were verified against each provider's actual installed client source
+(`langchain-openai` 1.6.0, `langchain-anthropic` 1.7.2, `langchain-ollama`
+1.1.0, `langchain-openrouter` 0.2.9) -- reading the real parsing code, not
+assuming a shape -- and this write-up exists so the next person touching
+either doesn't have to redo that reading:
+
+- **openai**: Chat Completions (the default API mode) never exposes raw
+  reasoning text at all -- only the Responses API does, and only when both
+  `reasoning={"effort": ..., "summary": "auto"}` and
+  `output_version="responses/v1"` are set. The response then carries a
+  `{"type": "reasoning", "summary": [{"text": ...}, ...]}` block inside
+  `message.content` (a list of blocks) -- the text is nested under
+  `summary`, not directly on the block. (An earlier version of
+  `_extract_thinking` checked `block["text"]` directly, which would have
+  silently found nothing for this exact case -- caught by reading
+  `langchain-openai`'s own documented example before shipping it, not by a
+  live call.) `temperature` is passed through unchanged regardless --
+  `ChatOpenAI`'s own `validate_temperature` already drops/normalizes it for
+  the specific model families (o1, non-chat gpt-5) that reject a non-default
+  value once reasoning is active, so `get_chat_model` doesn't special-case it.
+- **anthropic**: extended thinking is off unless
+  `thinking={"type": "enabled", "budget_tokens": ...}` is set explicitly.
+  `_ANTHROPIC_THINKING_BUDGET_TOKENS` maps the three-level dial onto
+  conservative token budgets (there's no named-effort concept on Anthropic's
+  API, only a raw budget) chosen to sit comfortably inside every current
+  Claude model's default `max_tokens` (`ChatAnthropic` fills that in from
+  the model's own profile when unset) -- not tuned against real grading
+  traffic. The response carries a `{"type": "thinking", "thinking": "..."}`
+  content block (text under the `thinking` key, not `text`), or
+  `{"type": "redacted_thinking"}` with no recoverable text when Anthropic's
+  safety filtering redacted a segment -- `_extract_thinking` surfaces that
+  as an explicit `"[reasoning segment redacted by the provider]"` marker
+  rather than silently dropping it, so a trace reader can tell "reasoning
+  happened but is hidden" apart from "no reasoning happened at all".
+  Anthropic's API also rejects any `temperature` other than `1` once
+  thinking is enabled -- unlike OpenAI, `ChatAnthropic` only self-guards
+  that for a couple of specific model families, not universally, so
+  `get_chat_model` overrides `temperature` to `1` itself whenever
+  `reasoning_effort` is set, rather than letting a live 400 be the first
+  sign of the conflict. (Separately: `ChatAnthropic.with_structured_output`
+  already handles the thinking-enabled + forced-tool-call tension itself --
+  it warns and falls back to unforced tool calling rather than raising, so
+  `grade_answer`'s `create_agent(..., response_format=schema)` needs no
+  special handling here; verified by actually building the agent graph with
+  a thinking-enabled model and a response_format schema and confirming it
+  constructs cleanly.)
+- **ollama**: a local reasoning-capable model (deepseek-r1, qwq, ...) either
+  leaks `<think>`/`</think>` tags into the main response content, or, if
+  `reasoning=` is set on `ChatOllama`, returns the reasoning separately in
+  `additional_kwargs["reasoning_content"]` (a plain string) and keeps
+  `content` clean. Unlike the other three, Ollama also accepts
+  `reasoning=True` (no graded effort) for a model with no notion of effort
+  levels -- `get_chat_model` just forwards whichever of this project's three
+  named levels was asked for as-is; `ChatOllama` accepts any string.
+- **openrouter**: reasoning is off unless `reasoning={"effort": ...}` is
+  set -- OpenRouter's own unified convention, the same shape regardless of
+  which backend model it's actually proxying to. `langchain-openrouter`
+  copies OpenRouter's `reasoning`/`reasoning_details` response fields into
+  `additional_kwargs["reasoning_content"]`/`["reasoning_details"]` --
+  deliberately *not* replicated by hand against a plain `ChatOpenAI` (which
+  would silently drop them: its own docstring says non-standard
+  third-party response fields like these "are not extracted or preserved"),
+  which is the whole reason `openrouter` is its own provider/extra rather
+  than "point `ChatOpenAI` at OpenRouter's base_url", which the codebase
+  briefly did in an earlier iteration.
+
+`_extract_thinking` normalizes all of the above into one flat string (or
+`None`) regardless of provider -- `GradeTrace.thinking` is meant to be
+provider-agnostic; a reader of a `GradingTrace` document shouldn't need to
+know which of the four produced it to make sense of the `thinking` field.
+`tool_calls`/token usage need no equivalent per-provider handling: LangChain
+already normalizes `AIMessage.tool_calls`/`.usage_metadata` to the same
+shape across every provider's integration.
+
 ## Creating rubrics (`api/routers/rubrics.py`)
 
 Two creation paths, both creation-only (no update/edit endpoint; a duplicate
@@ -985,6 +1195,13 @@ export REDIS_URL=redis://localhost:6379/0
 uv run uvicorn aitana.api.main:app --reload
 ```
 
+Running `uvicorn`/`celery` directly on the host also means you're
+responsible for whichever LLM provider extras `uv sync` installed --
+`uv sync` (no `--extra` flags) alone gets none of the four (see "Pluggable
+LLM providers" above); match whatever `Dockerfile` installs
+(`--extra openai --extra ollama --extra openrouter`) or add `--extra
+anthropic` yourself if that's what `LLM_PROVIDER` is set to locally.
+
 **If you ever test `POST /submissions` (or anything else that calls a
 Celery task's `.delay()`) against an isolated setup, that setup needs an
 isolated Redis too**, not just Mongo/MinIO -- `.delay()` tries to connect
@@ -1044,6 +1261,18 @@ see "Environment variables" above) (see the next section for why
 exception -- since they return the in-memory object rather than
 re-fetching, `resp.json()["course"]["name"]` **is** asserted directly in
 `tests/test_rubrics_api.py`, no real-Mongo verification needed for those.
+
+`tests/test_llm.py` is the exception to "no live services needed": it needs
+no live *services*, but it does need all four provider packages actually
+installed (the dev dependency group's job, see "Pluggable LLM providers"
+above) to construct real `ChatOpenAI`/`ChatAnthropic`/`ChatOllama`/
+`ChatOpenRouter` instances -- no network call is made (a fake API key is
+enough to get past each client's own credential-presence check at
+construction time), so it needs no keys either. This is deliberately a
+stronger guarantee than mocking `get_chat_model` out entirely (as
+`tests/test_rubrics_api.py`/`test_grading.py` do for everything downstream
+of it): it catches a real kwarg/class mismatch against the actual installed
+client, which a mock can't.
 
 ## Verifying manually: never touch a stack you didn't start
 

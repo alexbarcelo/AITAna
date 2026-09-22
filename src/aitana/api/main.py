@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ..db import init_db
 from ..storage import ensure_bucket
-from .routers import batches, courses, editions, rubrics, students, submissions
+from .routers import batches, courses, editions, grading_traces, rubrics, students, submissions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s")
 
@@ -34,6 +34,7 @@ app.include_router(editions.router)
 app.include_router(rubrics.router)
 app.include_router(submissions.router)
 app.include_router(batches.router)
+app.include_router(grading_traces.router)
 
 
 @app.get("/health")

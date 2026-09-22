@@ -22,11 +22,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl unzip ca-c
     && curl -fsSL https://deno.land/install.sh | sh -s -- --no-modify-path \
     && rm -rf /var/lib/apt/lists/*
 
+# Every LLM provider backend is a pluggable extra (see pyproject.toml's
+# [project.optional-dependencies] and grading/llm.py's module docstring) --
+# none is a base dependency, so this image has to opt into whichever
+# providers it wants working out of the box. `openai`/`ollama`/`openrouter`
+# match what .env.example documents by default; `anthropic` is deliberately
+# left out here -- it needs a rebuild with `--extra anthropic` added below
+# (or its own image), not just setting ANTHROPIC_API_KEY.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-install-project
+RUN uv sync --locked --no-install-project --extra openai --extra ollama --extra openrouter
 
 COPY . .
-RUN uv sync --locked
+RUN uv sync --locked --extra openai --extra ollama --extra openrouter
 
 # Best-effort cache warmup: pre-fetches the sandbox's JSR/npm dependencies
 # and Pyodide's own bootstrap wheels (micropip, packaging) into ./node_modules

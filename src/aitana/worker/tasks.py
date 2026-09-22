@@ -15,11 +15,11 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from .. import storage
 from ..db import init_db
-from ..documents import AnsweredQuestion, Submission, SubmissionStatus
+from ..documents import AnsweredQuestion, GradingTrace, Submission, SubmissionStatus
 from ..grading.extraction import FORMAT_FILE_INFO, extract_answers
 from ..grading.grading import grade_answer
 from ..grading.llm import get_chat_model
-from ..grading.models import Question
+from ..grading.models import GradeTrace, Question
 from ..settings import get_settings
 from .celery_app import celery_app
 
@@ -63,8 +63,12 @@ async def _grade_submission(submission_id: str) -> None:
         await submission.save()
 
         settings = get_settings()
-        chat_model = get_chat_model(settings.llm_provider, settings.llm_model)
-        await _grade_answers(submission, rubric.questions, chat_model, rubric.grading_scale)
+        chat_model = get_chat_model(
+            settings.llm_provider, settings.llm_model, reasoning_effort=settings.llm_reasoning_effort
+        )
+        await _grade_answers(
+            submission, rubric.questions, chat_model, rubric.grading_scale, settings.llm_provider, settings.llm_model
+        )
 
         submission.status = SubmissionStatus.GRADED
         await submission.save()
@@ -76,7 +80,12 @@ async def _grade_submission(submission_id: str) -> None:
 
 
 async def _grade_answers(
-    submission: Submission, questions: list[Question], chat_model: BaseChatModel, grading_scale: dict[str, str]
+    submission: Submission,
+    questions: list[Question],
+    chat_model: BaseChatModel,
+    grading_scale: dict[str, str],
+    provider: str,
+    model: str,
 ) -> None:
     """Grade each question in order, saving after every single one.
 
@@ -87,8 +96,32 @@ async def _grade_answers(
     (Beanie's `validate_on_save`), so a reference captured before any
     `save()` call goes stale after the first one -- mutating it is a no-op
     that silently drops every grade past the first question.
+
+    Also persists a `GradingTrace` document per question, captured via
+    `grade_answer`'s `on_trace` hook -- see `documents/grading_trace.py` for
+    why this is a separate collection rather than embedded in `submission`.
+    Inserted before `submission.save()` so a trace exists even if something
+    about the submission save itself goes wrong -- the grade was still
+    produced, and that's the part worth not losing.
     """
     for i, question in enumerate(questions):
-        grade = grade_answer(chat_model, question, submission.answers[i].student_answer, grading_scale)
+        captured_trace: GradeTrace | None = None
+
+        def _capture(trace: GradeTrace) -> None:
+            nonlocal captured_trace
+            captured_trace = trace
+
+        grade = grade_answer(
+            chat_model,
+            question,
+            submission.answers[i].student_answer,
+            grading_scale,
+            provider=provider,
+            model=model,
+            on_trace=_capture,
+        )
+        if captured_trace is not None:
+            await GradingTrace(submission=submission, question_id=question.id, trace=captured_trace).insert()
+
         submission.answers[i].grade = grade
         await submission.save()

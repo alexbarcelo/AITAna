@@ -428,7 +428,9 @@ async def test_rubric_answer(rubric_id: PydanticObjectId, payload: TestAnswerReq
 
     settings = get_settings()
     try:
-        chat_model = get_chat_model(settings.llm_provider, settings.llm_model)
+        chat_model = get_chat_model(
+            settings.llm_provider, settings.llm_model, reasoning_effort=settings.llm_reasoning_effort
+        )
         # grade_answer() makes a blocking network call to the LLM -- unlike
         # the batch pipeline (worker/tasks.py), which isolates that to a
         # separate Celery process entirely, this is a single quick "try it"

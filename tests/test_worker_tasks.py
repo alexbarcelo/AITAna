@@ -9,7 +9,7 @@ first question, since later iterations mutate objects no longer referenced
 by submission.answers. See _grade_answers in worker/tasks.py.
 """
 
-from aitana.documents import Course, Edition, Rubric, Student, Submission
+from aitana.documents import Course, Edition, GradingTrace, Rubric, Student, Submission
 from aitana.documents.submission import AnsweredQuestion
 from aitana.grading.models import DEFAULT_GRADING_SCALE, Grade, Question
 from aitana.worker.tasks import _grade_answers
@@ -71,7 +71,7 @@ async def test_grade_answers_persists_every_question_not_just_the_first(mongo_db
         Grade(level="some_effort", feedback="f3"),
     ]
     monkeypatch.setattr("aitana.grading.grading.create_agent", _fake_create_agent(grades))
-    await _grade_answers(submission, rubric.questions, object(), DEFAULT_GRADING_SCALE)
+    await _grade_answers(submission, rubric.questions, object(), DEFAULT_GRADING_SCALE, "openai", "gpt-4o-mini")
 
     fresh = await Submission.get(submission.id)
     assert [a.grade.level if a.grade else None for a in fresh.answers] == [
@@ -79,3 +79,8 @@ async def test_grade_answers_persists_every_question_not_just_the_first(mongo_db
         "almost_there",
         "some_effort",
     ]
+
+    traces = await GradingTrace.find_all().to_list()
+    assert sorted(t.question_id for t in traces) == ["answer1", "answer2", "answer3"]
+    assert {t.trace.grade.level for t in traces} == {"solid", "almost_there", "some_effort"}
+    assert all(t.trace.provider == "openai" and t.trace.model == "gpt-4o-mini" for t in traces)

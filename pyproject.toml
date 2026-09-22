@@ -6,9 +6,9 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "langchain>=1.3.14",
-    "langchain-ollama>=1.1.0",
-    "langchain-openai>=1.4.1",
-    "pydantic>=2.13.4",
+    # Floor, because some shenanigans with the langchain-* packages
+    # (it seems that `[openrouter]` is the only culprit atm)
+    "pydantic>=2.11.2",
     "pydantic-settings>=2.7.0",
     "pypdf>=6.14.2",
     "python-dotenv>=1.2.2",
@@ -23,12 +23,23 @@ dependencies = [
     "minio>=7.2.12",
 ]
 
+# Every LLM provider backend (grading/llm.py) is pluggable 
+[project.optional-dependencies]
+openai = ["langchain-openai>=1.4.1"]
+ollama = ["langchain-ollama>=1.1.0"]
+anthropic = ["langchain-anthropic>=1.7.2"]
+openrouter = ["langchain-openrouter>=0.2.9"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.25.0",
     "httpx>=0.28.0",
     "mongomock-motor>=0.0.35",
+    # All four provider extras, so the full grading/llm.py surface
+    # (construction, not live API calls -- no keys available in CI/dev) is
+    # exercised by the test suite
+    "aitana[openai,ollama,anthropic,openrouter]",
 ]
 
 [build-system]

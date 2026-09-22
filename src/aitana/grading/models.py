@@ -47,6 +47,48 @@ class Grade(BaseModel):
     feedback: str = Field(description=_FEEDBACK_DESCRIPTION)
 
 
+class GradeTrace(BaseModel):
+    """Diagnostic record of one `grade_answer()` call -- everything beyond
+    the `Grade` itself worth keeping around to later explain "why did the
+    LLM grade this the way it did": the exact prompt sent, the
+    provider/model used, whatever reasoning/"thinking" content that
+    provider's response happened to expose, any tool calls made (e.g. the
+    Python sandbox, see `sandbox.py`), token usage, and timing.
+
+    DB-agnostic like `Grade`/`Question` (see their docstrings) -- produced by
+    `grade_answer` via its optional `on_trace` callback and never stored
+    itself; `worker/tasks.py` persists it as a `GradingTrace` Beanie document
+    (`documents/grading_trace.py`), embedding it under that document's
+    `trace` field. `POST /rubrics/{id}/test-answer`'s synchronous "try it"
+    endpoint doesn't pass `on_trace`, so nothing is captured there either --
+    consistent with that endpoint's existing "nothing is persisted" promise.
+
+    `thinking` is best-effort and frequently `None`: this project's only
+    providers (`grading/llm.py` -- OpenAI, OpenRouter, Ollama) mostly don't
+    expose raw reasoning tokens over the APIs used here, only occasionally a
+    summary. See `grading.py`'s `_extract_thinking` for exactly what shapes
+    are checked. Absence means "this provider/model/call didn't include
+    any", not a bug.
+    """
+
+    provider: str
+    model: str
+    system_prompt: str
+    student_answer: str
+    grade: Grade
+    # True for the blank-answer short-circuit (grade_answer never calls the
+    # LLM at all in that case) -- system_prompt is still the prompt that
+    # *would* have been sent, kept for completeness, but thinking/tool_calls/
+    # token usage are necessarily empty/None and elapsed_seconds is ~0.
+    blank_short_circuit: bool = False
+    thinking: str | None = None
+    tool_calls: list[dict] = Field(default_factory=list)
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    elapsed_seconds: float = 0.0
+
+
 def grade_schema_for_scale(grading_scale: dict[str, str]) -> type[BaseModel]:
     """Build a one-off structured-output schema for one grading call.
 

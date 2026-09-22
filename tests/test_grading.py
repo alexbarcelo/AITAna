@@ -1,9 +1,10 @@
 import pytest
+from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
 from aitana.grading import grading
 from aitana.grading.grading import build_system_prompt, grade_answer
-from aitana.grading.models import DEFAULT_GRADING_SCALE, Grade, Question, grade_schema_for_scale
+from aitana.grading.models import DEFAULT_GRADING_SCALE, Grade, GradeTrace, Question, grade_schema_for_scale
 
 
 class _FakeChatModel:
@@ -181,6 +182,171 @@ def test_grade_answer_passes_no_tools_to_create_agent_when_sandbox_not_needed(mo
 
     assert result == expected
     assert captured["tools"] == []
+
+
+def test_grade_answer_emits_trace_on_blank_short_circuit():
+    """on_trace still fires for a blank answer, even though no LLM call is
+    made -- system_prompt is populated (it's cheap to build), but there's no
+    thinking/tool_calls/usage to report."""
+    question = _question()
+    fake_model = _FakeChatModel(Grade(level="solid", feedback="unused"))
+    captured: list[GradeTrace] = []
+
+    result = grade_answer(
+        fake_model, question, "   ", DEFAULT_GRADING_SCALE, provider="openai", model="gpt-4o-mini", on_trace=captured.append
+    )
+
+    assert result.level == "not_attempted"
+    assert len(captured) == 1
+    trace = captured[0]
+    assert trace.blank_short_circuit is True
+    assert trace.provider == "openai"
+    assert trace.model == "gpt-4o-mini"
+    assert "What happened and why?" in trace.system_prompt
+    assert trace.student_answer == "   "
+    assert trace.grade == result
+    assert trace.thinking is None
+    assert trace.tool_calls == []
+    assert trace.prompt_tokens is None
+
+
+def test_grade_answer_emits_trace_for_a_real_llm_call(monkeypatch):
+    question = _question()
+    expected = Grade(level="almost_there", feedback="Close.")
+    fake_model = _FakeChatModel(expected)
+    captured: list[GradeTrace] = []
+
+    monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected))
+
+    result = grade_answer(
+        fake_model,
+        question,
+        "My answer text",
+        DEFAULT_GRADING_SCALE,
+        provider="openai",
+        model="gpt-4o-mini",
+        on_trace=captured.append,
+    )
+
+    assert result == expected
+    assert len(captured) == 1
+    trace = captured[0]
+    assert trace.blank_short_circuit is False
+    assert trace.grade == expected
+    assert trace.student_answer == "My answer text"
+    assert trace.elapsed_seconds >= 0
+
+
+def test_grade_answer_without_on_trace_calls_nothing():
+    """Every pre-existing call site (no on_trace given) sees no behavior
+    change at all -- the callback is simply never invoked."""
+    question = _question()
+    fake_model = _FakeChatModel(Grade(level="solid", feedback="f"))
+
+    result = grade_answer(fake_model, question, "", DEFAULT_GRADING_SCALE)
+
+    assert result.level == "not_attempted"
+
+
+def test_grade_answer_trace_extracts_tool_calls_and_thinking(monkeypatch):
+    """A needs_python_sandbox question's agent run produces intermediate
+    AIMessage/ToolMessage traffic -- the trace should capture the tool call
+    (name/args/output) and any reasoning content/usage metadata found on the
+    AIMessages, not just the final structured grade."""
+    from langchain_core.messages import ToolMessage
+
+    question = _question(needs_python_sandbox=True)
+    expected = Grade(level="solid", feedback="Verified via code.")
+    fake_model = _FakeChatModel(Grade(level="solid", feedback="unused"))
+    captured: list[GradeTrace] = []
+
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "python_sandbox", "args": {"code": "print(1+1)"}, "id": "call_1"}],
+            additional_kwargs={"reasoning_content": "Let me check by running the code."},
+            usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        ),
+        ToolMessage(content="2", tool_call_id="call_1"),
+        AIMessage(content="Final.", usage_metadata={"input_tokens": 20, "output_tokens": 8, "total_tokens": 28}),
+    ]
+
+    def _create_agent(*, model, tools, response_format):
+        class _FakeCompiledAgent:
+            def invoke(self, state):
+                return {"structured_response": expected, "messages": messages}
+
+        return _FakeCompiledAgent()
+
+    monkeypatch.setattr(grading, "create_agent", _create_agent)
+
+    result = grade_answer(
+        fake_model, question, "My answer text", DEFAULT_GRADING_SCALE, provider="openai", model="gpt-4o-mini", on_trace=captured.append
+    )
+
+    assert result == expected
+    trace = captured[0]
+    assert trace.thinking == "Let me check by running the code."
+    assert trace.tool_calls == [{"tool": "python_sandbox", "args": {"code": "print(1+1)"}, "output": "2"}]
+    assert trace.prompt_tokens == 30
+    assert trace.completion_tokens == 13
+    assert trace.total_tokens == 43
+
+
+def test_extract_thinking_returns_none_with_no_recognizable_content():
+    from aitana.grading.grading import _extract_thinking
+
+    assert _extract_thinking([AIMessage(content="just a plain answer")]) is None
+    assert _extract_thinking([]) is None
+
+
+def test_extract_thinking_reads_reasoning_content_key():
+    """Ollama and OpenRouter's shape (see llm.py's get_chat_model docstring)
+    -- a plain string under additional_kwargs['reasoning_content']."""
+    from aitana.grading.grading import _extract_thinking
+
+    messages = [AIMessage(content="answer", additional_kwargs={"reasoning_content": "because X implies Y"})]
+    assert _extract_thinking(messages) == "because X implies Y"
+
+
+def test_extract_thinking_reads_openai_responses_api_reasoning_block():
+    """OpenAI's Responses-API shape: a {"type": "reasoning", "summary": [...]}
+    content block, with the actual text nested under `summary`, not directly
+    on the block -- a real bug this project's first extraction pass had
+    (checked `block["text"]` directly), caught by reading langchain-openai's
+    own documented example rather than guessing."""
+    from aitana.grading.grading import _extract_thinking
+
+    messages = [
+        AIMessage(
+            content=[
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Step 1..."}, {"type": "summary_text", "text": "Step 2..."}]},
+                {"type": "text", "text": "final answer"},
+            ]
+        )
+    ]
+    assert _extract_thinking(messages) == "Step 1...\n\nStep 2..."
+
+
+def test_extract_thinking_reads_anthropic_thinking_block():
+    """Anthropic's shape: a {"type": "thinking", "thinking": "..."} content
+    block -- note the text key is `thinking`, not `text`."""
+    from aitana.grading.grading import _extract_thinking
+
+    messages = [
+        AIMessage(content=[{"type": "thinking", "thinking": "Let me work through this..."}, {"type": "text", "text": "answer"}])
+    ]
+    assert _extract_thinking(messages) == "Let me work through this..."
+
+
+def test_extract_thinking_surfaces_redacted_thinking_as_a_marker():
+    """A redacted_thinking block has no recoverable text -- surfaced as an
+    explicit marker so a trace reader can tell "reasoning happened but is
+    hidden" apart from "no reasoning happened at all"."""
+    from aitana.grading.grading import _extract_thinking
+
+    messages = [AIMessage(content=[{"type": "redacted_thinking"}, {"type": "text", "text": "answer"}])]
+    assert _extract_thinking(messages) == "[reasoning segment redacted by the provider]"
 
 
 def test_grade_answer_routes_through_create_agent_when_needs_python_sandbox(monkeypatch):

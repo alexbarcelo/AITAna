@@ -458,7 +458,9 @@ class _FakeChatModel:
 
 
 def _patch_chat_model(monkeypatch, grade: Grade) -> None:
-    monkeypatch.setattr("aitana.api.routers.rubrics.get_chat_model", lambda provider, model: _FakeChatModel())
+    monkeypatch.setattr(
+        "aitana.api.routers.rubrics.get_chat_model", lambda provider, model, **kwargs: _FakeChatModel()
+    )
 
     class _FakeCompiledAgent:
         def invoke(self, state):
@@ -782,7 +784,7 @@ async def test_test_rubric_answer_llm_failure_returns_502(client, monkeypatch):
     course_id = await _make_course(client)
     rubric = await _make_rubric(course_id)
 
-    def _broken_get_chat_model(provider, model):
+    def _broken_get_chat_model(provider, model, **kwargs):
         raise RuntimeError("OPENROUTER_API_KEY is not set")
 
     monkeypatch.setattr("aitana.api.routers.rubrics.get_chat_model", _broken_get_chat_model)

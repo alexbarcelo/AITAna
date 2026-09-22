@@ -22,13 +22,21 @@ class Settings(BaseSettings):
     # Celery / Redis
     redis_url: str = "redis://localhost:6379/0"
 
-    # LLM provider credentials (OPENAI_API_KEY, OPENROUTER_API_KEY,
-    # OLLAMA_BASE_URL) are read directly from the environment by
-    # grading/llm.py, same as before -- see .env.example.
+    # LLM provider credentials (OPENAI_API_KEY, ANTHROPIC_API_KEY,
+    # OPENROUTER_API_KEY, OLLAMA_BASE_URL) are read directly from the
+    # environment by grading/llm.py, same as before -- see .env.example.
 
     # Default grading provider/model, used by the worker task.
     llm_provider: str = "openai"
     llm_model: str = "gpt-4o-mini"
+    # Coarse, provider-agnostic "how hard should it think" dial: "low",
+    # "medium", "high", or unset (default) to leave every provider's own
+    # default reasoning behavior untouched -- see grading/llm.py's
+    # get_chat_model for exactly what this turns into per provider. Off by
+    # default because it isn't free (more tokens, slower responses) and not
+    # every configured model supports it -- an operator who wants
+    # GradeTrace.thinking populated opts in explicitly by setting this.
+    llm_reasoning_effort: str | None = None
 
 
 @lru_cache
