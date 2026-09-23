@@ -3,8 +3,7 @@
 Implementation notes for whoever (human or AI) next touches this codebase.
 `README.md` explains what the project does and how to run it; this file
 explains *why* the code is shaped the way it is, plus the sharp edges you'll
-otherwise rediscover the hard way. `configs/AGENTS.md` covers the rubric YAML
-format specifically -- not repeated here.
+otherwise rediscover the hard way.
 
 ## Naming
 
@@ -119,9 +118,9 @@ the extraction step.
   with the rubric it's submitted against. `Rubric.format` is set once, at
   rubric-creation time (`POST /rubrics`'s JSON body, or `POST
   /rubrics/upload`'s `format` form field / top-level `format:` YAML key,
-  same precedence order as `course_slug`/`edition_slug` -- see
-  `configs/AGENTS.md`), and defaults to `pdf` so every rubric created before
-  this existed keeps working unchanged. Editable via the edit endpoints (see
+  same precedence order as `course_slug`/`edition_slug`), and defaults to
+  `pdf` so every rubric created before this existed keeps working
+  unchanged. Editable via the edit endpoints (see
   "Editing rubrics" below), but changing `format` on a rubric that already
   has submissions against it is rejected with `409` (`_guard_format_change`)
   -- a submission doesn't record its own format, only `rubric.format` at
@@ -230,14 +229,12 @@ out-of-the-box.
   a preset is a convenience starting point, not a constraint.
 - No form-field equivalent on `POST /rubrics/upload` the way `format` has
   one (a dict doesn't fit a multipart field cleanly) -- only the YAML body's
-  top-level `grading_scale:` key, or omit it for the default. See
-  `configs/AGENTS.md`.
+  top-level `grading_scale:` key, or omit it for the default.
 
 ## Python sandbox for grading
 
 Per-question opt-in, not a rubric-wide setting: `Question.needs_python_sandbox`
-(`grading/models.py`, default `false`; see `configs/AGENTS.md` for the YAML
-key). When set, `grade_answer` (`grading/grading.py`) gives the grading LLM a
+(`grading/models.py`, default `false`). When set, `grade_answer` (`grading/grading.py`) gives the grading LLM a
 sandboxed Python code-execution tool for that one question, instead of the
 default single `with_structured_output` call -- useful for a question whose
 rubric genuinely benefits from *running* something (checking a claimed
@@ -519,10 +516,9 @@ Two creation paths, both creation-only (no update/edit endpoint; a duplicate
   `questions: list[Question]`). This is the frontend's "Build manually" form
   (`frontend/src/components/NewRubricForm.tsx`).
 - **`POST /rubrics/upload`** -- multipart (`yaml_file`, optional `slug`/
-  `course_id`/`edition_id`/`format` form fields). Parses the same YAML shape
-  `configs/*.yaml` documents (`grading_scale` has no form-field equivalent,
-  YAML key only). This is the frontend's "Upload YAML" form (same
-  component).
+  `course_id`/`edition_id`/`format` form fields). Parses the rubric YAML
+  shape (`grading_scale` has no form-field equivalent, YAML key only). This
+  is the frontend's "Upload YAML" form (same component).
 
 Slug resolution order (`upload_rubric_yaml`): the `slug` form field, then a
 top-level `slug:` key in the YAML body, then the uploaded filename with
@@ -627,8 +623,8 @@ during edit -- greyed-out `<select>`s for course/edition, a disabled slug
 input pre-filled with the current slug rather than left blank -- deliberately,
 not because the API enforces it: changing a rubric's course/edition
 mid-life is a bigger structural move than "edit this rubric's content," and
-changing `slug` changes which `configs/<slug>_questions.yaml` a future
-re-upload is expected to match. If a script/API caller genuinely needs to
+changing `slug` changes which rubric a future re-upload of the same YAML
+file is expected to match. If a script/API caller genuinely needs to
 move a rubric to a different course or rename its slug, `PUT /rubrics/{id}`
 still allows it directly -- only the UI's manual/YAML edit forms don't
 expose it.

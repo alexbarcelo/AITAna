@@ -11,9 +11,8 @@ PDF form with named AcroForm text fields, or a Jupyter notebook with answer
 cells tagged `aitana:answer` -- see "Submission formats" below.
 
 **Status: WIP.** A FastAPI + MongoDB + MinIO + Celery service with a React
-frontend. See `configs/AGENTS.md` for the rubric YAML format, and
-[`AGENTS.md`](AGENTS.md) for implementation details, known gotchas, and
-conventions worth knowing before changing the code.
+frontend. See [`AGENTS.md`](AGENTS.md) for implementation details, known
+gotchas, and conventions worth knowing before changing the code.
 
 ## Architecture
 
@@ -133,63 +132,16 @@ src/aitana/
   api/           FastAPI app + routers (students, courses, editions, rubrics,
                  submissions)
   worker/        Celery app + the grade_submission background task
-configs/         example rubric YAMLs, uploadable via the API (see configs/AGENTS.md)
 frontend/        React + TypeScript + Vite app
 tests/           pytest suite (API routers + grading logic)
 ```
 
-## API (first pass)
+## API documentation
 
-- `POST /students`, `GET /students`, `GET /students/{id}`
-- `POST /students/import` (multipart: `file`, `format` -- currently only
-  `atenea`) -- bulk-create/update students from a roster CSV. `ID number`
-  and `First name` are required columns; matches existing students by `ID
-  number` and overwrites `name`/`username`/`email` wholesale. A row
-  missing `ID number` or `First name`, or two rows sharing an `ID number`,
-  aborts the whole import with `422` (nothing is written). See AGENTS.md's
-  "Batch student import" for the column mapping.
-- `POST /courses` (JSON body: `name`, optional `slug`), `GET /courses`,
-  `GET /courses/{id}` -- e.g. a course named "BDM"
-- `POST /editions` (JSON body: `name`, optional `slug`), `GET /editions`,
-  `GET /editions/{id}` -- e.g. edition "2026/27", global (no course
-  involved) -- see "Editions are global" above.
-- `GET /rubrics`, `GET /rubrics/{id}`
-- `POST /rubrics` (JSON body: `title`, optional `slug`, `course_id`
-  required, optional `edition_id`, optional `format` (`pdf`/`notebook`,
-  defaults to `pdf`), optional `grading_scale` (`{level_id: description}`,
-  defaults to the 4-level scale), `questions`) -- create a rubric
-  field-by-field ("fill a form")
-- `POST /rubrics/upload` (multipart: `yaml_file`, optional `slug`/
-  `course_id`/`edition_id`/`format`) -- create a rubric from a YAML file
-  (see below)
-- `POST /rubrics/{id}/test-answer` (JSON body: `question_id`, `answer`) --
-  grade one free-typed answer against a single question of this rubric,
-  synchronously, with no submission/file/student involved and nothing
-  persisted. Lets you try out a rubric's wording and see the LLM's actual
-  grade + feedback before uploading a real exam -- see "Testing a rubric
-  interactively" below.
-- `POST /submissions` (multipart: `file`, `student_id`, `rubric_id`,
-  optional `edition_id`) -> `202`, enqueues grading. `edition_id` is
-  required only if the chosen rubric has no fixed edition of its own (see
-  "Creating a submission" below). The uploaded file's format is dictated by
-  the chosen rubric's `format`, not chosen per-upload -- see "Submission
-  formats" above.
-- `GET /submissions/{id}` -- status + per-question answers/grades
-- `GET /submissions?student_id=&rubric_id=&course_id=&edition_id=&status=`
-  -- filtering/listing. `course_id` matches submissions whose *rubric*
-  belongs to that course; `edition_id` matches submissions whose own
-  `edition` field is that edition -- these are different relationships
-  (see Architecture above), so combining both only returns results where
-  both happen to hold.
-- `GET /submissions/{id}/file` -- streams the original uploaded file back
-  (proxied through the API, not a MinIO presigned URL -- see AGENTS.md for why)
-- `POST /submissions/{id}/regrade` -> `202` -- force a submission back
-  through extraction+grading from scratch, discarding its current
-  grades/feedback (e.g. after fixing a rubric, or retrying a `failed` run)
+First start the API (either with `uv run` or `docker compose up`, see
+[Setup](#Setup).
 
-Rubric/course/edition creation endpoints return `409` if the (given or
-derived) `slug` already exists -- there's no update/edit endpoint for any
-of them yet, only creation.
+Then the documentation will be available at http://localhost:8000/docs
 
 ## Creating a rubric
 
@@ -200,7 +152,7 @@ directly:
 ```bash
 # from a YAML file
 curl -X POST http://localhost:8000/rubrics/upload \
-  -F "course_id=<course id>" -F "yaml_file=@configs/containers_questions.yaml"
+  -F "course_id=<course id>" -F "yaml_file=@containers_questions.yaml"
 
 # field-by-field
 curl -X POST http://localhost:8000/rubrics -H 'Content-Type: application/json' -d '{
@@ -214,10 +166,6 @@ curl -X POST http://localhost:8000/rubrics -H 'Content-Type: application/json' -
 ```
 
 ### YAML format
-
-`configs/*_questions.yaml` holds example/reference rubrics in the expected
-shape -- see `configs/AGENTS.md` for the full format and authoring
-conventions:
 
 ```yaml
 title: Containers lab    # optional; falls back to a title-cased slug
@@ -251,8 +199,7 @@ Its course (required) comes from, in order: the `course_id` form field, or
 a top-level `course_slug:` key in the YAML -- matching an existing course's
 slug (`GET /courses` to look one up); uploading without either is a `422`.
 Its edition (optional) works the same way via `edition_id`/`edition_slug:`
-(quote the slug if it looks like a number, e.g. `"2026_27"` -- see
-`configs/AGENTS.md`).
+(quote the slug if it looks like a number, e.g. `"2026_27"`).
 Its format (optional, defaults to `pdf`) works the same way via a `format`
 form field or a top-level `format:` key. Its grading scale (optional,
 defaults to the 4-level scale above) has no form-field equivalent -- only
