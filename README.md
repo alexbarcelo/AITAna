@@ -139,9 +139,11 @@ tests/           pytest suite (API routers + grading logic)
 ## API documentation
 
 First start the API (either with `uv run` or `docker compose up`, see
-[Setup](#Setup).
+[Setup](#Setup)).
 
 Then the documentation will be available at http://localhost:8000/docs
+
+Note that the OpenAPI json file is available at http://localhost:8000/openapi.json
 
 ## Creating a rubric
 
