@@ -91,3 +91,35 @@ def test_extract_answers_rejects_pre_v4_nbformat(tmp_path):
 
     with pytest.raises(ValueError, match="nbformat"):
         extract_answers(notebook_path)
+
+
+@pytest.mark.parametrize("source", ["...", "  ...\n", ["\n", "...\n", "\n"], "   \n\n\t", ["\n", "  \n"]])
+def test_extract_answers_placeholder_or_whitespace_cell_is_blank(tmp_path, source):
+    notebook_path = tmp_path / "submission.ipynb"
+    _write_notebook(notebook_path, [_cell("code", source, tags=["aitana:answer"], field="answer1")])
+
+    assert extract_answers(notebook_path) == {"answer1": ""}
+
+
+def test_extract_answers_placeholder_part_leaves_no_stray_separator(tmp_path):
+    notebook_path = tmp_path / "submission.ipynb"
+    _write_notebook(
+        notebook_path,
+        [
+            _cell("code", "...", tags=["aitana:answer"], field="answer1"),
+            _cell("code", "df = load()", tags=["aitana:answer"], field="answer1"),
+            _cell("markdown", "  \n", tags=["aitana:answer"], field="answer1"),
+            _cell("code", "...", tags=["aitana:answer"], field="answer2"),
+            _cell("code", "\n...\n", tags=["aitana:answer"], field="answer2"),
+        ],
+    )
+
+    assert extract_answers(notebook_path) == {"answer1": "df = load()", "answer2": ""}
+
+
+@pytest.mark.parametrize("source", ["x[..., 0]", "def f():\n    ...", "...\nprint(1)"])
+def test_extract_answers_ellipsis_inside_real_code_is_kept(tmp_path, source):
+    notebook_path = tmp_path / "submission.ipynb"
+    _write_notebook(notebook_path, [_cell("code", source, tags=["aitana:answer"], field="answer1")])
+
+    assert extract_answers(notebook_path) == {"answer1": source}

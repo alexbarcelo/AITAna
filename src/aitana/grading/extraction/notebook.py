@@ -41,6 +41,13 @@ built-in "Advanced Tools" metadata editor). A lab template author tags the
 cell(s) where students are meant to write question 1's answer with
 `aitana:answer` and sets `aitana.id` to `answer1`, etc. -- the notebook
 equivalent of naming a PDF AcroForm field `answer1`.
+
+A tagged cell whose whole source is just `...` (the Python Ellipsis
+placeholder exercise templates leave in an answer cell), or only whitespace,
+counts as blank: an untouched template answer extracts as `""` (the field key
+is still reported), so `grade_answer`'s blank-answer short-circuit applies
+instead of an LLM call grading the placeholder itself. `...` inside real code
+(`x[..., 0]`, or alongside other lines) is left alone.
 """
 
 import json
@@ -51,6 +58,7 @@ logger = logging.getLogger(__name__)
 
 _TAG_ANSWER = "aitana:answer"
 _MIN_NBFORMAT_VERSION = 4
+_PLACEHOLDER_SOURCE = "..."
 
 
 def _cell_source(cell: dict) -> str:
@@ -88,9 +96,14 @@ def extract_answers(notebook_path: Path) -> dict[str, str]:
             logger.warning("Cell %s has invalid aitana metadata: %s", cell.get("id"), aitana_metadata)
             continue
         field = aitana_metadata["id"]
-        parts_by_field.setdefault(field, []).append(_cell_source(cell).strip())
+        source = _cell_source(cell).strip()
+        if source == _PLACEHOLDER_SOURCE:
+            source = ""
+        parts_by_field.setdefault(field, []).append(source)
 
-    answers = {field: "\n\n".join(parts).strip() for field, parts in parts_by_field.items()}
+    # Drop blank/placeholder parts before joining so they leave no stray
+    # separators; a field whose parts are all blank still maps to "".
+    answers = {field: "\n\n".join(p for p in parts if p) for field, parts in parts_by_field.items()}
     non_blank = sum(1 for v in answers.values() if v)
     logger.info("Extracted %d tagged cell group(s) from %s (%d non-blank)", len(answers), notebook_path, non_blank)
     logger.debug("Fields: %s", list(answers.keys()))
