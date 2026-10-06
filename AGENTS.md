@@ -56,7 +56,9 @@ this section before touching any of `Course`, `Edition`, `Rubric.course`/
   file in MinIO (name is format-agnostic on purpose -- not `pdf_object_key`
   -- since it might be a notebook; see "Pluggable submission formats"
   below). `answers: list[AnsweredQuestion]` is embedded and grows/fills in
-  as grading progresses, `status` drives the frontend's polling. `student`
+  as grading progresses (each one carries the LLM's `grade` plus an optional
+  TA `manual_grade` override -- see "Manual grade overrides" below),
+  `status` drives the frontend's polling. `student`
   is unset for a submission created by a batch upload (see `Batch` below
   and "Batch submission import"): the zip's per-item folder name isn't
   necessarily identifiable against the roster at upload time, and grading
@@ -371,6 +373,34 @@ far, no frontend consumes it yet.
 - `GradingTrace` is registered in `documents.DOCUMENT_MODELS` like every
   other Document -- if you add a new format/scale/whatever that touches the
   documents package, remember this one exists too.
+
+## Manual grade overrides
+
+A TA can correct any answer's level/feedback from the submission page or
+from the grading overview's cell modal (`GradingGrid.tsx`) -- both use the
+same `AnswerGradeEditor.tsx`. The grid modal keeps only ids in state and
+re-reads the answer from the live `submissions` prop, so a save (which
+refetches `['submissions']`) is reflected without closing it.
+
+- **Stored next to, not instead of, the LLM's grade**:
+  `AnsweredQuestion.manual_grade: Grade | None` + `manual_graded_at`
+  (`documents/submission.py`). `grade` is only ever written by the worker.
+  What the student sees is `effective_grade` (`manual_grade or grade`) -- a
+  plain Python `@property`, not a `computed_field`, so it's never persisted;
+  the frontend has its own `effectiveGrade()` (`api/types.ts`) for the same
+  rule. Anything rendering a grade (`feedback_export.py`, `GradingGrid`,
+  `SubmissionDetailPage`) must go through it, not read `.grade` directly.
+- **`PUT`/`DELETE /submissions/{id}/answers/{question_id}/grade`**
+  (`api/routers/submissions.py`) set/clear it. `level` must be one of the
+  rubric's `grading_scale` keys (`422` otherwise). **`409` while the
+  submission is `pending`/`extracting`/`grading`**: the worker holds its own
+  in-memory copy and saves the whole document after every question, so an
+  edit made mid-run would just be overwritten.
+- **Overrides survive a re-grade**: `worker/tasks.py`'s `_rebuild_answers`
+  carries `manual_grade`/`manual_graded_at` over by `question_id` when the
+  answers list is rebuilt (dropped if the question left the rubric). The UI
+  keeps showing the LLM's suggestion under an override, which is how a
+  changed LLM opinion after a re-grade stays visible.
 
 ## Pluggable LLM providers (`grading/llm.py`)
 

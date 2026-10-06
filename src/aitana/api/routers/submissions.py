@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from beanie import Link, PydanticObjectId
 from beanie.operators import In
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
@@ -6,6 +8,7 @@ from pydantic import BaseModel
 from ... import storage
 from ...documents import Edition, Rubric, Student, Submission, SubmissionStatus
 from ...grading.extraction import FORMAT_FILE_INFO
+from ...grading.models import Grade
 from ...worker.tasks import grade_submission
 from ..feedback_export import feedback_filename, render_feedback_html
 
@@ -151,6 +154,64 @@ async def set_submission_student(submission_id: PydanticObjectId, payload: SetSu
     return submission
 
 
+_IN_PROGRESS_STATUSES = {SubmissionStatus.PENDING, SubmissionStatus.EXTRACTING, SubmissionStatus.GRADING}
+
+
+async def _get_editable_answer(submission_id: PydanticObjectId, question_id: str) -> tuple[Submission, int]:
+    """Shared lookup/guards for the manual-grade endpoints below. Returns the
+    submission plus the *index* of the answer -- never a reference into
+    `submission.answers`, which goes stale across `save()` (AGENTS.md sharp
+    edge #1)."""
+    submission = await Submission.get(submission_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if submission.status in _IN_PROGRESS_STATUSES:
+        # The worker holds its own in-memory copy of the submission and saves
+        # the whole document after every question -- an edit made now would
+        # just be overwritten by its next save().
+        raise HTTPException(status_code=409, detail="Submission is still being graded -- wait for it to finish")
+    if isinstance(submission.rubric, Link):
+        # Only reachable under mongomock, which can't resolve fetch_links
+        # (AGENTS.md sharp edge #5) -- fetch_link is a plain get-by-id.
+        await submission.fetch_link(Submission.rubric)
+    for i, answer in enumerate(submission.answers):
+        if answer.question_id == question_id:
+            return submission, i
+    raise HTTPException(status_code=404, detail=f"No answer for question {question_id!r} in this submission")
+
+
+@router.put("/{submission_id}/answers/{question_id}/grade", response_model=Submission)
+async def set_manual_grade(submission_id: PydanticObjectId, question_id: str, payload: Grade) -> Submission:
+    """Manually override one answer's grade level + feedback. Stored as
+    `manual_grade`, next to (not instead of) the LLM's own `grade` -- see
+    `AnsweredQuestion`'s docstring -- and survives a re-grade."""
+    submission, i = await _get_editable_answer(submission_id, question_id)
+    scale = submission.rubric.grading_scale
+    if payload.level not in scale:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown level {payload.level!r} -- this rubric's levels are: {', '.join(scale)}",
+        )
+
+    now = datetime.now(UTC)
+    submission.answers[i].manual_grade = payload
+    submission.answers[i].manual_graded_at = now
+    submission.updated_at = now
+    await submission.save()
+    return submission
+
+
+@router.delete("/{submission_id}/answers/{question_id}/grade", response_model=Submission)
+async def clear_manual_grade(submission_id: PydanticObjectId, question_id: str) -> Submission:
+    """Drop a manual override, reverting that answer to the LLM's grade."""
+    submission, i = await _get_editable_answer(submission_id, question_id)
+    submission.answers[i].manual_grade = None
+    submission.answers[i].manual_graded_at = None
+    submission.updated_at = datetime.now(UTC)
+    await submission.save()
+    return submission
+
+
 @router.get("/{submission_id}/file")
 async def download_submission_file(submission_id: PydanticObjectId) -> Response:
     submission = await Submission.get(submission_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS)
@@ -195,8 +256,10 @@ async def regrade_submission(submission_id: PydanticObjectId) -> Submission:
     `_grade_submission` always re-downloads the raw file, re-extracts answers
     (using whichever extractor `rubric.format` selects), and rebuilds
     `answers` from the rubric's current questions, so this discards any
-    previous grades/feedback -- exactly what "force re-grade" should do (e.g.
-    after fixing a rubric or the uploaded file, or retrying a `failed` run).
+    previous LLM grades/feedback -- exactly what "force re-grade" should do
+    (e.g. after fixing a rubric or the uploaded file, or retrying a `failed`
+    run). TA manual overrides (`manual_grade`) are the exception: they're
+    carried over by question id (see worker/tasks.py's `_rebuild_answers`).
     """
     submission = await Submission.get(submission_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS)
     if submission is None:

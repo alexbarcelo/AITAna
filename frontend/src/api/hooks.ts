@@ -361,6 +361,39 @@ export function useSetSubmissionStudent() {
   })
 }
 
+export function useSetManualGrade() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ submissionId, questionId, grade }: { submissionId: string; questionId: string; grade: Grade }) =>
+      unwrap(
+        client.PUT('/submissions/{submission_id}/answers/{question_id}/grade', {
+          params: { path: { submission_id: submissionId, question_id: questionId } },
+          body: grade,
+        }),
+      ) as unknown as Promise<Submission>,
+    onSuccess: (submission) => {
+      queryClient.setQueryData(['submissions', submission._id], submission)
+      queryClient.invalidateQueries({ queryKey: ['submissions'] })
+    },
+  })
+}
+
+export function useClearManualGrade() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ submissionId, questionId }: { submissionId: string; questionId: string }) =>
+      unwrap(
+        client.DELETE('/submissions/{submission_id}/answers/{question_id}/grade', {
+          params: { path: { submission_id: submissionId, question_id: questionId } },
+        }),
+      ) as unknown as Promise<Submission>,
+    onSuccess: (submission) => {
+      queryClient.setQueryData(['submissions', submission._id], submission)
+      queryClient.invalidateQueries({ queryKey: ['submissions'] })
+    },
+  })
+}
+
 export function useCreateSubmission() {
   const queryClient = useQueryClient()
   return useMutation({

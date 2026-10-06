@@ -56,10 +56,7 @@ async def _grade_submission(submission_id: str) -> None:
             extracted = extract_answers(rubric.format, file_path)
 
         submission.status = SubmissionStatus.GRADING
-        submission.answers = [
-            AnsweredQuestion(question_id=q.id, student_answer=extracted.get(q.answer_key, ""))
-            for q in rubric.questions
-        ]
+        submission.answers = _rebuild_answers(rubric.questions, extracted, submission.answers)
         await submission.save()
 
         settings = get_settings()
@@ -77,6 +74,25 @@ async def _grade_submission(submission_id: str) -> None:
         submission.status = SubmissionStatus.FAILED
         submission.error = str(exc)
         await submission.save()
+
+
+def _rebuild_answers(
+    questions: list[Question], extracted: dict[str, str], previous: list[AnsweredQuestion]
+) -> list[AnsweredQuestion]:
+    """Fresh, ungraded answers for every question in the rubric, carrying
+    over any TA manual override (`manual_grade`/`manual_graded_at`) from the
+    previous run by `question_id` -- a re-grade refreshes the LLM's `grade`,
+    but must not silently throw away a human correction. An override for a
+    question no longer in the rubric is dropped along with the question."""
+    previous_by_id = {a.question_id: a for a in previous}
+    answers = []
+    for q in questions:
+        answer = AnsweredQuestion(question_id=q.id, student_answer=extracted.get(q.answer_key, ""))
+        if (prev := previous_by_id.get(q.id)) is not None:
+            answer.manual_grade = prev.manual_grade
+            answer.manual_graded_at = prev.manual_graded_at
+        answers.append(answer)
+    return answers
 
 
 async def _grade_answers(

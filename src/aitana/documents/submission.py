@@ -23,7 +23,21 @@ class SubmissionStatus(str, Enum):
 class AnsweredQuestion(BaseModel):
     question_id: str
     student_answer: str
+    # The LLM's grade, exactly as `grade_answer` produced it -- never edited
+    # by hand. A TA's correction goes in `manual_grade` instead, so the
+    # original LLM suggestion stays visible next to it (and keeps being
+    # refreshed by a re-grade, while the override survives it -- see
+    # worker/tasks.py's `_rebuild_answers`).
     grade: Grade | None = None
+    manual_grade: Grade | None = None
+    manual_graded_at: datetime | None = None
+
+    @property
+    def effective_grade(self) -> Grade | None:
+        """What the student should see: the TA's override if any, else the
+        LLM's grade. A plain property (not a `computed_field`) so it's never
+        written to Mongo alongside the two fields it's derived from."""
+        return self.manual_grade or self.grade
 
 
 class Submission(Document):

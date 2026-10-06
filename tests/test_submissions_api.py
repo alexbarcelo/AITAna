@@ -1,5 +1,6 @@
 from aitana.documents import Course, Edition, Rubric, Submission, SubmissionStatus
-from aitana.grading.models import Question, SubmissionFormat
+from aitana.documents.submission import AnsweredQuestion
+from aitana.grading.models import Grade, Question, SubmissionFormat
 
 
 async def _make_student(client) -> str:
@@ -327,3 +328,90 @@ async def test_set_submission_student_submission_not_found(client):
         "/submissions/000000000000000000000000/student", json={"student_id": student_id}
     )
     assert resp.status_code == 404
+
+
+async def _make_graded_submission(client) -> str:
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id)
+    submission_id = (
+        await client.post(
+            "/submissions",
+            data={"student_id": student_id, "rubric_id": rubric_id},
+            files={"file": ("answers.pdf", b"data", "application/pdf")},
+        )
+    ).json()["_id"]
+    submission = await Submission.get(submission_id)
+    submission.status = SubmissionStatus.GRADED
+    submission.answers = [
+        AnsweredQuestion(
+            question_id="answer1", student_answer="It crashed.", grade=Grade(level="some_effort", feedback="LLM says")
+        )
+    ]
+    await submission.save()
+    return submission_id
+
+
+async def test_set_manual_grade_keeps_llm_grade(client):
+    submission_id = await _make_graded_submission(client)
+
+    resp = await client.put(
+        f"/submissions/{submission_id}/answers/answer1/grade", json={"level": "solid", "feedback": "TA says"}
+    )
+    assert resp.status_code == 200
+    answer = resp.json()["answers"][0]
+    assert answer["manual_grade"] == {"level": "solid", "feedback": "TA says"}
+    assert answer["manual_graded_at"] is not None
+    assert answer["grade"] == {"level": "some_effort", "feedback": "LLM says"}
+
+    stored = (await Submission.get(submission_id)).answers[0]
+    assert stored.manual_grade == Grade(level="solid", feedback="TA says")
+    assert stored.effective_grade == stored.manual_grade
+
+
+async def test_clear_manual_grade_reverts_to_llm(client):
+    submission_id = await _make_graded_submission(client)
+    await client.put(f"/submissions/{submission_id}/answers/answer1/grade", json={"level": "solid", "feedback": "x"})
+
+    resp = await client.delete(f"/submissions/{submission_id}/answers/answer1/grade")
+    assert resp.status_code == 200
+    answer = resp.json()["answers"][0]
+    assert answer["manual_grade"] is None
+    assert answer["manual_graded_at"] is None
+    assert (await Submission.get(submission_id)).answers[0].effective_grade.level == "some_effort"
+
+
+async def test_set_manual_grade_rejects_unknown_level(client):
+    submission_id = await _make_graded_submission(client)
+    resp = await client.put(
+        f"/submissions/{submission_id}/answers/answer1/grade", json={"level": "excellent", "feedback": "x"}
+    )
+    assert resp.status_code == 422
+
+
+async def test_set_manual_grade_unknown_question(client):
+    submission_id = await _make_graded_submission(client)
+    resp = await client.put(f"/submissions/{submission_id}/answers/nope/grade", json={"level": "solid", "feedback": "x"})
+    assert resp.status_code == 404
+
+
+async def test_set_manual_grade_not_found(client):
+    resp = await client.put(
+        "/submissions/000000000000000000000000/answers/answer1/grade", json={"level": "solid", "feedback": "x"}
+    )
+    assert resp.status_code == 404
+
+
+async def test_set_manual_grade_rejected_while_grading(client):
+    submission_id = await _make_graded_submission(client)
+    submission = await Submission.get(submission_id)
+    submission.status = SubmissionStatus.GRADING
+    await submission.save()
+
+    resp = await client.put(
+        f"/submissions/{submission_id}/answers/answer1/grade", json={"level": "solid", "feedback": "x"}
+    )
+    assert resp.status_code == 409
+    resp = await client.delete(f"/submissions/{submission_id}/answers/answer1/grade")
+    assert resp.status_code == 409

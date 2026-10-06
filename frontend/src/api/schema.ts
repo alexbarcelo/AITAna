@@ -336,6 +336,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/submissions/{submission_id}/answers/{question_id}/grade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Manual Grade
+         * @description Manually override one answer's grade level + feedback. Stored as
+         *     `manual_grade`, next to (not instead of) the LLM's own `grade` -- see
+         *     `AnsweredQuestion`'s docstring -- and survives a re-grade.
+         */
+        put: operations["set_manual_grade_submissions__submission_id__answers__question_id__grade_put"];
+        post?: never;
+        /**
+         * Clear Manual Grade
+         * @description Drop a manual override, reverting that answer to the LLM's grade.
+         */
+        delete: operations["clear_manual_grade_submissions__submission_id__answers__question_id__grade_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/submissions/{submission_id}/file": {
         parameters: {
             query?: never;
@@ -392,8 +418,10 @@ export interface paths {
          *     `_grade_submission` always re-downloads the raw file, re-extracts answers
          *     (using whichever extractor `rubric.format` selects), and rebuilds
          *     `answers` from the rubric's current questions, so this discards any
-         *     previous grades/feedback -- exactly what "force re-grade" should do (e.g.
-         *     after fixing a rubric or the uploaded file, or retrying a `failed` run).
+         *     previous LLM grades/feedback -- exactly what "force re-grade" should do
+         *     (e.g. after fixing a rubric or the uploaded file, or retrying a `failed`
+         *     run). TA manual overrides (`manual_grade`) are the exception: they're
+         *     carried over by question id (see worker/tasks.py's `_rebuild_answers`).
          */
         post: operations["regrade_submission_submissions__submission_id__regrade_post"];
         delete?: never;
@@ -488,6 +516,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/grading-traces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Grading Traces
+         * @description Most-recent-first, optionally narrowed to one submission and/or
+         *     question -- the two axes someone diagnosing a specific grade actually
+         *     has on hand.
+         */
+        get: operations["list_grading_traces_grading_traces_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Grading Traces
+         * @description Bulk-delete grading traces -- the cleanup mechanism this collection
+         *     has instead of a TTL index (see `documents/grading_trace.py`'s
+         *     docstring: traceability data is meant to accumulate until someone
+         *     deliberately decides to prune it, not expire on its own).
+         *
+         *     Requires at least one of `submission_id`/`before`, or the explicit
+         *     `all=true` escape hatch -- a bare `DELETE /grading-traces` silently
+         *     wiping the entire collection would be an easy mistake otherwise.
+         *     `submission_id`/`before` given together AND, same as every other
+         *     multi-filter list endpoint in this app.
+         */
+        delete: operations["delete_grading_traces_grading_traces_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/grading-traces/{trace_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Grading Trace */
+        get: operations["get_grading_trace_grading_traces__trace_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -516,6 +596,9 @@ export interface components {
             /** Student Answer */
             student_answer: string;
             grade?: components["schemas"]["Grade"] | null;
+            manual_grade?: components["schemas"]["Grade"] | null;
+            /** Manual Graded At */
+            manual_graded_at?: string | null;
         };
         /**
          * Batch
@@ -708,6 +791,111 @@ export interface components {
              * @description Short (2-3 sentence), specific feedback addressed to the student: what they got right and, more importantly, what they are missing.
              */
             feedback: string;
+        };
+        /**
+         * GradeTrace
+         * @description Diagnostic record of one `grade_answer()` call -- everything beyond
+         *     the `Grade` itself worth keeping around to later explain "why did the
+         *     LLM grade this the way it did": the exact prompt sent, the
+         *     provider/model used, whatever reasoning/"thinking" content that
+         *     provider's response happened to expose, any tool calls made (e.g. the
+         *     Python sandbox, see `sandbox.py`), token usage, and timing.
+         *
+         *     DB-agnostic like `Grade`/`Question` (see their docstrings) -- produced by
+         *     `grade_answer` via its optional `on_trace` callback and never stored
+         *     itself; `worker/tasks.py` persists it as a `GradingTrace` Beanie document
+         *     (`documents/grading_trace.py`), embedding it under that document's
+         *     `trace` field. `POST /rubrics/{id}/test-answer`'s synchronous "try it"
+         *     endpoint doesn't pass `on_trace`, so nothing is captured there either --
+         *     consistent with that endpoint's existing "nothing is persisted" promise.
+         *
+         *     `thinking` is best-effort and frequently `None`: this project's only
+         *     providers (`grading/llm.py` -- OpenAI, OpenRouter, Ollama) mostly don't
+         *     expose raw reasoning tokens over the APIs used here, only occasionally a
+         *     summary. See `grading.py`'s `_extract_thinking` for exactly what shapes
+         *     are checked. Absence means "this provider/model/call didn't include
+         *     any", not a bug.
+         */
+        GradeTrace: {
+            /** Provider */
+            provider: string;
+            /** Model */
+            model: string;
+            /** System Prompt */
+            system_prompt: string;
+            /** Student Answer */
+            student_answer: string;
+            grade: components["schemas"]["Grade"];
+            /**
+             * Blank Short Circuit
+             * @default false
+             */
+            blank_short_circuit: boolean;
+            /** Thinking */
+            thinking?: string | null;
+            /** Tool Calls */
+            tool_calls?: {
+                [key: string]: unknown;
+            }[];
+            /** Prompt Tokens */
+            prompt_tokens?: number | null;
+            /** Completion Tokens */
+            completion_tokens?: number | null;
+            /** Total Tokens */
+            total_tokens?: number | null;
+            /**
+             * Elapsed Seconds
+             * @default 0
+             */
+            elapsed_seconds: number;
+        };
+        /**
+         * GradingTrace
+         * @description One record per real `grade_answer()` call (`worker/tasks.py`'s
+         *     `_grade_answers`) -- kept in its own collection, not embedded in
+         *     `Submission`/`AnsweredQuestion`, so this diagnostic data (the full
+         *     system prompt, any thinking/tool-call content, token usage) never rides
+         *     along on every `Submission.save()`/serialization the way an embedded
+         *     field would (see AGENTS.md sharp edge #1 for why `Submission` already
+         *     gets re-serialized on every grading step -- this deliberately doesn't
+         *     add to that).
+         *
+         *     Not written for `POST /rubrics/{id}/test-answer`'s synchronous "try it"
+         *     calls -- that endpoint's docstring already promises nothing is
+         *     persisted, and `grade_answer` only emits a trace when a caller passes
+         *     `on_trace` (see `grading/grading.py`), which that endpoint doesn't.
+         *
+         *     There is no TTL/expiry on this collection by design (traceability is the
+         *     point) -- `GET /grading-traces` and `DELETE /grading-traces`
+         *     (`api/routers/grading_traces.py`) are the mechanism for inspecting and
+         *     manually pruning it instead. `regrade_submission` (`api/routers/
+         *     submissions.py`) does *not* clean up a submission's previous traces
+         *     before re-grading -- old and new traces for the same submission/question
+         *     coexist, distinguished by `created_at`, which is deliberate (it's the
+         *     "what did the last run before we fixed the rubric actually see" case
+         *     that traceability exists for) but does mean a repeatedly-regraded
+         *     submission accumulates traces without the cleanup endpoint being used.
+         */
+        GradingTrace: {
+            /** @description MongoDB document ObjectID */
+            _id?: components["schemas"]["PydanticObjectId"] | null;
+            /** Submission */
+            submission: {
+                /** Id */
+                id: string;
+                /** Collection */
+                collection: string;
+            } | {
+                [key: string]: unknown;
+            };
+            /** Question Id */
+            question_id: string;
+            trace: components["schemas"]["GradeTrace"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1667,6 +1855,74 @@ export interface operations {
             };
         };
     };
+    set_manual_grade_submissions__submission_id__answers__question_id__grade_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: components["schemas"]["PydanticObjectId"];
+                question_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Grade"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Submission"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_manual_grade_submissions__submission_id__answers__question_id__grade_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: components["schemas"]["PydanticObjectId"];
+                question_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Submission"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     download_submission_file_submissions__submission_id__file_get: {
         parameters: {
             query?: never;
@@ -1905,6 +2161,105 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BatchRegradeResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_grading_traces_grading_traces_get: {
+        parameters: {
+            query?: {
+                submission_id?: components["schemas"]["PydanticObjectId"] | null;
+                question_id?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradingTrace"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_grading_traces_grading_traces_delete: {
+        parameters: {
+            query?: {
+                submission_id?: components["schemas"]["PydanticObjectId"] | null;
+                before?: string | null;
+                all?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_grading_trace_grading_traces__trace_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradingTrace"];
                 };
             };
             /** @description Validation Error */

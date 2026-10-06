@@ -1,15 +1,19 @@
 import { useState } from 'react'
+import AnswerGradeEditor from './AnswerGradeEditor'
 import GradeBadge from './GradeBadge'
 import { gradeColor, prettifyLevel } from '../lib/gradeColor'
-import type { AnsweredQuestion, Question, Submission, SubmissionRubric } from '../api/types'
+import { effectiveGrade, IN_PROGRESS_STATUSES, type AnsweredQuestion, type Question, type Submission, type SubmissionRubric } from '../api/types'
 
 /**
  * Students (rows) x questions (columns) grading overview for a batch --
  * cells are colored by grade level (same ordinal ramp as `GradeBadge`, so
  * this reads consistently with every other grade indicator in the app), an
- * empty cell means not graded yet, and clicking a graded cell opens a
+ * empty cell means not graded yet, and clicking a cell opens a
  * single-answer quick view (no prev/next -- close it and click another
- * cell instead).
+ * cell instead) where a TA can also override the grade (same
+ * `AnswerGradeEditor` as the submission page). An ungraded cell is
+ * clickable too once its submission is no longer being graded, so an
+ * answer the LLM never graded (e.g. a failed run) can be graded by hand.
  */
 export default function GradingGrid({
   submissions,
@@ -18,11 +22,14 @@ export default function GradingGrid({
   submissions: Submission[]
   rubric: SubmissionRubric
 }) {
-  const [selected, setSelected] = useState<{
-    submission: Submission
-    question: Question
-    answer: AnsweredQuestion
-  } | null>(null)
+  // Ids only, not the objects themselves: the modal re-reads the answer from
+  // the live `submissions` prop on every render, so a manual-grade save
+  // (which refetches the submissions query) shows up in the open modal
+  // instead of it displaying a stale snapshot.
+  const [selected, setSelected] = useState<{ submissionId: string; questionId: string } | null>(null)
+  const selectedSubmission = selected && submissions.find((s) => s._id === selected.submissionId)
+  const selectedQuestion = selected && rubric.questions.find((q) => q.id === selected.questionId)
+  const selectedAnswer = selected && selectedSubmission?.answers.find((a) => a.question_id === selected.questionId)
 
   const rows = [...submissions].sort((a, b) =>
     (a.student?.name ?? a.batch_internal_id ?? '').localeCompare(b.student?.name ?? b.batch_internal_id ?? ''),
@@ -58,18 +65,31 @@ export default function GradingGrid({
                 </td>
                 {rubric.questions.map((q) => {
                   const answer = s.answers.find((a) => a.question_id === q.id)
-                  const step = answer?.grade ? gradeColor(answer.grade.level, rubric.grading_scale) : null
+                  const grade = answer ? effectiveGrade(answer) : null
+                  const step = grade ? gradeColor(grade.level, rubric.grading_scale) : null
+                  const clickable = Boolean(grade || (answer && !IN_PROGRESS_STATUSES.includes(s.status)))
                   return (
                     <td key={q.id} className="p-1 text-center">
                       <button
                         type="button"
-                        disabled={!answer?.grade}
-                        onClick={() => answer?.grade && setSelected({ submission: s, question: q, answer })}
-                        title={answer?.grade ? prettifyLevel(answer.grade.level) : 'Not graded yet'}
-                        className="flex h-8 w-full min-w-20 items-center justify-center rounded disabled:cursor-default"
+                        disabled={!clickable}
+                        onClick={() => clickable && setSelected({ submissionId: s._id, questionId: q.id })}
+                        title={
+                          grade
+                            ? `${prettifyLevel(grade.level)}${answer?.manual_grade ? ' (edited by a TA)' : ''}`
+                            : clickable
+                              ? 'Not graded -- click to grade manually'
+                              : 'Not graded yet'
+                        }
+                        className="relative flex h-8 w-full min-w-20 items-center justify-center rounded disabled:cursor-default"
                         style={step ? { backgroundColor: step.hex } : undefined}
                       >
-                        {!step && <span className="text-xs text-slate-300">—</span>}
+                        {!step && (
+                          <span className={`text-xs ${clickable ? 'text-slate-400' : 'text-slate-300'}`}>—</span>
+                        )}
+                        {answer?.manual_grade && (
+                          <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-white ring-1 ring-slate-500" />
+                        )}
                       </button>
                     </td>
                   )
@@ -82,7 +102,15 @@ export default function GradingGrid({
 
       <GradeLegend scale={rubric.grading_scale} />
 
-      {selected && <AnswerQuickView {...selected} scale={rubric.grading_scale} onClose={() => setSelected(null)} />}
+      {selectedSubmission && selectedQuestion && selectedAnswer && (
+        <AnswerQuickView
+          submission={selectedSubmission}
+          question={selectedQuestion}
+          answer={selectedAnswer}
+          scale={rubric.grading_scale}
+          onClose={() => setSelected(null)}
+        />
+      )}
     </div>
   )
 }
@@ -117,6 +145,7 @@ function AnswerQuickView({
   scale: SubmissionRubric['grading_scale']
   onClose: () => void
 }) {
+  const grade = effectiveGrade(answer)
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div
@@ -128,12 +157,24 @@ function AnswerQuickView({
             <h2 className="font-medium text-slate-900">{question.title}</h2>
             <p className="text-xs text-slate-500">{submission.student ? submission.student.name : submission.batch_internal_id}</p>
           </div>
-          {answer.grade && <GradeBadge level={answer.grade.level} scale={scale} />}
+          <div className="flex items-center gap-2">
+            {answer.manual_grade && (
+              <span className="text-xs text-slate-500" title="Grade set manually by a TA">
+                edited
+              </span>
+            )}
+            {grade && <GradeBadge level={grade.level} scale={scale} />}
+          </div>
         </div>
         <p className="mb-3 whitespace-pre-wrap rounded bg-slate-50 p-3 text-sm text-slate-700">
           {answer.student_answer || <span className="text-slate-400">No answer provided.</span>}
         </p>
-        {answer.grade && <p className="text-sm text-slate-600">{answer.grade.feedback}</p>}
+        <AnswerGradeEditor
+          submissionId={submission._id}
+          answer={answer}
+          scale={scale}
+          disabled={IN_PROGRESS_STATUSES.includes(submission.status)}
+        />
         <div className="mt-4 flex justify-end">
           <button onClick={onClose} className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">
             Close

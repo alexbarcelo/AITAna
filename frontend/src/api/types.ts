@@ -4,6 +4,16 @@ export type Student = components['schemas']['Student']
 export type Question = components['schemas']['Question']
 export type Grade = components['schemas']['Grade']
 export type AnsweredQuestion = components['schemas']['AnsweredQuestion']
+
+/**
+ * What the student should see for an answer: the TA's manual override if
+ * any, else the LLM's grade. Mirrors the backend's
+ * `AnsweredQuestion.effective_grade` (`documents/submission.py`) -- the LLM's
+ * own `grade` is never edited in place, so both stay available.
+ */
+export function effectiveGrade(answer: AnsweredQuestion): Grade | null {
+  return answer.manual_grade ?? answer.grade ?? null
+}
 export type SubmissionStatus = components['schemas']['SubmissionStatus']
 export type SubmissionFormat = components['schemas']['SubmissionFormat']
 export type StudentImportFormat = components['schemas']['StudentImportFormat']

@@ -84,3 +84,36 @@ async def test_grade_answers_persists_every_question_not_just_the_first(mongo_db
     assert sorted(t.question_id for t in traces) == ["answer1", "answer2", "answer3"]
     assert {t.trace.grade.level for t in traces} == {"solid", "almost_there", "some_effort"}
     assert all(t.trace.provider == "openai" and t.trace.model == "gpt-4o-mini" for t in traces)
+
+
+def test_rebuild_answers_carries_over_manual_overrides(mongo_db):
+    from datetime import UTC, datetime
+
+    from aitana.worker.tasks import _rebuild_answers
+
+    when = datetime(2026, 10, 1, tzinfo=UTC)
+    questions = [
+        Question(id="answer1", title="Q1", question="Q1?", rubric="R1"),
+        Question(id="answer2", title="Q2", question="Q2?", rubric="R2"),
+    ]
+    previous = [
+        AnsweredQuestion(
+            question_id="answer1",
+            student_answer="old",
+            grade=Grade(level="some_effort", feedback="LLM"),
+            manual_grade=Grade(level="solid", feedback="TA"),
+            manual_graded_at=when,
+        ),
+        AnsweredQuestion(question_id="answer2", student_answer="old", grade=Grade(level="solid", feedback="LLM")),
+        # Question no longer in the rubric -- its override is dropped with it.
+        AnsweredQuestion(question_id="gone", student_answer="x", manual_grade=Grade(level="solid", feedback="TA")),
+    ]
+
+    answers = _rebuild_answers(questions, {"answer1": "new1", "answer2": "new2"}, previous)
+
+    assert [a.question_id for a in answers] == ["answer1", "answer2"]
+    assert answers[0].student_answer == "new1"
+    assert answers[0].grade is None  # LLM grade is refreshed by the re-grade
+    assert answers[0].manual_grade == Grade(level="solid", feedback="TA")
+    assert answers[0].manual_graded_at == when
+    assert answers[1].manual_grade is None

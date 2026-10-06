@@ -104,3 +104,21 @@ async def test_render_feedback_html_failed_shows_error(mongo_db):
 async def test_feedback_filename_prefers_student_id_over_batch_folder(mongo_db):
     submission = _submission()
     assert feedback_filename(submission) == "s1_containers_feedback.html"
+
+
+async def test_render_feedback_html_prefers_manual_grade(mongo_db):
+    submission = _submission(
+        answers=[
+            AnsweredQuestion(
+                question_id="answer1",
+                student_answer="It crashed.",
+                grade=Grade(level="some_effort", feedback="LLM feedback text."),
+                manual_grade=Grade(level="solid", feedback="TA feedback text."),
+            )
+        ]
+    )
+    html_out = render_feedback_html(submission)
+
+    assert "TA feedback text." in html_out
+    assert "Solid" in html_out
+    assert "LLM feedback text." not in html_out

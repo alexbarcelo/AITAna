@@ -97,15 +97,18 @@ def render_feedback_html(submission: Submission) -> str:
 
         badge = ""
         feedback = ""
-        if answer.grade:
-            color = _grade_color(answer.grade.level, rubric.grading_scale)
+        # The TA's manual override, if any, is what the student gets -- see
+        # AnsweredQuestion.effective_grade.
+        grade = answer.effective_grade
+        if grade:
+            color = _grade_color(grade.level, rubric.grading_scale)
             if color:
                 hex_color, text = color
                 style = f"background:{hex_color};color:{'#ffffff' if text == 'white' else '#0b0b0b'};"
             else:
                 style = "background:#f1f5f9;color:#475569;"
-            badge = f'<span class="badge" style="{style}">{html.escape(_prettify_level(answer.grade.level))}</span>'
-            feedback = f'<p class="feedback">{html.escape(answer.grade.feedback)}</p>'
+            badge = f'<span class="badge" style="{style}">{html.escape(_prettify_level(grade.level))}</span>'
+            feedback = f'<p class="feedback">{html.escape(grade.feedback)}</p>'
 
         answer_text = (
             html.escape(answer.student_answer)
