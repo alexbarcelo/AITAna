@@ -19,7 +19,7 @@ from ..documents import AnsweredQuestion, GradingTrace, Submission, SubmissionSt
 from ..grading.extraction import FORMAT_FILE_INFO, extract_answers
 from ..grading.grading import grade_answer
 from ..grading.llm import get_chat_model
-from ..grading.models import GradeTrace, Question
+from ..grading.models import ExtractionResult, GradeTrace, Question
 from ..settings import get_settings
 from .celery_app import celery_app
 
@@ -77,7 +77,7 @@ async def _grade_submission(submission_id: str) -> None:
 
 
 def _rebuild_answers(
-    questions: list[Question], extracted: dict[str, str], previous: list[AnsweredQuestion]
+    questions: list[Question], extracted: ExtractionResult, previous: list[AnsweredQuestion]
 ) -> list[AnsweredQuestion]:
     """Fresh, ungraded answers for every question in the rubric, carrying
     over any TA manual override (`manual_grade`/`manual_graded_at`) from the
@@ -87,7 +87,11 @@ def _rebuild_answers(
     previous_by_id = {a.question_id: a for a in previous}
     answers = []
     for q in questions:
-        answer = AnsweredQuestion(question_id=q.id, student_answer=extracted.get(q.answer_key, ""))
+        answer = AnsweredQuestion(
+            question_id=q.id,
+            student_answer=extracted.answers.get(q.answer_key, ""),
+            untagged_cells=extracted.untagged_cells.get(q.answer_key, 0),
+        )
         if (prev := previous_by_id.get(q.id)) is not None:
             answer.manual_grade = prev.manual_grade
             answer.manual_graded_at = prev.manual_graded_at

@@ -5,6 +5,7 @@ import AnswerGradeEditor from '../components/AnswerGradeEditor'
 import GradeBadge from '../components/GradeBadge'
 import MatchStudentDialog from '../components/MatchStudentDialog'
 import StatusBadge from '../components/StatusBadge'
+import { UntaggedCellsBadge, UntaggedCellsSummary } from '../components/UntaggedCells'
 import { effectiveGrade, FORMAT_FILE_INFO, IN_PROGRESS_STATUSES } from '../api/types'
 
 export default function SubmissionDetailPage() {
@@ -79,6 +80,7 @@ export default function SubmissionDetailPage() {
       {submission.status === 'failed' && (
         <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">{submission.error ?? 'Grading failed.'}</p>
       )}
+      <UntaggedCellsSummary submission={submission} />
 
       <div className="space-y-4">
         {submission.answers.map((answer) => {
@@ -89,6 +91,7 @@ export default function SubmissionDetailPage() {
               <div className="mb-2 flex items-center justify-between">
                 <h2 className="font-medium">{question?.title ?? answer.question_id}</h2>
                 <div className="flex items-center gap-2">
+                  <UntaggedCellsBadge count={answer.untagged_cells} />
                   {answer.manual_grade && (
                     <span className="text-xs text-slate-500" title="Grade set manually by a TA">
                       edited

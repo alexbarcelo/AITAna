@@ -65,7 +65,13 @@ A rubric fixes one `format` at creation time (default `pdf`):
   within Jupyter/JupyterLab's built-in "Cell Tags" UI and "Advanced tools",
   no custom extension needed). 
   Multiple tagged cells sharing the same id are concatenated in
-  notebook order. Parsed by reading the `.ipynb` JSON directly (no
+  notebook order.
+  If the template also tags each (locked, `editable: false`) question cell
+  with `aitana:question` + the same id, every editable cell after it -- up
+  to the next locked cell -- is part of that question's answer too, even
+  without a tag (students recreating or adding cells). Those untagged cells
+  are counted and flagged in the UI: per answer, per submission, and as an
+  extraction report on a batch/rubric's submissions list. Parsed by reading the `.ipynb` JSON directly (no
   `nbformat` dependency -- see `src/aitana/grading/extraction/notebook.py`'s
   module docstring for why).
 

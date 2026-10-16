@@ -28,7 +28,7 @@ def test_extract_answers_dispatches_to_notebook_extractor(tmp_path):
         )
     )
 
-    assert extract_answers(SubmissionFormat.NOTEBOOK, notebook_path) == {"answer1": "42"}
+    assert extract_answers(SubmissionFormat.NOTEBOOK, notebook_path).answers == {"answer1": "42"}
 
 
 def test_format_file_info_covers_every_submission_format():

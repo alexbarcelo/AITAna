@@ -12,10 +12,12 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
+from ..models import ExtractionResult
+
 logger = logging.getLogger(__name__)
 
 
-def extract_answers(pdf_path: Path) -> dict[str, str]:
+def extract_answers(pdf_path: Path) -> ExtractionResult:
     """Return {field_name: text_value} for every text form field in the PDF."""
     logger.debug("Opening PDF %s", pdf_path)
     reader = PdfReader(pdf_path)
@@ -26,4 +28,4 @@ def extract_answers(pdf_path: Path) -> dict[str, str]:
     non_blank = sum(1 for v in answers.values() if v)
     logger.info("Extracted %d text field(s) from %s (%d non-blank)", len(answers), pdf_path, non_blank)
     logger.debug("Field names: %s", list(answers.keys()))
-    return answers
+    return ExtractionResult(answers=answers)

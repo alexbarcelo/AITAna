@@ -23,6 +23,12 @@ class SubmissionStatus(str, Enum):
 class AnsweredQuestion(BaseModel):
     question_id: str
     student_answer: str
+    # How many cells of `student_answer` the extractor picked up *without*
+    # an explicit answer tag (a student recreated/added cells below the
+    # question -- see grading/extraction/notebook.py's "Untagged cells").
+    # Informational only, so a TA knows to double-check this answer; always
+    # 0 for formats with no such heuristic (PDF).
+    untagged_cells: int = 0
     # The LLM's grade, exactly as `grade_answer` produced it -- never edited
     # by hand. A TA's correction goes in `manual_grade` instead, so the
     # original LLM suggestion stays visible next to it (and keeps being

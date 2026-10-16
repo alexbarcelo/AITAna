@@ -595,6 +595,11 @@ export interface components {
             question_id: string;
             /** Student Answer */
             student_answer: string;
+            /**
+             * Untagged Cells
+             * @default 0
+             */
+            untagged_cells: number;
             grade?: components["schemas"]["Grade"] | null;
             manual_grade?: components["schemas"]["Grade"] | null;
             /** Manual Graded At */

@@ -1,7 +1,9 @@
 """Pluggable per-format answer extraction.
 
-Every extractor has the same shape: `(file_path: Path) -> dict[str, str]`,
-mapping a `Question.answer_key` to the student's raw extracted text.
+Every extractor has the same shape: `(file_path: Path) -> ExtractionResult`
+(`grading/models.py`): `answers` maps a `Question.answer_key` to the
+student's raw extracted text, `untagged_cells` reports any answer the
+extractor had to infer heuristically (empty for formats with no heuristics).
 `extract_answers(format, path)` below dispatches to the one registered for
 `format`. Adding a new format means writing one such function in a sibling
 module and registering it in `_EXTRACTORS` (and `FORMAT_FILE_INFO`, for the
@@ -12,10 +14,10 @@ extension/content-type it's stored/served with) -- nothing in
 from collections.abc import Callable
 from pathlib import Path
 
-from ..models import SubmissionFormat
+from ..models import ExtractionResult, SubmissionFormat
 from . import notebook, pdf
 
-_EXTRACTORS: dict[SubmissionFormat, Callable[[Path], dict[str, str]]] = {
+_EXTRACTORS: dict[SubmissionFormat, Callable[[Path], ExtractionResult]] = {
     SubmissionFormat.PDF: pdf.extract_answers,
     SubmissionFormat.NOTEBOOK: notebook.extract_answers,
 }
@@ -29,5 +31,5 @@ FORMAT_FILE_INFO: dict[SubmissionFormat, tuple[str, str]] = {
 }
 
 
-def extract_answers(fmt: SubmissionFormat, file_path: Path) -> dict[str, str]:
+def extract_answers(fmt: SubmissionFormat, file_path: Path) -> ExtractionResult:
     return _EXTRACTORS[fmt](file_path)

@@ -125,6 +125,23 @@ class SubmissionFormat(str, Enum):
     NOTEBOOK = "notebook"
 
 
+class ExtractionResult(BaseModel):
+    """What an extractor (`grading/extraction/`) returns for one submission file.
+
+    `answers` is `{answer_key: text}`. `untagged_cells` is `{answer_key:
+    count}` for every answer the extractor had to *infer* rather than read
+    off an explicit marker -- today only the notebook extractor does this
+    (cells a student added/recreated after a question, see
+    `extraction/notebook.py`'s "Untagged cells" section); the PDF extractor
+    always leaves it empty. Kept separate from `answers` so the worker can
+    surface it per question (`AnsweredQuestion.untagged_cells`) for a TA to
+    double-check, without it ever reaching the grading prompt.
+    """
+
+    answers: dict[str, str] = Field(default_factory=dict)
+    untagged_cells: dict[str, int] = Field(default_factory=dict)
+
+
 class Question(BaseModel):
     """One gradable question: where to read the student's answer from the
     submitted file, plus grading instructions.

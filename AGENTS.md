@@ -129,16 +129,17 @@ the extraction step.
   grading time, so allowing the flip would make existing submissions'
   stored answers permanently unre-explainable.
 - **Extraction is pluggable** (`grading/extraction/`): `__init__.py`
-  exposes `extract_answers(fmt, path) -> dict[answer_key, text]`, dispatching
+  exposes `extract_answers(fmt, path) -> ExtractionResult`, dispatching
   to `pdf.py` or `notebook.py` via a `_EXTRACTORS` dict, plus
   `FORMAT_FILE_INFO: dict[SubmissionFormat, (extension, content_type)]` used
   by both the upload path (`storage.object_key`, extension-mismatch
   validation in `create_submission`) and the download path (`Content-Type`
   + filename extension in `download_submission_file`). Adding a third format
-  means writing one `(path) -> dict[str, str]` function in a new sibling
+  means writing one `(path) -> ExtractionResult` function in a new sibling
   module and registering it in both dicts -- nothing in `worker/tasks.py` or
   the API routers needs to change.
-- **`pdf.py`** is the `pypdf`-based AcroForm-field reader.
+- **`pdf.py`** is the `pypdf`-based AcroForm-field reader (never reports
+  untagged cells).
 - **`notebook.py`** parses a `.ipynb` submission by loading it as plain JSON
   (stdlib `json.load`, no `nbformat` dependency) and scanning `cells` for the
   Jupyter cell tag `aitana:answer` (`cell.metadata.tags`, Jupyter's own
@@ -159,6 +160,23 @@ the extraction step.
   older instead of silently misreading it. If that assumption ever breaks
   in practice, that's the point to reconsider `nbformat`, specifically for
   its version converters -- not for routine parsing.
+- **Untagged cells (notebook heuristic).** Students delete/recreate answer
+  cells (losing the tag) or add scratch cells. A template may tag each
+  question-statement cell `aitana:question` (+ `aitana.id`); every
+  following *editable* cell up to the next `editable: false` or
+  `aitana:question` cell is joined into that question's answer, tag or not.
+  An explicit `aitana:answer` id always wins over position; blank/`...`
+  cells are skipped. Full rules in `notebook.py`'s docstring. This is why
+  extractors return an **`ExtractionResult`** (`grading/models.py`:
+  `answers` + `untagged_cells: {answer_key: count}`) instead of a bare
+  dict -- the worker copies the count onto `AnsweredQuestion.untagged_cells`
+  (`_rebuild_answers`), and the frontend flags it everywhere answers are
+  shown (`components/UntaggedCells.tsx`: per-answer badge, per-submission
+  summary, and an aggregated per-question/per-submission report above a
+  batch- or rubric-filtered submissions list, computed client-side from
+  the listed submissions -- no dedicated report endpoint). The count never
+  reaches the grading prompt; each picked-up cell is also logged at INFO
+  by the worker.
 - **`storage.py`** has no format-specific logic at all -- `upload_file(key,
   data, content_type)` and `object_key(rubric_slug, student_id,
   submission_id, extension)` both take the format-derived bits as plain

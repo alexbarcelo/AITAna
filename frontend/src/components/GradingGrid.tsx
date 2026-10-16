@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import AnswerGradeEditor from './AnswerGradeEditor'
 import GradeBadge from './GradeBadge'
+import { UntaggedCellsBadge } from './UntaggedCells'
 import { gradeColor, prettifyLevel } from '../lib/gradeColor'
 import { effectiveGrade, IN_PROGRESS_STATUSES, type AnsweredQuestion, type Question, type Submission, type SubmissionRubric } from '../api/types'
 
@@ -68,6 +69,8 @@ export default function GradingGrid({
                   const grade = answer ? effectiveGrade(answer) : null
                   const step = grade ? gradeColor(grade.level, rubric.grading_scale) : null
                   const clickable = Boolean(grade || (answer && !IN_PROGRESS_STATUSES.includes(s.status)))
+                  const untagged = answer?.untagged_cells ?? 0
+                  const untaggedNote = untagged > 0 ? ` -- ${untagged} untagged cell(s) joined into this answer` : ''
                   return (
                     <td key={q.id} className="p-1 text-center">
                       <button
@@ -75,11 +78,11 @@ export default function GradingGrid({
                         disabled={!clickable}
                         onClick={() => clickable && setSelected({ submissionId: s._id, questionId: q.id })}
                         title={
-                          grade
+                          (grade
                             ? `${prettifyLevel(grade.level)}${answer?.manual_grade ? ' (edited by a TA)' : ''}`
                             : clickable
                               ? 'Not graded -- click to grade manually'
-                              : 'Not graded yet'
+                              : 'Not graded yet') + untaggedNote
                         }
                         className="relative flex h-8 w-full min-w-20 items-center justify-center rounded disabled:cursor-default"
                         style={step ? { backgroundColor: step.hex } : undefined}
@@ -89,6 +92,11 @@ export default function GradingGrid({
                         )}
                         {answer?.manual_grade && (
                           <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-white ring-1 ring-slate-500" />
+                        )}
+                        {untagged > 0 && (
+                          <span className="absolute bottom-0.5 left-1 text-[10px] font-semibold leading-none text-amber-600">
+                            +{untagged}
+                          </span>
                         )}
                       </button>
                     </td>
@@ -128,6 +136,10 @@ function GradeLegend({ scale }: { scale: SubmissionRubric['grading_scale'] }) {
         <span className="inline-block h-3 w-3 rounded bg-slate-50 ring-1 ring-inset ring-slate-200" />
         Not graded yet
       </span>
+      <span className="inline-flex items-center gap-1">
+        <span className="text-[10px] font-semibold text-amber-600">+N</span>
+        Untagged cells joined into the answer
+      </span>
     </div>
   )
 }
@@ -158,6 +170,7 @@ function AnswerQuickView({
             <p className="text-xs text-slate-500">{submission.student ? submission.student.name : submission.batch_internal_id}</p>
           </div>
           <div className="flex items-center gap-2">
+            <UntaggedCellsBadge count={answer.untagged_cells} />
             {answer.manual_grade && (
               <span className="text-xs text-slate-500" title="Grade set manually by a TA">
                 edited

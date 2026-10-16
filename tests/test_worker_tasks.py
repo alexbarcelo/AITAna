@@ -89,6 +89,7 @@ async def test_grade_answers_persists_every_question_not_just_the_first(mongo_db
 def test_rebuild_answers_carries_over_manual_overrides(mongo_db):
     from datetime import UTC, datetime
 
+    from aitana.grading.models import ExtractionResult
     from aitana.worker.tasks import _rebuild_answers
 
     when = datetime(2026, 10, 1, tzinfo=UTC)
@@ -109,7 +110,9 @@ def test_rebuild_answers_carries_over_manual_overrides(mongo_db):
         AnsweredQuestion(question_id="gone", student_answer="x", manual_grade=Grade(level="solid", feedback="TA")),
     ]
 
-    answers = _rebuild_answers(questions, {"answer1": "new1", "answer2": "new2"}, previous)
+    answers = _rebuild_answers(
+        questions, ExtractionResult(answers={"answer1": "new1", "answer2": "new2"}, untagged_cells={"answer2": 3}), previous
+    )
 
     assert [a.question_id for a in answers] == ["answer1", "answer2"]
     assert answers[0].student_answer == "new1"
@@ -117,3 +120,4 @@ def test_rebuild_answers_carries_over_manual_overrides(mongo_db):
     assert answers[0].manual_grade == Grade(level="solid", feedback="TA")
     assert answers[0].manual_graded_at == when
     assert answers[1].manual_grade is None
+    assert [a.untagged_cells for a in answers] == [0, 3]

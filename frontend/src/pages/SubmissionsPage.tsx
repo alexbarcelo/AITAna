@@ -4,6 +4,8 @@ import { useBatch, useBatches, useCourses, useEditions, useRegradeBatch, useRubr
 import GradingGrid from '../components/GradingGrid'
 import MatchStudentDialog from '../components/MatchStudentDialog'
 import StatusBadge from '../components/StatusBadge'
+import { UntaggedCellsBadge, UntaggedCellsReport } from '../components/UntaggedCells'
+import { totalUntaggedCells } from '../lib/untaggedCells'
 import { BATCH_TYPE_LABELS, IN_PROGRESS_STATUSES } from '../api/types'
 import { formatDateTime } from '../lib/date'
 
@@ -264,6 +266,8 @@ export default function SubmissionsPage() {
       {isLoading && <p className="text-sm text-slate-500">Loading...</p>}
       {error && <p className="text-sm text-red-600">Failed to load submissions.</p>}
 
+      {singleRubric && submissions && <UntaggedCellsReport submissions={submissions} rubric={singleRubric} />}
+
       {submissions && (
         <table className="w-full overflow-hidden rounded-lg border border-slate-200 bg-white text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
@@ -291,7 +295,10 @@ export default function SubmissionsPage() {
                 {showFolder && <td className="px-4 py-2 font-mono text-xs">{s.batch_internal_id}</td>}
                 {showRubricColumn && <td className="px-4 py-2">{s.rubric.title}</td>}
                 <td className="px-4 py-2">
-                  <StatusBadge status={s.status} />
+                  <div className="flex items-center gap-2">
+                    <StatusBadge status={s.status} />
+                    <UntaggedCellsBadge count={totalUntaggedCells(s.answers)} />
+                  </div>
                 </td>
                 <td className="px-4 py-2 text-slate-500">{formatDateTime(s.created_at)}</td>
               </tr>
