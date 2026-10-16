@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { useCourses, useEditions, useRubrics } from '../api/hooks'
+import { useCourses, useEditions, useRubricSubmissionCounts, useRubrics } from '../api/hooks'
 import RubricForm from '../components/RubricForm'
 import { formatDate } from '../lib/date'
 
@@ -42,6 +42,7 @@ export default function RubricsPage() {
     isLoading,
     error,
   } = useRubrics({ course_id: courseId || undefined, edition_id: editionId || undefined })
+  const { data: submissionCounts } = useRubricSubmissionCounts()
   const [showForm, setShowForm] = useState(false)
 
   return (
@@ -110,6 +111,7 @@ export default function RubricsPage() {
               <th className="px-4 py-2">Course</th>
               <th className="px-4 py-2">Edition</th>
               <th className="px-4 py-2">Questions</th>
+              <th className="px-4 py-2">Submissions</th>
               <th className="px-4 py-2">Created</th>
               <th className="px-4 py-2">Last updated</th>
             </tr>
@@ -126,13 +128,18 @@ export default function RubricsPage() {
                 <td className="px-4 py-2 text-slate-500">{rubric.course.name}</td>
                 <td className="px-4 py-2 text-slate-500">{rubric.edition ? rubric.edition.name : 'any (reusable)'}</td>
                 <td className="px-4 py-2 text-slate-500">{rubric.questions.length}</td>
+                <td className="px-4 py-2 text-slate-500">
+                  <Link to={`/?rubric_id=${rubric._id}`} className="hover:underline">
+                    {submissionCounts ? (submissionCounts[rubric._id] ?? 0) : '...'}
+                  </Link>
+                </td>
                 <td className="px-4 py-2 text-slate-500">{formatDate(rubric.created_at)}</td>
                 <td className="px-4 py-2 text-slate-500">{formatDate(rubric.updated_at)}</td>
               </tr>
             ))}
             {rubrics.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-slate-400">
+                <td colSpan={7} className="px-4 py-6 text-center text-slate-400">
                   {hasFilters ? 'No rubrics match these filters.' : 'No rubrics yet -- create one above.'}
                 </td>
               </tr>

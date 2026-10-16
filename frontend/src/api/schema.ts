@@ -167,6 +167,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/rubrics/submission-counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Rubric Submission Counts
+         * @description `{rubric_id: number of submissions}` for every rubric that has any
+         *     (absent = 0), in one aggregation rather than a count per rubric. Groups
+         *     on the whole stored `rubric` DBRef -- a `$rubric.$id` field path isn't
+         *     valid in an aggregation expression.
+         */
+        get: operations["rubric_submission_counts_rubrics_submission_counts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/rubrics/{rubric_id}": {
         parameters: {
             query?: never;
@@ -402,6 +425,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/submissions/regrade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regrade Submissions
+         * @description Re-grade an explicit set of submissions (e.g. whatever a filtered list
+         *     shows). With `question_id`, only that question is re-graded; `422` if it
+         *     isn't in every involved rubric.
+         */
+        post: operations["regrade_submissions_submissions_regrade_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/submissions/{submission_id}/regrade": {
         parameters: {
             query?: never;
@@ -508,6 +553,9 @@ export interface paths {
          *     (same per-submission reset: status back to `pending`, `error` cleared,
          *     re-enqueued), for when a whole batch needs re-running (e.g. after fixing
          *     the rubric, or a bad LLM provider config affected the whole run).
+         *
+         *     With `question_id`, only that question is re-graded (one LLM call per
+         *     submission); every other answer keeps its current grade.
          */
         post: operations["regrade_batch_batches__batch_id__regrade_post"];
         delete?: never;
@@ -714,6 +762,18 @@ export interface components {
             course_id?: components["schemas"]["PydanticObjectId"] | null;
             edition_id?: components["schemas"]["PydanticObjectId"] | null;
             format?: components["schemas"]["SubmissionFormat"] | null;
+        };
+        /** BulkRegradeRequest */
+        BulkRegradeRequest: {
+            /** Submission Ids */
+            submission_ids: components["schemas"]["PydanticObjectId"][];
+            /** Question Id */
+            question_id?: string | null;
+        };
+        /** BulkRegradeResult */
+        BulkRegradeResult: {
+            /** Regraded */
+            regraded: number;
         };
         /**
          * Course
@@ -1527,6 +1587,28 @@ export interface operations {
             };
         };
     };
+    rubric_submission_counts_rubrics_submission_counts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
+                };
+            };
+        };
+    };
     get_rubric_rubrics__rubric_id__get: {
         parameters: {
             query?: never;
@@ -1990,6 +2072,39 @@ export interface operations {
             };
         };
     };
+    regrade_submissions_submissions_regrade_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkRegradeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkRegradeResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     regrade_submission_submissions__submission_id__regrade_post: {
         parameters: {
             query?: never;
@@ -2150,7 +2265,9 @@ export interface operations {
     };
     regrade_batch_batches__batch_id__regrade_post: {
         parameters: {
-            query?: never;
+            query?: {
+                question_id?: string | null;
+            };
             header?: never;
             path: {
                 batch_id: components["schemas"]["PydanticObjectId"];

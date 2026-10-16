@@ -60,8 +60,13 @@ export default function SubmissionDetailPage() {
             Export feedback
           </a>
           <button
-            onClick={() => regrade.mutate(submission._id)}
-            disabled={inProgress || regrade.isPending}
+            onClick={() => {
+              // Not a hard block -- see SubmissionsPage's regrade bar.
+              if (inProgress && !window.confirm('This submission is still in progress (or stuck if its job was lost). Re-grade anyway?'))
+                return
+              regrade.mutate(submission._id)
+            }}
+            disabled={regrade.isPending}
             title="Force re-grading: re-extracts the file and replaces the LLM grades/feedback (manual grades are kept)"
             className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-50"
           >

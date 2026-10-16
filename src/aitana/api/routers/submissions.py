@@ -25,6 +25,19 @@ router = APIRouter(prefix="/submissions", tags=["submissions"])
 _SHALLOW_LINKS = {"rubric": 1, "batch": 1}
 
 
+async def enqueue_regrade(submission: Submission, question_id: str | None = None) -> None:
+    """Reset a submission to `pending` and re-enqueue grading -- all of it,
+    or only `question_id` (other answers keep their grades, see
+    worker/tasks.py's `_grade_submission`)."""
+    submission.status = SubmissionStatus.PENDING
+    submission.error = None
+    await submission.save()
+    if question_id is None:
+        grade_submission.delay(str(submission.id))
+    else:
+        grade_submission.delay(str(submission.id), only_question_id=question_id)
+
+
 async def _resolve_edition(rubric: Rubric, edition_id: PydanticObjectId | None) -> Edition:
     """A submission always has a definite edition, even for a rubric that
     doesn't fix one (e.g. a lab reused across years): use the rubric's own
@@ -249,6 +262,33 @@ async def download_submission_feedback(submission_id: PydanticObjectId) -> Respo
     )
 
 
+class BulkRegradeRequest(BaseModel):
+    submission_ids: list[PydanticObjectId]
+    question_id: str | None = None
+
+
+class BulkRegradeResult(BaseModel):
+    regraded: int
+
+
+@router.post("/regrade", response_model=BulkRegradeResult, status_code=202)
+async def regrade_submissions(body: BulkRegradeRequest) -> BulkRegradeResult:
+    """Re-grade an explicit set of submissions (e.g. whatever a filtered list
+    shows). With `question_id`, only that question is re-graded; `422` if it
+    isn't in every involved rubric."""
+    submissions = await Submission.find(In(Submission.id, body.submission_ids)).to_list()
+    if body.question_id is not None:
+        rubric_ids = {s.rubric.ref.id for s in submissions}
+        rubrics = await Rubric.find(In(Rubric.id, list(rubric_ids))).to_list()
+        if len(rubrics) != len(rubric_ids) or any(
+            body.question_id not in {q.id for q in r.questions} for r in rubrics
+        ):
+            raise HTTPException(status_code=422, detail=f"Question {body.question_id!r} is not in every submission's rubric")
+    for submission in submissions:
+        await enqueue_regrade(submission, body.question_id)
+    return BulkRegradeResult(regraded=len(submissions))
+
+
 @router.post("/{submission_id}/regrade", response_model=Submission, status_code=202)
 async def regrade_submission(submission_id: PydanticObjectId) -> Submission:
     """Force a submission back through extraction+grading from scratch.
@@ -265,9 +305,5 @@ async def regrade_submission(submission_id: PydanticObjectId) -> Submission:
     if submission is None:
         raise HTTPException(status_code=404, detail="Submission not found")
 
-    submission.status = SubmissionStatus.PENDING
-    submission.error = None
-    await submission.save()
-
-    grade_submission.delay(str(submission.id))
+    await enqueue_regrade(submission)
     return submission

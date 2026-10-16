@@ -708,6 +708,11 @@ created and abandoned) deletes freely. Same `Link.id == ...` query shape
 (and the same "can't positively unit-test this under mongomock" situation,
 sharp edge #3) as `_guard_format_change`.
 
+`GET /rubrics/submission-counts` returns `{rubric_id: count}` (one
+`$group` on the whole `rubric` DBRef -- a `$rubric.$id` path is invalid in
+aggregation expressions), shown on the rubric list/detail pages as a link to
+`/?rubric_id=...`.
+
 The frontend (`RubricDetailPage.tsx`) exposes this as a "Delete" button next
 to "Edit", behind a native `confirm()` -- there's no undo, and a `409` here
 means "go deal with the submissions/batches first," not "retry."
@@ -881,6 +886,15 @@ per subfolder in the zip, each enqueued for grading immediately, same as
   pattern as the `batch_id` filter on `GET /submissions` above (verified
   against real MongoDB, not exercised end-to-end under mongomock -- see
   `test_regrade_batch` in `tests/test_batches_api.py`).
+  Optional `?question_id=` re-grades only that question (`422` if not in the
+  rubric): the worker still re-extracts, but `_rebuild_answers`
+  (`keep_grades_except`) keeps every other answer's previous LLM grade and
+  `_grade_answers` (`only_question_id`) skips them -- no LLM call, no trace.
+  For re-running one question after a rubric tweak without paying for the
+  rest. `POST /submissions/regrade` (`{submission_ids, question_id?}`) is
+  the same over an explicit id list; the frontend uses it for its regrade
+  bar, shown whenever the submissions list is filtered to a single rubric
+  (batch or rubric filter), regrading exactly the listed submissions.
 
 Both are creation-only, same `409`-on-duplicate-slug shape as rubrics.
 `POST /courses` takes just `name` (+ optional `slug`). `POST /editions`

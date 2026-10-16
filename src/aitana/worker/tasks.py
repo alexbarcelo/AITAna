@@ -31,11 +31,14 @@ _SHALLOW_RUBRIC_LINK = {"rubric": 1}
 
 
 @celery_app.task(name="aitana.grade_submission")
-def grade_submission(submission_id: str) -> None:
-    asyncio.run(_grade_submission(submission_id))
+def grade_submission(submission_id: str, only_question_id: str | None = None) -> None:
+    asyncio.run(_grade_submission(submission_id, only_question_id))
 
 
-async def _grade_submission(submission_id: str) -> None:
+async def _grade_submission(submission_id: str, only_question_id: str | None = None) -> None:
+    """`only_question_id` re-grades just that question: every other answer
+    keeps its previous LLM grade (see `_rebuild_answers`) and is not sent to
+    the LLM again -- for re-running one question after a rubric tweak."""
     await init_db()
     submission = await Submission.get(
         PydanticObjectId(submission_id), fetch_links=True, nesting_depths_per_field=_SHALLOW_RUBRIC_LINK
@@ -56,7 +59,9 @@ async def _grade_submission(submission_id: str) -> None:
             extracted = extract_answers(rubric.format, file_path)
 
         submission.status = SubmissionStatus.GRADING
-        submission.answers = _rebuild_answers(rubric.questions, extracted, submission.answers)
+        submission.answers = _rebuild_answers(
+            rubric.questions, extracted, submission.answers, keep_grades_except=only_question_id
+        )
         await submission.save()
 
         settings = get_settings()
@@ -64,7 +69,13 @@ async def _grade_submission(submission_id: str) -> None:
             settings.llm_provider, settings.llm_model, reasoning_effort=settings.llm_reasoning_effort
         )
         await _grade_answers(
-            submission, rubric.questions, chat_model, rubric.grading_scale, settings.llm_provider, settings.llm_model
+            submission,
+            rubric.questions,
+            chat_model,
+            rubric.grading_scale,
+            settings.llm_provider,
+            settings.llm_model,
+            only_question_id=only_question_id,
         )
 
         submission.status = SubmissionStatus.GRADED
@@ -77,13 +88,19 @@ async def _grade_submission(submission_id: str) -> None:
 
 
 def _rebuild_answers(
-    questions: list[Question], extracted: ExtractionResult, previous: list[AnsweredQuestion]
+    questions: list[Question],
+    extracted: ExtractionResult,
+    previous: list[AnsweredQuestion],
+    keep_grades_except: str | None = None,
 ) -> list[AnsweredQuestion]:
     """Fresh, ungraded answers for every question in the rubric, carrying
     over any TA manual override (`manual_grade`/`manual_graded_at`) from the
     previous run by `question_id` -- a re-grade refreshes the LLM's `grade`,
     but must not silently throw away a human correction. An override for a
-    question no longer in the rubric is dropped along with the question."""
+    question no longer in the rubric is dropped along with the question.
+
+    With `keep_grades_except` set (single-question re-grade), the previous
+    LLM `grade` is also carried over for every *other* question."""
     previous_by_id = {a.question_id: a for a in previous}
     answers = []
     for q in questions:
@@ -95,6 +112,8 @@ def _rebuild_answers(
         if (prev := previous_by_id.get(q.id)) is not None:
             answer.manual_grade = prev.manual_grade
             answer.manual_graded_at = prev.manual_graded_at
+            if keep_grades_except is not None and q.id != keep_grades_except:
+                answer.grade = prev.grade
         answers.append(answer)
     return answers
 
@@ -106,6 +125,8 @@ async def _grade_answers(
     grading_scale: dict[str, str],
     provider: str,
     model: str,
+    *,
+    only_question_id: str | None = None,
 ) -> None:
     """Grade each question in order, saving after every single one.
 
@@ -123,8 +144,12 @@ async def _grade_answers(
     Inserted before `submission.save()` so a trace exists even if something
     about the submission save itself goes wrong -- the grade was still
     produced, and that's the part worth not losing.
+
+    `only_question_id` skips every other question (no LLM call, no trace).
     """
     for i, question in enumerate(questions):
+        if only_question_id is not None and question.id != only_question_id:
+            continue
         captured_trace: GradeTrace | None = None
 
         def _capture(trace: GradeTrace) -> None:

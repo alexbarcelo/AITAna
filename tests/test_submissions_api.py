@@ -277,6 +277,33 @@ async def test_regrade_submission_resets_status_and_reenqueues(client):
     assert client.delayed_submission_ids == [submission_id, submission_id]
 
 
+async def test_bulk_regrade_submissions(client):
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id)
+    submission_id = (
+        await client.post(
+            "/submissions",
+            data={"student_id": student_id, "rubric_id": rubric_id},
+            files={"file": ("answers.pdf", b"data", "application/pdf")},
+        )
+    ).json()["_id"]
+    question_id = (await Rubric.get(rubric_id)).questions[0].id
+
+    resp = await client.post("/submissions/regrade", json={"submission_ids": [submission_id], "question_id": question_id})
+    assert resp.status_code == 202
+    assert resp.json() == {"regraded": 1}
+    assert client.delayed_question_ids == [None, question_id]
+
+    resp = await client.post("/submissions/regrade", json={"submission_ids": [submission_id]})
+    assert resp.json() == {"regraded": 1}
+    assert client.delayed_question_ids[-1] is None
+
+    resp = await client.post("/submissions/regrade", json={"submission_ids": [submission_id], "question_id": "nope"})
+    assert resp.status_code == 422
+
+
 async def test_regrade_submission_not_found(client):
     resp = await client.post("/submissions/000000000000000000000000/regrade")
     assert resp.status_code == 404

@@ -22,11 +22,11 @@ from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 from ... import storage
-from ...documents import Batch, BatchType, Rubric, Student, Submission, SubmissionStatus
+from ...documents import Batch, BatchType, Rubric, Student, Submission
 from ...grading.extraction import FORMAT_FILE_INFO
 from ...worker.tasks import grade_submission
 from ..feedback_export import render_feedback_html
-from .submissions import _SHALLOW_LINKS, _resolve_edition
+from .submissions import _SHALLOW_LINKS, _resolve_edition, enqueue_regrade
 
 router = APIRouter(prefix="/batches", tags=["batches"])
 
@@ -262,21 +262,23 @@ class BatchRegradeResult(BaseModel):
 
 
 @router.post("/{batch_id}/regrade", response_model=BatchRegradeResult, status_code=202)
-async def regrade_batch(batch_id: PydanticObjectId) -> BatchRegradeResult:
+async def regrade_batch(batch_id: PydanticObjectId, question_id: str | None = None) -> BatchRegradeResult:
     """Force every submission in this batch back through extraction+grading
     from scratch -- the bulk version of `POST /submissions/{id}/regrade`
     (same per-submission reset: status back to `pending`, `error` cleared,
     re-enqueued), for when a whole batch needs re-running (e.g. after fixing
-    the rubric, or a bad LLM provider config affected the whole run)."""
+    the rubric, or a bad LLM provider config affected the whole run).
+
+    With `question_id`, only that question is re-graded (one LLM call per
+    submission); every other answer keeps its current grade."""
     batch = await Batch.get(batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail="Batch not found")
+    if question_id is not None and question_id not in {q.id for q in (await batch.rubric.fetch()).questions}:
+        raise HTTPException(status_code=422, detail=f"Question {question_id!r} is not in this batch's rubric")
 
     submissions = await Submission.find(Submission.batch.id == batch_id).to_list()
     for submission in submissions:
-        submission.status = SubmissionStatus.PENDING
-        submission.error = None
-        await submission.save()
-        grade_submission.delay(str(submission.id))
+        await enqueue_regrade(submission, question_id)
 
     return BatchRegradeResult(regraded=len(submissions))

@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
-import { useDeleteRubric, useRubric, useTestRubricAnswer } from '../api/hooks'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useDeleteRubric, useRubric, useRubricSubmissionCounts, useTestRubricAnswer } from '../api/hooks'
 import type { GradingScale } from '../api/types'
 import GradeBadge from '../components/GradeBadge'
 import RubricForm from '../components/RubricForm'
@@ -77,6 +77,7 @@ export default function RubricDetailPage() {
   const { data: rubric, isLoading, error } = useRubric(id)
   const [editing, setEditing] = useState(false)
   const deleteRubric = useDeleteRubric()
+  const { data: submissionCounts } = useRubricSubmissionCounts()
 
   if (isLoading) return <p className="text-sm text-slate-500">Loading...</p>
   if (error || !rubric) return <p className="text-sm text-red-600">Failed to load this rubric.</p>
@@ -117,6 +118,9 @@ export default function RubricDetailPage() {
             <span>Edition: {rubric.edition ? rubric.edition.name : 'any (reusable across editions)'}</span>
             <span>Created: {formatDate(rubric.created_at)}</span>
             <span>Last updated: {formatDate(rubric.updated_at)}</span>
+            <Link to={`/?rubric_id=${rubric._id}`} className="text-slate-700 hover:underline">
+              {submissionCounts ? (submissionCounts[rubric._id] ?? 0) : '...'} submission(s)
+            </Link>
           </div>
           {deleteRubric.isError && (
             <p className="mt-1 text-sm text-red-600">

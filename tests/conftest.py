@@ -92,13 +92,17 @@ async def client(monkeypatch, mongo_db):
     monkeypatch.setattr("aitana.storage.download_to_path", fake_download_to_path)
 
     delayed_submission_ids: list[str] = []
-    monkeypatch.setattr(
-        "aitana.api.routers.submissions.grade_submission.delay",
-        lambda submission_id: delayed_submission_ids.append(submission_id),
-    )
+    delayed_question_ids: list[str | None] = []
+
+    def fake_delay(submission_id: str, only_question_id: str | None = None) -> None:
+        delayed_submission_ids.append(submission_id)
+        delayed_question_ids.append(only_question_id)
+
+    monkeypatch.setattr("aitana.api.routers.submissions.grade_submission.delay", fake_delay)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         ac.delayed_submission_ids = delayed_submission_ids  # type: ignore[attr-defined]
+        ac.delayed_question_ids = delayed_question_ids  # type: ignore[attr-defined]
         ac.fake_objects = fake_objects  # type: ignore[attr-defined]
         yield ac

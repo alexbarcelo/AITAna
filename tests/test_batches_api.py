@@ -315,6 +315,27 @@ async def test_regrade_batch(client):
     assert "regraded" in resp.json()
 
 
+async def test_regrade_batch_single_question(client):
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id)
+    created = (
+        await client.post(
+            "/batches",
+            data={"rubric_id": rubric_id, "type": "atenea"},
+            files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+        )
+    ).json()
+    batch_id = created["batch"]["_id"]
+    question_id = _question().id
+
+    resp = await client.post(f"/batches/{batch_id}/regrade", params={"question_id": question_id})
+    assert resp.status_code == 202
+
+    resp = await client.post(f"/batches/{batch_id}/regrade", params={"question_id": "nope"})
+    assert resp.status_code == 422
+
+
 async def test_regrade_batch_not_found(client):
     resp = await client.post("/batches/000000000000000000000000/regrade")
     assert resp.status_code == 404

@@ -3,7 +3,7 @@ import { client } from './client'
 import { IN_PROGRESS_STATUSES } from './types'
 import type {
   Batch,
-  BatchRegradeResult,
+  RegradeResult,
   BatchType,
   BatchUploadResult,
   Course,
@@ -123,6 +123,15 @@ export function useRubrics(filters?: { course_id?: string; edition_id?: string }
       unwrap(
         client.GET('/rubrics', { params: { query: filters ?? {} } }),
       ) as Promise<Rubric[]>,
+  })
+}
+
+/** `{rubric_id: submission count}`; rubrics with none are absent. Keyed
+ * under `submissions` so anything invalidating submissions refreshes it. */
+export function useRubricSubmissionCounts() {
+  return useQuery({
+    queryKey: ['submissions', 'counts-by-rubric'],
+    queryFn: () => unwrap(client.GET('/rubrics/submission-counts')) as Promise<Record<string, number>>,
   })
 }
 
@@ -489,15 +498,15 @@ export function useCreateBatch() {
   })
 }
 
-export function useRegradeBatch() {
+export function useRegradeSubmissions() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (batchId: string) =>
+    mutationFn: ({ submissionIds, questionId }: { submissionIds: string[]; questionId?: string }) =>
       unwrap(
-        client.POST('/batches/{batch_id}/regrade', {
-          params: { path: { batch_id: batchId } },
+        client.POST('/submissions/regrade', {
+          body: { submission_ids: submissionIds, question_id: questionId ?? null },
         }),
-      ) as unknown as Promise<BatchRegradeResult>,
+      ) as unknown as Promise<RegradeResult>,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['submissions'] }),
   })
 }

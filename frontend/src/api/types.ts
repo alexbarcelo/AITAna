@@ -164,8 +164,8 @@ export interface BatchUploadResult {
   submissions: Submission[]
 }
 
-/** Response of `POST /batches/{batch_id}/regrade`. */
-export interface BatchRegradeResult {
+/** Response of `POST /submissions/regrade` (and `POST /batches/{batch_id}/regrade`). */
+export interface RegradeResult {
   regraded: number
 }
 

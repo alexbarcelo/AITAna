@@ -794,3 +794,22 @@ async def test_test_rubric_answer_llm_failure_returns_502(client, monkeypatch):
         json={"question_id": "answer1", "answer": "some answer"},
     )
     assert resp.status_code == 502
+
+
+async def test_rubric_submission_counts(client):
+    from aitana.documents import Course, Edition, Rubric, Submission
+
+    course = Course(name="BDM", slug="bdm")
+    await course.insert()
+    edition = Edition(name="2026/27", slug="2026_27")
+    await edition.insert()
+    used = Rubric(slug="used", title="Used", course=course, questions=[])
+    unused = Rubric(slug="unused", title="Unused", course=course, questions=[])
+    await used.insert()
+    await unused.insert()
+    for _ in range(2):
+        await Submission(rubric=used, edition=edition, file_object_key="k").insert()
+
+    resp = await client.get("/rubrics/submission-counts")
+    assert resp.status_code == 200
+    assert resp.json() == {str(used.id): 2}

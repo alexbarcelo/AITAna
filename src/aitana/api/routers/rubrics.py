@@ -163,6 +163,16 @@ async def list_rubrics(
     return await Rubric.find(*filters, fetch_links=True).to_list()
 
 
+@router.get("/submission-counts", response_model=dict[str, int])
+async def rubric_submission_counts() -> dict[str, int]:
+    """`{rubric_id: number of submissions}` for every rubric that has any
+    (absent = 0), in one aggregation rather than a count per rubric. Groups
+    on the whole stored `rubric` DBRef -- a `$rubric.$id` field path isn't
+    valid in an aggregation expression."""
+    rows = await Submission.aggregate([{"$group": {"_id": "$rubric", "count": {"$sum": 1}}}]).to_list()
+    return {str(row["_id"].id): row["count"] for row in rows}
+
+
 @router.get("/{rubric_id}", response_model=Rubric)
 async def get_rubric(rubric_id: PydanticObjectId) -> Rubric:
     rubric = await Rubric.get(rubric_id, fetch_links=True)

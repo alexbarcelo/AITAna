@@ -1,6 +1,7 @@
+import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { API_URL } from '../api/client'
-import { useBatch, useBatches, useCourses, useEditions, useRegradeBatch, useRubrics, useStudents, useSubmissions } from '../api/hooks'
+import { useBatch, useBatches, useCourses, useEditions, useRegradeSubmissions, useRubrics, useStudents, useSubmissions } from '../api/hooks'
 import GradingGrid from '../components/GradingGrid'
 import MatchStudentDialog from '../components/MatchStudentDialog'
 import StatusBadge from '../components/StatusBadge'
@@ -79,7 +80,8 @@ export default function SubmissionsPage() {
   const { data: batches } = useBatches()
   const { data: editions } = useEditions()
   const { data: batch } = useBatch(batchId || undefined)
-  const regradeBatch = useRegradeBatch()
+  const regrade = useRegradeSubmissions()
+  const [regradeQuestionId, setRegradeQuestionId] = useState('')
 
   const {
     data: submissions,
@@ -94,6 +96,8 @@ export default function SubmissionsPage() {
   })
 
   const singleRubric = singleRubricFilter && submissions && submissions.length > 0 ? submissions[0].rubric : undefined
+  // Drop a stale pick when the rubric filter changes to one without that question.
+  const regradeQuestion = singleRubric?.questions.some((q) => q.id === regradeQuestionId) ? regradeQuestionId : ''
   const anyInProgress = submissions?.some((s) => IN_PROGRESS_STATUSES.includes(s.status)) ?? false
   const hasFilters = FILTER_KEYS.some((k) => searchParams.get(k))
 
@@ -129,20 +133,8 @@ export default function SubmissionsPage() {
             >
               Download feedback (zip)
             </a>
-            <button
-              onClick={() => regradeBatch.mutate(batch._id)}
-              disabled={!submissions?.length || anyInProgress || regradeBatch.isPending}
-              title="Force re-grading every submission in this batch: re-extracts each file and discards existing grades/feedback"
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-50"
-            >
-              {regradeBatch.isPending ? 'Re-grading...' : 'Regrade all'}
-            </button>
           </div>
         </div>
-      )}
-      {regradeBatch.isError && <p className="text-sm text-red-600">Failed to trigger re-grading.</p>}
-      {regradeBatch.isSuccess && (
-        <p className="text-sm text-emerald-600">Queued {regradeBatch.data.regraded} submission(s) for re-grading.</p>
       )}
 
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-4">
@@ -265,6 +257,57 @@ export default function SubmissionsPage() {
 
       {isLoading && <p className="text-sm text-slate-500">Loading...</p>}
       {error && <p className="text-sm text-red-600">Failed to load submissions.</p>}
+
+      {singleRubric && submissions && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3">
+          <span className="text-sm text-slate-600">Regrade the {submissions.length} listed submission(s):</span>
+          <div className="flex items-center">
+            <select
+              value={regradeQuestion}
+              onChange={(e) => setRegradeQuestionId(e.target.value)}
+              title="Regrade only this question; other answers keep their current grades"
+              className="rounded-l-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-700"
+            >
+              <option value="">All questions</option>
+              {singleRubric.questions.map((q) => (
+                <option key={q.id} value={q.id}>
+                  {q.title}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => {
+                // Not a hard block: a submission can be stuck in an in-progress
+                // status forever if its worker job was lost, and this is the way out.
+                if (
+                  anyInProgress &&
+                  !window.confirm(
+                    'Some listed submissions are still pending/grading (or stuck there if their job was lost). Regrade anyway?',
+                  )
+                )
+                  return
+                regrade.mutate({
+                  submissionIds: submissions.map((s) => s._id),
+                  questionId: regradeQuestion || undefined,
+                })
+              }}
+              disabled={regrade.isPending}
+              title={
+                regradeQuestion
+                  ? 'Re-grade only the selected question; other grades are kept'
+                  : 'Re-extract each file and re-grade every question, discarding existing LLM grades/feedback'
+              }
+              className="-ml-px rounded-r-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-50"
+            >
+              {regrade.isPending ? 'Re-grading...' : regradeQuestion ? 'Regrade question' : 'Regrade all'}
+            </button>
+          </div>
+          {regrade.isError && <span className="text-sm text-red-600">Failed to trigger re-grading.</span>}
+          {regrade.isSuccess && (
+            <span className="text-sm text-emerald-600">Queued {regrade.data.regraded} submission(s).</span>
+          )}
+        </div>
+      )}
 
       {singleRubric && submissions && <UntaggedCellsReport submissions={submissions} rubric={singleRubric} />}
 

@@ -121,3 +121,61 @@ def test_rebuild_answers_carries_over_manual_overrides(mongo_db):
     assert answers[0].manual_graded_at == when
     assert answers[1].manual_grade is None
     assert [a.untagged_cells for a in answers] == [0, 3]
+
+
+def test_rebuild_answers_keeps_other_grades_on_single_question_regrade(mongo_db):
+    from aitana.grading.models import ExtractionResult
+    from aitana.worker.tasks import _rebuild_answers
+
+    questions = [
+        Question(id="answer1", title="Q1", question="Q1?", rubric="R1"),
+        Question(id="answer2", title="Q2", question="Q2?", rubric="R2"),
+    ]
+    previous = [
+        AnsweredQuestion(question_id="answer1", student_answer="a1", grade=Grade(level="solid", feedback="f1")),
+        AnsweredQuestion(question_id="answer2", student_answer="a2", grade=Grade(level="solid", feedback="f2")),
+    ]
+    answers = _rebuild_answers(
+        questions, ExtractionResult(answers={"answer1": "a1", "answer2": "a2"}), previous, keep_grades_except="answer2"
+    )
+    assert answers[0].grade == Grade(level="solid", feedback="f1")
+    assert answers[1].grade is None
+
+
+async def test_grade_answers_only_question_id(mongo_db, monkeypatch):
+    course = Course(name="BDM", slug="bdm")
+    await course.insert()
+    edition = Edition(name="2026/27", slug="2026_27")
+    await edition.insert()
+    rubric = Rubric(
+        slug="containers",
+        title="Containers",
+        course=course,
+        questions=[
+            Question(id="answer1", title="Q1", question="Q1?", rubric="R1"),
+            Question(id="answer2", title="Q2", question="Q2?", rubric="R2"),
+        ],
+    )
+    await rubric.insert()
+    old = Grade(level="solid", feedback="old")
+    submission = Submission(
+        rubric=rubric,
+        edition=edition,
+        file_object_key="k",
+        answers=[
+            AnsweredQuestion(question_id="answer1", student_answer="a1", grade=old),
+            AnsweredQuestion(question_id="answer2", student_answer="a2"),
+        ],
+    )
+    await submission.insert()
+
+    monkeypatch.setattr(
+        "aitana.grading.grading.create_agent", _fake_create_agent([Grade(level="some_effort", feedback="new")])
+    )
+    await _grade_answers(
+        submission, rubric.questions, object(), DEFAULT_GRADING_SCALE, "openai", "m", only_question_id="answer2"
+    )
+
+    fresh = await Submission.get(submission.id)
+    assert [a.grade for a in fresh.answers] == [old, Grade(level="some_effort", feedback="new")]
+    assert [t.question_id for t in await GradingTrace.find_all().to_list()] == ["answer2"]
