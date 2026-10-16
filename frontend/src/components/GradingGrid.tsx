@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import AnswerGradeEditor from './AnswerGradeEditor'
 import GradeBadge from './GradeBadge'
+import { GradeDistributionBar, GradingStatsSummary } from './GradeStats'
 import { UntaggedCellsBadge } from './UntaggedCells'
 import { gradeColor, prettifyLevel } from '../lib/gradeColor'
+import { formatScore, gradeStats, type GradeStats } from '../lib/gradeStats'
 import { effectiveGrade, IN_PROGRESS_STATUSES, type AnsweredQuestion, type Question, type Submission, type SubmissionRubric } from '../api/types'
 
 /**
@@ -15,6 +17,12 @@ import { effectiveGrade, IN_PROGRESS_STATUSES, type AnsweredQuestion, type Quest
  * `AnswerGradeEditor` as the submission page). An ungraded cell is
  * clickable too once its submission is no longer being graded, so an
  * answer the LLM never graded (e.g. a failed run) can be graded by hand.
+ *
+ * Statistics ride along at three levels, all computed client-side from the
+ * listed submissions (no stats endpoint): a summary panel above the grid
+ * (`GradingStatsSummary`), a per-student "Score" column (sortable), and a
+ * per-question footer row -- each with a grade-distribution bar and the
+ * mean position in the grading scale (`levelScore`, `lib/gradeStats.ts`).
  */
 export default function GradingGrid({
   submissions,
@@ -28,25 +36,60 @@ export default function GradingGrid({
   // (which refetches the submissions query) shows up in the open modal
   // instead of it displaying a stale snapshot.
   const [selected, setSelected] = useState<{ submissionId: string; questionId: string } | null>(null)
+  const [sortBy, setSortBy] = useState<'name' | 'score-desc' | 'score-asc'>('name')
   const selectedSubmission = selected && submissions.find((s) => s._id === selected.submissionId)
   const selectedQuestion = selected && rubric.questions.find((q) => q.id === selected.questionId)
   const selectedAnswer = selected && selectedSubmission?.answers.find((a) => a.question_id === selected.questionId)
 
-  const rows = [...submissions].sort((a, b) =>
-    (a.student?.name ?? a.batch_internal_id ?? '').localeCompare(b.student?.name ?? b.batch_internal_id ?? ''),
+  const scale = rubric.grading_scale
+  const studentStats = new Map(submissions.map((s) => [s._id, gradeStats(s.answers, scale)]))
+  const rowName = (s: Submission) => s.student?.name ?? s.batch_internal_id ?? ''
+  const rows = [...submissions].sort((a, b) => {
+    if (sortBy !== 'name') {
+      // Unscored rows always sink to the bottom, whichever direction.
+      const sa = studentStats.get(a._id)?.meanScore ?? null
+      const sb = studentStats.get(b._id)?.meanScore ?? null
+      if (sa !== sb) {
+        if (sa === null) return 1
+        if (sb === null) return -1
+        return sortBy === 'score-desc' ? sb - sa : sa - sb
+      }
+    }
+    return rowName(a).localeCompare(rowName(b))
+  })
+  const questionStats = new Map(
+    rubric.questions.map((q) => [
+      q.id,
+      gradeStats(
+        submissions.flatMap((s) => s.answers.filter((a) => a.question_id === q.id)),
+        scale,
+      ),
+    ]),
   )
+  const nextSort = { name: 'score-desc', 'score-desc': 'score-asc', 'score-asc': 'name' } as const
 
   if (rows.length === 0 || rubric.questions.length === 0) return null
 
   return (
     <div className="space-y-2">
       <h2 className="text-sm font-medium text-slate-900">Grading overview</h2>
+      <GradingStatsSummary submissions={submissions} rubric={rubric} />
       <div className="max-h-[70vh] overflow-auto rounded-lg border border-slate-200 bg-white">
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr>
               <th className="sticky left-0 top-0 z-20 border-b border-r border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium uppercase text-slate-500">
                 Student
+              </th>
+              <th className="sticky top-0 z-10 whitespace-nowrap border-b border-r border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium uppercase text-slate-500">
+                <button
+                  type="button"
+                  onClick={() => setSortBy(nextSort[sortBy])}
+                  className="uppercase hover:text-slate-900"
+                  title="Mean position of this student's graded answers in the grading scale (0% = all lowest level, 100% = all highest). Click to sort."
+                >
+                  Score {sortBy === 'score-desc' ? '↓' : sortBy === 'score-asc' ? '↑' : ''}
+                </button>
               </th>
               {rubric.questions.map((q) => (
                 <th
@@ -63,6 +106,9 @@ export default function GradingGrid({
               <tr key={s._id} className="border-b border-slate-100 last:border-0">
                 <td className="sticky left-0 z-10 whitespace-nowrap border-r border-slate-200 bg-white px-3 py-2 font-medium text-slate-900">
                   {s.student ? s.student.name : <span className="text-slate-400">{s.batch_internal_id ?? 'Unmatched'}</span>}
+                </td>
+                <td className="border-r border-slate-200 px-3 py-2">
+                  <ScoreCell stats={studentStats.get(s._id)!} scale={scale} />
                 </td>
                 {rubric.questions.map((q) => {
                   const answer = s.answers.find((a) => a.question_id === q.id)
@@ -105,6 +151,19 @@ export default function GradingGrid({
               </tr>
             ))}
           </tbody>
+          <tfoot>
+            <tr>
+              <th className="sticky bottom-0 left-0 z-20 border-r border-t border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium uppercase text-slate-500">
+                Per question
+              </th>
+              <td className="sticky bottom-0 z-10 border-r border-t border-slate-200 bg-slate-50" />
+              {rubric.questions.map((q) => (
+                <td key={q.id} className="sticky bottom-0 z-10 border-t border-slate-200 bg-slate-50 px-2 py-2">
+                  <ScoreCell stats={questionStats.get(q.id)!} scale={scale} />
+                </td>
+              ))}
+            </tr>
+          </tfoot>
         </table>
       </div>
 
@@ -119,6 +178,18 @@ export default function GradingGrid({
           onClose={() => setSelected(null)}
         />
       )}
+    </div>
+  )
+}
+
+/** Mean scale position + distribution bar -- one student's row, or one question's column. */
+function ScoreCell({ stats, scale }: { stats: GradeStats; scale: SubmissionRubric['grading_scale'] }) {
+  return (
+    <div className="flex min-w-24 items-center gap-2">
+      <span className="w-9 text-right text-xs font-medium tabular-nums text-slate-900">{formatScore(stats.meanScore)}</span>
+      <div className="flex-1">
+        <GradeDistributionBar stats={stats} scale={scale} className="h-2" />
+      </div>
     </div>
   )
 }

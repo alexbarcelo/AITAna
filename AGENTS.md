@@ -420,6 +420,24 @@ refetches `['submissions']`) is reflected without closing it.
   keeps showing the LLM's suggestion under an override, which is how a
   changed LLM opinion after a re-grade stays visible.
 
+## Grading overview statistics
+
+`GradingGrid.tsx` shows stats at three levels -- a summary panel above the
+grid (`components/GradeStats.tsx`), a sortable per-student "Score" column, a
+per-question footer row. All are computed client-side from the listed
+submissions (no stats endpoint), always from `effectiveGrade`.
+
+- **"Score" is the mean *position* in the rubric's `grading_scale`** (0% =
+  first/worst level, 100% = last/best; `levelScore` in
+  `lib/gradeStats.ts`), not a mark: levels are ordinal labels with no
+  numeric value (see "Pluggable grading scales"), so position is the only
+  average that works for any scale. It's only comparable within one rubric.
+  If rubrics ever get real per-level points, replace `levelScore`, not the
+  views.
+- Ungraded answers and levels no longer in the scale are left out of the
+  mean, but ungraded answers still show as a neutral segment in the
+  distribution bars.
+
 ## Pluggable LLM providers (`grading/llm.py`)
 
 Four providers: OpenAI, Anthropic, OpenRouter (an OpenAI-compatible proxy in
