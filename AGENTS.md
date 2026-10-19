@@ -428,6 +428,30 @@ far, no frontend consumes it yet.
   other Document -- if you add a new format/scale/whatever that touches the
   documents package, remember this one exists too.
 
+## Per-answer grading info (audit tooltip)
+
+`AnsweredQuestion.grading_info: dict | None` is a compact summary of the
+LLM call behind `grade` -- provider, model (+ `model_reported` when the
+provider names a different snapshot), `reasoning_effort`, features used
+(sandbox/outputs/images), LLM/tool call counts, elapsed time, `tokens`
+(standard input/output/total plus any `input_token_details`/
+`output_token_details` sub-counts like `cache_read`/`reasoning`), `cost`
+(only OpenRouter reports one today), and the final response's scalar
+`response_metadata` under `provider_details` (finish reason, service tier,
+Ollama durations, ...). Built by `grading.py`'s `build_grading_info`,
+carried on `GradeTrace.info`, copied onto the answer by `_grade_answers`.
+
+- **Sparse and schemaless on purpose**: a key is only present when the
+  provider reported it; nothing queries or indexes it. Adding a key needs no
+  frontend change -- `components/GradingInfo.tsx` renders known keys with
+  labels and anything unknown under "Other".
+- The full prompt/thinking/tool transcript stays in `GradingTrace`; this is
+  just what fits in a tooltip (per answer, plus header totals on the
+  submission page). Answers graded before this existed have no info: the
+  icon still shows on them, saying so.
+- Kept for untouched answers on a single-question regrade, alongside
+  `grade` (`_rebuild_answers`).
+
 ## Manual grade overrides
 
 A TA can correct any answer's level/feedback from the submission page or

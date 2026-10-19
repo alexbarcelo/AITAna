@@ -14,7 +14,8 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -257,6 +258,116 @@ def _extract_usage(messages: list[BaseMessage]) -> tuple[int | None, int | None,
     return prompt_tokens, completion_tokens, total_tokens
 
 
+# `response_metadata` keys never worth surfacing in `grading_info`'s
+# `provider_details`: per-request ids/timestamps, things already reported
+# elsewhere in the dict (model name, cost), and LangChain's own bookkeeping.
+_SKIPPED_RESPONSE_METADATA = {
+    "id",
+    "created_at",
+    "model",
+    "model_name",
+    "model_provider",
+    "output_version",
+    "cost",
+}
+
+
+def _sum_token_details(messages: list[BaseMessage]) -> dict[str, int]:
+    """Sums `usage_metadata`'s standard token counts plus whatever
+    `input_token_details`/`output_token_details` sub-counts (cache_read,
+    cache_creation, reasoning, audio, ...) a provider reported -- each one
+    only appears if at least one call reported it."""
+    tokens: dict[str, int] = {}
+    for message in messages:
+        usage = getattr(message, "usage_metadata", None)
+        if not usage:
+            continue
+        counts = {
+            "input": usage.get("input_tokens"),
+            "output": usage.get("output_tokens"),
+            "total": usage.get("total_tokens"),
+            **(usage.get("input_token_details") or {}),
+            **(usage.get("output_token_details") or {}),
+        }
+        for key, value in counts.items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                tokens[key] = tokens.get(key, 0) + value
+    return tokens
+
+
+def build_grading_info(
+    *,
+    provider: str,
+    model: str,
+    question: Question,
+    messages: list[BaseMessage],
+    elapsed_seconds: float,
+    blank_short_circuit: bool,
+    image_count: int = 0,
+    reasoning_effort: str | None = None,
+) -> dict[str, Any]:
+    """Compact, provider-agnostic summary of one grading call, stored on
+    `AnsweredQuestion.grading_info` for the submission page's info tooltip
+    (the full prompt/thinking/tool transcript stays in `GradingTrace`).
+
+    Sparse on purpose: a key is only present when there's something to say
+    -- every provider reports a different subset (OpenRouter is the only one
+    returning a `cost`, Ollama reports durations, OpenAI a service tier,
+    ...), so the frontend just renders whatever is there. Scalar
+    `response_metadata` entries of the final LLM response land as-is under
+    `provider_details`, so a provider-specific field shows up without this
+    function knowing about it.
+    """
+    ai_messages = [m for m in messages if isinstance(m, AIMessage)]
+    info: dict[str, Any] = {
+        "provider": provider,
+        "model": model,
+        "graded_at": datetime.now(UTC).isoformat(),
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "llm_calls": len(ai_messages),
+    }
+    if blank_short_circuit:
+        info["blank_short_circuit"] = True
+    if reasoning_effort:
+        info["reasoning_effort"] = reasoning_effort
+
+    features = []
+    if question.needs_python_sandbox:
+        features.append("python_sandbox")
+    if question.include_outputs:
+        features.append("cell_outputs")
+    if question.include_images:
+        features.append("images")
+    if features:
+        info["features"] = features
+    if image_count:
+        info["image_count"] = image_count
+    if tool_call_count := sum(len(m.tool_calls or []) for m in ai_messages):
+        info["tool_calls"] = tool_call_count
+
+    if tokens := _sum_token_details(messages):
+        info["tokens"] = tokens
+    costs = [m.response_metadata["cost"] for m in ai_messages if isinstance(m.response_metadata.get("cost"), int | float)]
+    if costs:
+        info["cost"] = sum(costs)
+
+    if ai_messages:
+        metadata = ai_messages[-1].response_metadata or {}
+        # The provider's own name for the model, when it differs from what
+        # was asked for (e.g. a dated snapshot behind an alias).
+        reported = metadata.get("model_name") or metadata.get("model")
+        if isinstance(reported, str) and reported != model:
+            info["model_reported"] = reported
+        details = {
+            key: value
+            for key, value in metadata.items()
+            if key not in _SKIPPED_RESPONSE_METADATA and isinstance(value, str | int | float | bool) and value != ""
+        }
+        if details:
+            info["provider_details"] = details
+    return info
+
+
 def grade_answer(
     chat_model: BaseChatModel,
     question: Question,
@@ -265,6 +376,7 @@ def grade_answer(
     *,
     provider: str | None = None,
     model: str | None = None,
+    reasoning_effort: str | None = None,
     on_trace: Callable[[GradeTrace], None] | None = None,
     images: Sequence[ExtractedImage] = (),
 ) -> Grade:
@@ -282,6 +394,10 @@ def grade_answer(
 
     `images` are attached to the human message (see `build_human_message`);
     the caller decides whether to pass any (`Question.include_images`).
+
+    `reasoning_effort` is informational only (the chat model is already
+    configured with it) -- recorded in the trace's `info` (see
+    `build_grading_info`).
     """
     logger.debug("Grading %s: %d char(s) of answer text", question.id, len(student_answer))
 
@@ -295,10 +411,12 @@ def grade_answer(
             return
         messages = messages or []
         prompt_tokens, completion_tokens, total_tokens = _extract_usage(messages)
+        trace_provider = provider or "unknown"
+        trace_model = model or _model_identity(chat_model)
         on_trace(
             GradeTrace(
-                provider=provider or "unknown",
-                model=model or _model_identity(chat_model),
+                provider=trace_provider,
+                model=trace_model,
                 system_prompt=system_prompt,
                 student_answer=student_answer,
                 grade=grade,
@@ -310,6 +428,16 @@ def grade_answer(
                 total_tokens=total_tokens,
                 elapsed_seconds=elapsed,
                 image_count=len(images),
+                info=build_grading_info(
+                    provider=trace_provider,
+                    model=trace_model,
+                    question=question,
+                    messages=messages,
+                    elapsed_seconds=elapsed,
+                    blank_short_circuit=blank_short_circuit,
+                    image_count=len(images),
+                    reasoning_effort=reasoning_effort,
+                ),
             )
         )
 

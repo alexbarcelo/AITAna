@@ -437,3 +437,93 @@ def test_grade_answer_blank_text_with_images_still_calls_llm(monkeypatch):
     )
 
     assert result == expected
+
+
+def test_build_grading_info_sums_tokens_and_keeps_provider_specific_extras():
+    """Standard usage counts plus whatever token sub-counts/response metadata
+    a provider sends (here: OpenRouter-style cost, OpenAI-style service tier,
+    cache/reasoning details) end up in the dict; per-request ids don't."""
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "python_sandbox", "args": {"code": "1"}, "id": "c1"}],
+            usage_metadata={
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "input_token_details": {"cache_read": 4},
+            },
+            response_metadata={"cost": 0.001, "id": "gen-1"},
+        ),
+        AIMessage(
+            content="Final.",
+            usage_metadata={
+                "input_tokens": 20,
+                "output_tokens": 8,
+                "total_tokens": 28,
+                "output_token_details": {"reasoning": 3},
+            },
+            response_metadata={
+                "cost": 0.002,
+                "id": "gen-2",
+                "model_name": "gpt-4o-mini-2024-07-18",
+                "finish_reason": "stop",
+                "service_tier": "default",
+                "token_usage": {"nested": "dicts are skipped"},
+            },
+        ),
+    ]
+    info = grading.build_grading_info(
+        provider="openrouter",
+        model="gpt-4o-mini",
+        question=_question(needs_python_sandbox=True, include_outputs=True),
+        messages=messages,
+        elapsed_seconds=1.23456,
+        blank_short_circuit=False,
+        reasoning_effort="low",
+    )
+    assert info["provider"] == "openrouter"
+    assert info["model"] == "gpt-4o-mini"
+    assert info["model_reported"] == "gpt-4o-mini-2024-07-18"
+    assert info["elapsed_seconds"] == 1.235
+    assert info["llm_calls"] == 2
+    assert info["tool_calls"] == 1
+    assert info["reasoning_effort"] == "low"
+    assert info["features"] == ["python_sandbox", "cell_outputs"]
+    assert info["tokens"] == {"input": 30, "output": 13, "total": 43, "cache_read": 4, "reasoning": 3}
+    assert info["cost"] == pytest.approx(0.003)
+    assert info["provider_details"] == {"finish_reason": "stop", "service_tier": "default"}
+    assert "graded_at" in info
+    assert "blank_short_circuit" not in info
+
+
+def test_build_grading_info_is_sparse_when_provider_reports_nothing():
+    info = grading.build_grading_info(
+        provider="ollama",
+        model="llama3",
+        question=_question(),
+        messages=[AIMessage(content="ok")],
+        elapsed_seconds=0.5,
+        blank_short_circuit=False,
+    )
+    assert set(info) == {"provider", "model", "graded_at", "elapsed_seconds", "llm_calls"}
+
+
+def test_grade_answer_trace_carries_grading_info(monkeypatch):
+    expected = Grade(level="solid", feedback="ok")
+    monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected))
+    captured: list[GradeTrace] = []
+    grade_answer(
+        _FakeChatModel(expected),
+        _question(),
+        "answer",
+        DEFAULT_GRADING_SCALE,
+        provider="openai",
+        model="gpt-4o-mini",
+        reasoning_effort="high",
+        on_trace=captured.append,
+    )
+    info = captured[0].info
+    assert info["provider"] == "openai"
+    assert info["reasoning_effort"] == "high"
+    assert info["llm_calls"] == 0  # the fake agent returns no messages

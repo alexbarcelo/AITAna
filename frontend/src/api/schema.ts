@@ -676,6 +676,10 @@ export interface components {
              */
             image_count: number;
             grade?: components["schemas"]["Grade"] | null;
+            /** Grading Info */
+            grading_info?: {
+                [key: string]: unknown;
+            } | null;
             manual_grade?: components["schemas"]["Grade"] | null;
             /** Manual Graded At */
             manual_graded_at?: string | null;
@@ -945,6 +949,10 @@ export interface components {
              * @default 0
              */
             image_count: number;
+            /** Info */
+            info?: {
+                [key: string]: unknown;
+            };
         };
         /**
          * GradingTrace

@@ -71,6 +71,7 @@ async def _grade_submission(submission_id: str, only_question_id: str | None = N
             rubric.grading_scale,
             settings.llm_provider,
             settings.llm_model,
+            reasoning_effort=settings.llm_reasoning_effort,
             only_question_id=only_question_id,
             images=extracted.images,
         )
@@ -131,6 +132,7 @@ def _rebuild_answers(
             answer.manual_graded_at = prev.manual_graded_at
             if keep_grades_except is not None and q.id != keep_grades_except:
                 answer.grade = prev.grade
+                answer.grading_info = prev.grading_info
         answers.append(answer)
     return answers
 
@@ -143,6 +145,7 @@ async def _grade_answers(
     provider: str,
     model: str,
     *,
+    reasoning_effort: str | None = None,
     only_question_id: str | None = None,
     images: dict[str, list[ExtractedImage]] | None = None,
 ) -> None:
@@ -162,6 +165,9 @@ async def _grade_answers(
     Inserted before `submission.save()` so a trace exists even if something
     about the submission save itself goes wrong -- the grade was still
     produced, and that's the part worth not losing.
+
+    The trace's compact `info` summary is also stored on the answer itself
+    (`AnsweredQuestion.grading_info`) for the submission page's tooltip.
 
     `only_question_id` skips every other question (no LLM call, no trace).
     `images` (`ExtractionResult.images`, by answer key) are attached only for
@@ -183,6 +189,7 @@ async def _grade_answers(
             grading_scale,
             provider=provider,
             model=model,
+            reasoning_effort=reasoning_effort,
             on_trace=_capture,
             images=(images or {}).get(question.answer_key, []) if question.include_images else (),
         )
@@ -190,4 +197,5 @@ async def _grade_answers(
             await GradingTrace(submission=submission, question_id=question.id, trace=captured_trace).insert()
 
         submission.answers[i].grade = grade
+        submission.answers[i].grading_info = captured_trace.info if captured_trace is not None else None
         await submission.save()

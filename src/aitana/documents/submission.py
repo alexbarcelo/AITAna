@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 
 from beanie import Document, Link
 from pydantic import BaseModel, Field
@@ -39,6 +40,12 @@ class AnsweredQuestion(BaseModel):
     # refreshed by a re-grade, while the override survives it -- see
     # worker/tasks.py's `_rebuild_answers`).
     grade: Grade | None = None
+    # Free-form audit info about the LLM call that produced `grade` (model,
+    # provider, tokens, cost when the provider reports one, features used,
+    # ...) -- `GradeTrace.info`, built by grading.py's `build_grading_info`.
+    # A plain dict on purpose: only displayed (the submission page's info
+    # tooltip), never queried or indexed, and its keys vary by provider.
+    grading_info: dict[str, Any] | None = None
     manual_grade: Grade | None = None
     manual_graded_at: datetime | None = None
 

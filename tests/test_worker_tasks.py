@@ -84,6 +84,7 @@ async def test_grade_answers_persists_every_question_not_just_the_first(mongo_db
     assert sorted(t.question_id for t in traces) == ["answer1", "answer2", "answer3"]
     assert {t.trace.grade.level for t in traces} == {"solid", "almost_there", "some_effort"}
     assert all(t.trace.provider == "openai" and t.trace.model == "gpt-4o-mini" for t in traces)
+    assert all(a.grading_info and a.grading_info["model"] == "gpt-4o-mini" for a in fresh.answers)
 
 
 def test_rebuild_answers_carries_over_manual_overrides(mongo_db):
@@ -132,14 +133,20 @@ def test_rebuild_answers_keeps_other_grades_on_single_question_regrade(mongo_db)
         Question(id="answer2", title="Q2", question="Q2?", rubric="R2"),
     ]
     previous = [
-        AnsweredQuestion(question_id="answer1", student_answer="a1", grade=Grade(level="solid", feedback="f1")),
-        AnsweredQuestion(question_id="answer2", student_answer="a2", grade=Grade(level="solid", feedback="f2")),
+        AnsweredQuestion(
+            question_id="answer1", student_answer="a1", grade=Grade(level="solid", feedback="f1"), grading_info={"model": "m"}
+        ),
+        AnsweredQuestion(
+            question_id="answer2", student_answer="a2", grade=Grade(level="solid", feedback="f2"), grading_info={"model": "m"}
+        ),
     ]
     answers = _rebuild_answers(
         questions, ExtractionResult(answers={"answer1": "a1", "answer2": "a2"}), previous, keep_grades_except="answer2"
     )
     assert answers[0].grade == Grade(level="solid", feedback="f1")
+    assert answers[0].grading_info == {"model": "m"}
     assert answers[1].grade is None
+    assert answers[1].grading_info is None
 
 
 async def test_grade_answers_only_question_id(mongo_db, monkeypatch):

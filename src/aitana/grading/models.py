@@ -1,7 +1,7 @@
 """Structured output schema returned by the LLM for a single graded answer."""
 
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, create_model
 
@@ -90,6 +90,11 @@ class GradeTrace(BaseModel):
     # Images attached to the grading call (`Question.include_images`) --
     # just the count, the image data itself is never stored in a trace.
     image_count: int = 0
+    # Compact summary (provider/model, tokens incl. provider-specific
+    # sub-counts, cost if reported, features used, ...) -- see
+    # grading.py's `build_grading_info`. Also copied onto
+    # `AnsweredQuestion.grading_info` by the worker for the UI.
+    info: dict[str, Any] = Field(default_factory=dict)
 
 
 def grade_schema_for_scale(grading_scale: dict[str, str]) -> type[BaseModel]:

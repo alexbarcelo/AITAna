@@ -3,6 +3,7 @@ import { API_URL } from '../api/client'
 import { useRegradeSubmission, useSubmission } from '../api/hooks'
 import AnswerGradeEditor from '../components/AnswerGradeEditor'
 import GradeBadge from '../components/GradeBadge'
+import { GradingInfoTooltip, SubmissionGradingInfoTooltip } from '../components/GradingInfo'
 import MatchStudentDialog from '../components/MatchStudentDialog'
 import StatusBadge from '../components/StatusBadge'
 import { UntaggedCellsBadge, UntaggedCellsSummary } from '../components/UntaggedCells'
@@ -45,6 +46,7 @@ export default function SubmissionDetailPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <SubmissionGradingInfoTooltip answers={submission.answers} />
           <StatusBadge status={submission.status} />
           <a
             href={`${API_URL}/submissions/${submission._id}/file`}
@@ -103,6 +105,7 @@ export default function SubmissionDetailPage() {
                     </span>
                   )}
                   {grade && <GradeBadge level={grade.level} scale={submission.rubric.grading_scale} />}
+                  <GradingInfoTooltip answer={answer} />
                 </div>
               </div>
               <p className="mb-3 whitespace-pre-wrap rounded bg-slate-50 p-3 text-sm text-slate-700">
