@@ -442,3 +442,9 @@ async def test_set_manual_grade_rejected_while_grading(client):
     assert resp.status_code == 409
     resp = await client.delete(f"/submissions/{submission_id}/answers/answer1/grade")
     assert resp.status_code == 409
+
+
+async def test_answer_image_not_found(client):
+    # Positive path needs `submission.rubric` resolved via fetch_links (AGENTS.md sharp edge #5).
+    resp = await client.get("/submissions/000000000000000000000000/answers/answer1/images/0")
+    assert resp.status_code == 404

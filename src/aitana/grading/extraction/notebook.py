@@ -72,13 +72,32 @@ answer area naturally ends. Within that region:
 Cells before the first `aitana:question` cell, or after a non-editable cell
 closes a region, are ignored as before. A notebook with no `aitana:question`
 cells at all behaves exactly like the tag-only convention above.
+
+## Outputs and images
+
+For every cell taken into an answer, its saved outputs are read too:
+
+- text (`stream`, the `text/plain` of `execute_result`/`display_data`, and
+  `ename: evalue` for an `error`) goes into
+  `ExtractionResult.answers_with_outputs`: the cell's source followed by an
+  `--- output ---` block. Truncated per cell (`_MAX_OUTPUT_CHARS`). The
+  `text/plain` of an output that also carries an image (matplotlib's
+  `<Figure size ...>`) is dropped as noise.
+- raster images (`_IMAGE_MIME_TYPES`, one per output, PNG preferred) go into
+  `ExtractionResult.images`, capped per answer (`_MAX_IMAGES_PER_ANSWER`).
+  SVG isn't accepted by vision APIs and is skipped.
+
+A blank/placeholder cell contributes no outputs either (an executed `...`
+cell would otherwise yield an `Ellipsis` result). Which of these actually
+reach the LLM is decided per question (`Question.include_outputs`/
+`.include_images`), not here.
 """
 
 import json
 import logging
 from pathlib import Path
 
-from ..models import ExtractionResult
+from ..models import ExtractedImage, ExtractionResult
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +105,11 @@ _TAG_ANSWER = "aitana:answer"
 _TAG_QUESTION = "aitana:question"
 _MIN_NBFORMAT_VERSION = 4
 _PLACEHOLDER_SOURCE = "..."
+_OUTPUT_MARKER = "--- output ---"
+_MAX_OUTPUT_CHARS = 2000
+_MAX_IMAGES_PER_ANSWER = 5
+# What vision APIs accept, in order of preference within one output.
+_IMAGE_MIME_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif")
 
 
 def _cell_source(cell: dict) -> str:
@@ -107,6 +131,36 @@ def _answer_text(cell: dict) -> str:
     return "" if source == _PLACEHOLDER_SOURCE else source
 
 
+def _join_text(value) -> str:
+    # Output text/data fields use the same str-or-list-of-lines shape as `source`.
+    return "".join(value) if isinstance(value, list) else (value or "")
+
+
+def _cell_outputs(cell: dict) -> tuple[str, list[ExtractedImage]]:
+    """(text outputs, images) of one cell -- see "Outputs and images"."""
+    texts: list[str] = []
+    images: list[ExtractedImage] = []
+    for output in cell.get("outputs") or []:
+        output_type = output.get("output_type")
+        if output_type == "stream":
+            texts.append(_join_text(output.get("text")))
+        elif output_type in ("execute_result", "display_data"):
+            data = output.get("data") or {}
+            mime_type = next((m for m in _IMAGE_MIME_TYPES if m in data), None)
+            if mime_type is not None:
+                images.append(ExtractedImage(mime_type=mime_type, data="".join(_join_text(data[mime_type]).split())))
+            elif any(m.startswith("image/") for m in data):
+                logger.info("Skipping unsupported image output (%s) in cell %s", list(data), cell.get("id"))
+            elif "text/plain" in data:
+                texts.append(_join_text(data["text/plain"]))
+        elif output_type == "error":
+            texts.append(f"{output.get('ename', 'Error')}: {output.get('evalue', '')}")
+    text = "\n".join(t.rstrip("\n") for t in texts if t.strip()).strip()
+    if len(text) > _MAX_OUTPUT_CHARS:
+        text = text[:_MAX_OUTPUT_CHARS] + "\n...[output truncated]"
+    return text, images
+
+
 def extract_answers(notebook_path: Path) -> ExtractionResult:
     """Read every `aitana:answer`-tagged cell, plus the untagged editable
     cells following an `aitana:question` cell -- see the module docstring."""
@@ -126,7 +180,19 @@ def extract_answers(notebook_path: Path) -> ExtractionResult:
     # it) -- concatenate them in notebook order rather than keeping only the
     # first or last match.
     parts_by_field: dict[str, list[str]] = {}
+    output_parts_by_field: dict[str, list[str]] = {}
+    images: dict[str, list[ExtractedImage]] = {}
     untagged_cells: dict[str, int] = {}
+
+    def _add(field: str, cell: dict, source: str) -> None:
+        parts_by_field.setdefault(field, []).append(source)
+        output_text, cell_images = _cell_outputs(cell) if source else ("", [])
+        output_parts_by_field.setdefault(field, []).append(
+            f"{source}\n{_OUTPUT_MARKER}\n{output_text}" if output_text else source
+        )
+        if cell_images:
+            images.setdefault(field, []).extend(cell_images)
+
     # id of the `aitana:question` region we're in, if any
     current_question: str | None = None
     for index, cell in enumerate(notebook.get("cells", [])):
@@ -142,7 +208,7 @@ def extract_answers(notebook_path: Path) -> ExtractionResult:
 
         if _TAG_ANSWER in tags:
             if field is not None:
-                parts_by_field.setdefault(field, []).append(_answer_text(cell))
+                _add(field, cell, _answer_text(cell))
                 continue
             logger.warning("Answer cell #%d (%s) has invalid aitana metadata", index, cell.get("id"))
             # ...and falls through: inside a question region it's still
@@ -165,19 +231,35 @@ def extract_answers(notebook_path: Path) -> ExtractionResult:
             notebook_path,
             current_question,
         )
-        parts_by_field.setdefault(current_question, []).append(source)
+        _add(current_question, cell, source)
         untagged_cells[current_question] = untagged_cells.get(current_question, 0) + 1
 
     # Drop blank/placeholder parts before joining so they leave no stray
     # separators; a field whose parts are all blank still maps to "".
     answers = {field: "\n\n".join(p for p in parts if p) for field, parts in parts_by_field.items()}
+    answers_with_outputs = {
+        field: "\n\n".join(p for p in parts if p) for field, parts in output_parts_by_field.items()
+    }
+    for field, field_images in images.items():
+        if len(field_images) > _MAX_IMAGES_PER_ANSWER:
+            logger.warning(
+                "%s: %d images in answer %s, keeping the first %d",
+                notebook_path,
+                len(field_images),
+                field,
+                _MAX_IMAGES_PER_ANSWER,
+            )
+            del field_images[_MAX_IMAGES_PER_ANSWER:]
     non_blank = sum(1 for v in answers.values() if v)
     logger.info(
-        "Extracted %d answer group(s) from %s (%d non-blank, %d untagged cell(s))",
+        "Extracted %d answer group(s) from %s (%d non-blank, %d untagged cell(s), %d image(s))",
         len(answers),
         notebook_path,
         non_blank,
         sum(untagged_cells.values()),
+        sum(len(v) for v in images.values()),
     )
     logger.debug("Fields: %s", list(answers.keys()))
-    return ExtractionResult(answers=answers, untagged_cells=untagged_cells)
+    return ExtractionResult(
+        answers=answers, untagged_cells=untagged_cells, answers_with_outputs=answers_with_outputs, images=images
+    )

@@ -190,6 +190,8 @@ type DraftQuestion = {
   modelAnswer: string
   expectedPointsText: string
   needsPythonSandbox: boolean
+  includeOutputs: boolean
+  includeImages: boolean
 }
 
 function emptyQuestion(): DraftQuestion {
@@ -203,10 +205,14 @@ function emptyQuestion(): DraftQuestion {
     modelAnswer: '',
     expectedPointsText: '',
     needsPythonSandbox: false,
+    includeOutputs: false,
+    includeImages: false,
   }
 }
 
-function toQuestion(q: DraftQuestion): Question {
+// Outputs/images are only extracted from notebooks (the backend rejects
+// them for other formats), so they're dropped when the format isn't one.
+function toQuestion(q: DraftQuestion, format: SubmissionFormat): Question {
   return {
     id: q.id,
     field: q.field || null,
@@ -220,6 +226,8 @@ function toQuestion(q: DraftQuestion): Question {
       .map((line) => line.trim())
       .filter(Boolean),
     needs_python_sandbox: q.needsPythonSandbox,
+    include_outputs: format === 'notebook' && q.includeOutputs,
+    include_images: format === 'notebook' && q.includeImages,
   }
 }
 
@@ -234,6 +242,8 @@ function questionToDraft(q: Question): DraftQuestion {
     modelAnswer: q.model_answer ?? '',
     expectedPointsText: (q.expected_points ?? []).join('\n'),
     needsPythonSandbox: q.needs_python_sandbox,
+    includeOutputs: q.include_outputs ?? false,
+    includeImages: q.include_images ?? false,
   }
 }
 
@@ -406,7 +416,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
       // comment for why that order (worst -> best) is load-bearing, not
       // cosmetic.
       grading_scale: Object.fromEntries(gradingScaleRows.map((row) => [row.id.trim(), row.description])),
-      questions: questions.map(toQuestion),
+      questions: questions.map((q) => toQuestion(q, format)),
     }
     if (isEdit) {
       updateRubric.mutate({ rubricId: rubric!._id, ...body }, { onSuccess: () => onDone?.() })
@@ -564,6 +574,30 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
                 onChange={(e) => updateQuestion(i, { needsPythonSandbox: e.target.checked })}
               />
               Corrector needs Python sandbox access to grade this question
+            </label>
+            <label
+              className={`flex items-center gap-2 text-xs ${format === 'notebook' ? 'text-slate-600' : 'text-slate-400'}`}
+              title="Append the text outputs of the student's code cells (prints, results, errors) to the answer. Notebooks only."
+            >
+              <input
+                type="checkbox"
+                disabled={format !== 'notebook'}
+                checked={format === 'notebook' && q.includeOutputs}
+                onChange={(e) => updateQuestion(i, { includeOutputs: e.target.checked })}
+              />
+              Include cell outputs in the answer (notebooks only)
+            </label>
+            <label
+              className={`flex items-center gap-2 text-xs ${format === 'notebook' ? 'text-slate-600' : 'text-slate-400'}`}
+              title="Send the figures found in the answer's outputs (e.g. matplotlib plots) to the LLM as images. Needs a vision-capable model. Notebooks only."
+            >
+              <input
+                type="checkbox"
+                disabled={format !== 'notebook'}
+                checked={format === 'notebook' && q.includeImages}
+                onChange={(e) => updateQuestion(i, { includeImages: e.target.checked })}
+              />
+              Send figures to the corrector as images (notebooks only, needs a vision model)
             </label>
           </div>
         ))}

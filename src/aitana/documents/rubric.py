@@ -1,9 +1,10 @@
 from datetime import UTC, datetime
 
 from beanie import Document, Link
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pymongo import IndexModel
 
+from ..grading.extraction import IMAGE_FORMATS, OUTPUT_FORMATS
 from ..grading.models import DEFAULT_GRADING_SCALE, Question, SubmissionFormat
 from .course import Course
 from .edition import Edition
@@ -59,6 +60,17 @@ class Rubric(Document):
         if not v:
             raise ValueError("grading_scale must have at least one level")
         return v
+
+    @model_validator(mode="after")
+    def _toggles_supported_by_format(self) -> "Rubric":
+        # include_outputs/include_images only mean something for formats
+        # whose extractor reports outputs/images (grading/extraction/).
+        for q in self.questions:
+            if q.include_outputs and self.format not in OUTPUT_FORMATS:
+                raise ValueError(f"question {q.id!r}: include_outputs is not supported for format {self.format.value!r}")
+            if q.include_images and self.format not in IMAGE_FORMATS:
+                raise ValueError(f"question {q.id!r}: include_images is not supported for format {self.format.value!r}")
+        return self
 
     class Settings:
         name = "rubrics"

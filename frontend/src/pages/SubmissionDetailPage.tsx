@@ -108,6 +108,18 @@ export default function SubmissionDetailPage() {
               <p className="mb-3 whitespace-pre-wrap rounded bg-slate-50 p-3 text-sm text-slate-700">
                 {answer.student_answer || <span className="text-slate-400">No answer provided.</span>}
               </p>
+              {answer.image_count > 0 && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {Array.from({ length: answer.image_count }, (_, n) => {
+                    const src = `${API_URL}/submissions/${submission._id}/answers/${answer.question_id}/images/${n}`
+                    return (
+                      <a key={n} href={src} target="_blank" rel="noreferrer" title="Figure sent to the corrector">
+                        <img src={src} alt={`Figure ${n + 1}`} className="h-40 rounded border border-slate-200 bg-white" />
+                      </a>
+                    )
+                  })}
+                </div>
+              )}
               <AnswerGradeEditor
                 submissionId={submission._id}
                 answer={answer}

@@ -402,6 +402,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/submissions/{submission_id}/answers/{question_id}/images/{index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Answer Image
+         * @description The `index`-th image attached to this answer's grading call. Images
+         *     aren't stored anywhere -- this re-runs extraction on the stored file,
+         *     which is cheap for the formats that have images (notebooks).
+         */
+        get: operations["get_answer_image_submissions__submission_id__answers__question_id__images__index__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/submissions/{submission_id}/feedback.html": {
         parameters: {
             query?: never;
@@ -648,6 +670,11 @@ export interface components {
              * @default 0
              */
             untagged_cells: number;
+            /**
+             * Image Count
+             * @default 0
+             */
+            image_count: number;
             grade?: components["schemas"]["Grade"] | null;
             manual_grade?: components["schemas"]["Grade"] | null;
             /** Manual Graded At */
@@ -913,6 +940,11 @@ export interface components {
              * @default 0
              */
             elapsed_seconds: number;
+            /**
+             * Image Count
+             * @default 0
+             */
+            image_count: number;
         };
         /**
          * GradingTrace
@@ -999,6 +1031,16 @@ export interface components {
              * @default false
              */
             needs_python_sandbox: boolean;
+            /**
+             * Include Outputs
+             * @default false
+             */
+            include_outputs: boolean;
+            /**
+             * Include Images
+             * @default false
+             */
+            include_images: boolean;
         };
         /**
          * Rubric
@@ -2016,6 +2058,39 @@ export interface operations {
             header?: never;
             path: {
                 submission_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_answer_image_submissions__submission_id__answers__question_id__images__index__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: components["schemas"]["PydanticObjectId"];
+                question_id: string;
+                index: number;
             };
             cookie?: never;
         };

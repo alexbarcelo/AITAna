@@ -179,3 +179,79 @@ async def test_grade_answers_only_question_id(mongo_db, monkeypatch):
     fresh = await Submission.get(submission.id)
     assert [a.grade for a in fresh.answers] == [old, Grade(level="some_effort", feedback="new")]
     assert [t.question_id for t in await GradingTrace.find_all().to_list()] == ["answer2"]
+
+
+def test_rebuild_answers_uses_outputs_and_counts_images_only_when_enabled(mongo_db):
+    from aitana.grading.models import ExtractedImage, ExtractionResult
+    from aitana.worker.tasks import _rebuild_answers
+
+    questions = [
+        Question(id="answer1", title="Q1", question="Q1?", rubric="R1"),
+        Question(id="answer2", title="Q2", question="Q2?", rubric="R2", include_outputs=True, include_images=True),
+    ]
+    image = ExtractedImage(mime_type="image/png", data="AAAA")
+    extracted = ExtractionResult(
+        answers={"answer1": "code1", "answer2": "code2"},
+        answers_with_outputs={"answer1": "code1\n--- output ---\n1", "answer2": "code2\n--- output ---\n2"},
+        images={"answer1": [image], "answer2": [image, image]},
+    )
+
+    answers = _rebuild_answers(questions, extracted, [])
+
+    assert [a.student_answer for a in answers] == ["code1", "code2\n--- output ---\n2"]
+    assert [a.image_count for a in answers] == [0, 2]
+
+
+async def test_grade_answers_forwards_images_only_for_include_images(mongo_db, monkeypatch):
+    from aitana.grading.models import ExtractedImage
+
+    course = Course(name="BDM", slug="bdm")
+    await course.insert()
+    edition = Edition(name="2026/27", slug="2026_27")
+    await edition.insert()
+    rubric = Rubric(
+        slug="figures",
+        title="Figures",
+        course=course,
+        format="notebook",
+        questions=[
+            Question(id="answer1", title="Q1", question="Q1?", rubric="R1"),
+            Question(id="answer2", title="Q2", question="Q2?", rubric="R2", include_images=True),
+        ],
+    )
+    await rubric.insert()
+    submission = Submission(
+        rubric=rubric,
+        edition=edition,
+        file_object_key="k",
+        answers=[
+            AnsweredQuestion(question_id="answer1", student_answer="a1"),
+            AnsweredQuestion(question_id="answer2", student_answer="a2"),
+        ],
+    )
+    await submission.insert()
+
+    seen: list = []
+    remaining = [Grade(level="solid", feedback="1"), Grade(level="solid", feedback="2")]
+
+    class _Agent:
+        def invoke(self, state):
+            seen.append(state["messages"][1].content)
+            return {"structured_response": remaining.pop(0)}
+
+    monkeypatch.setattr("aitana.grading.grading.create_agent", lambda **kwargs: _Agent())
+    image = ExtractedImage(mime_type="image/png", data="AAAA")
+    await _grade_answers(
+        submission,
+        rubric.questions,
+        object(),
+        DEFAULT_GRADING_SCALE,
+        "openai",
+        "m",
+        images={"answer1": [image], "answer2": [image]},
+    )
+
+    assert seen[0] == "a1"  # include_images off: plain text, image ignored
+    assert seen[1][1] == {"type": "image", "base64": "AAAA", "mime_type": "image/png"}
+    traces = await GradingTrace.find_all().to_list()
+    assert sorted(t.trace.image_count for t in traces) == [0, 1]

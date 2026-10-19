@@ -87,6 +87,9 @@ class GradeTrace(BaseModel):
     completion_tokens: int | None = None
     total_tokens: int | None = None
     elapsed_seconds: float = 0.0
+    # Images attached to the grading call (`Question.include_images`) --
+    # just the count, the image data itself is never stored in a trace.
+    image_count: int = 0
 
 
 def grade_schema_for_scale(grading_scale: dict[str, str]) -> type[BaseModel]:
@@ -125,6 +128,15 @@ class SubmissionFormat(str, Enum):
     NOTEBOOK = "notebook"
 
 
+class ExtractedImage(BaseModel):
+    """One image found in a submission (e.g. a notebook figure output),
+    sent to the LLM as multimodal input when `Question.include_images` is
+    set. `data` is base64, as stored in the source file."""
+
+    mime_type: str
+    data: str
+
+
 class ExtractionResult(BaseModel):
     """What an extractor (`grading/extraction/`) returns for one submission file.
 
@@ -136,10 +148,18 @@ class ExtractionResult(BaseModel):
     always leaves it empty. Kept separate from `answers` so the worker can
     surface it per question (`AnsweredQuestion.untagged_cells`) for a TA to
     double-check, without it ever reaching the grading prompt.
+
+    `answers_with_outputs` is the same as `answers` but with each cell's
+    text outputs appended (used when `Question.include_outputs` is set), and
+    `images` holds the images found per answer key (`Question.include_images`).
+    Both stay empty for formats that have neither -- see
+    `extraction/__init__.py`'s `OUTPUT_FORMATS`/`IMAGE_FORMATS`.
     """
 
     answers: dict[str, str] = Field(default_factory=dict)
     untagged_cells: dict[str, int] = Field(default_factory=dict)
+    answers_with_outputs: dict[str, str] = Field(default_factory=dict)
+    images: dict[str, list[ExtractedImage]] = Field(default_factory=dict)
 
 
 class Question(BaseModel):
@@ -188,6 +208,14 @@ class Question(BaseModel):
     # opt-in per question, not a rubric-wide switch -- most questions never
     # need it even within a rubric that has one that does.
     needs_python_sandbox: bool = False
+    # Append the text outputs the student's code produced (notebook cell
+    # outputs) to the answer sent to the LLM. Only for formats in
+    # `extraction.OUTPUT_FORMATS` (validated on the Rubric).
+    include_outputs: bool = False
+    # Attach the images found in the answer (e.g. matplotlib figures in a
+    # notebook's outputs) to the grading call as multimodal input -- needs a
+    # vision-capable model. Only for formats in `extraction.IMAGE_FORMATS`.
+    include_images: bool = False
 
     @property
     def answer_key(self) -> str:

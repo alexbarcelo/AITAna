@@ -374,3 +374,66 @@ def test_grade_answer_routes_through_create_agent_when_needs_python_sandbox(monk
     assert captured["tools"][0].name == "python_sandbox"
     messages = captured["state"]["messages"]
     assert messages[1].content == "My answer text"
+
+
+def test_build_system_prompt_outputs_and_images_sections_only_when_enabled():
+    plain = build_system_prompt(_question(), DEFAULT_GRADING_SCALE)
+    assert "# Cell outputs" not in plain and "# Figures" not in plain
+
+    toggled = _question(include_outputs=True, include_images=True)
+    with_images = build_system_prompt(toggled, DEFAULT_GRADING_SCALE, image_count=2)
+    assert "# Cell outputs" in with_images
+    assert "2 image(s)" in with_images
+    assert "none were found" in build_system_prompt(toggled, DEFAULT_GRADING_SCALE, image_count=0)
+
+
+def test_grade_answer_attaches_images_to_human_message(monkeypatch):
+    from aitana.grading.models import ExtractedImage
+
+    expected = Grade(level="solid", feedback="Nice plot.")
+    captured: dict = {}
+    monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected, captured))
+    traces: list[GradeTrace] = []
+
+    grade_answer(
+        _FakeChatModel(expected),
+        _question(include_images=True),
+        "plt.hist(x)",
+        DEFAULT_GRADING_SCALE,
+        images=[ExtractedImage(mime_type="image/png", data="AAAA")],
+        on_trace=traces.append,
+    )
+
+    human = captured["state"]["messages"][1]
+    assert human.content == [
+        {"type": "text", "text": "plt.hist(x)"},
+        {"type": "image", "base64": "AAAA", "mime_type": "image/png"},
+    ]
+    assert traces[0].image_count == 1
+
+
+def test_grade_answer_without_images_keeps_plain_string_message(monkeypatch):
+    expected = Grade(level="solid", feedback="ok")
+    captured: dict = {}
+    monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected, captured))
+
+    grade_answer(_FakeChatModel(expected), _question(), "answer", DEFAULT_GRADING_SCALE)
+
+    assert captured["state"]["messages"][1].content == "answer"
+
+
+def test_grade_answer_blank_text_with_images_still_calls_llm(monkeypatch):
+    from aitana.grading.models import ExtractedImage
+
+    expected = Grade(level="almost_there", feedback="graded from the figure")
+    monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected))
+
+    result = grade_answer(
+        _FakeChatModel(expected),
+        _question(include_images=True),
+        "",
+        DEFAULT_GRADING_SCALE,
+        images=[ExtractedImage(mime_type="image/png", data="AAAA")],
+    )
+
+    assert result == expected

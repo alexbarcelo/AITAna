@@ -4,19 +4,23 @@ Prompt split:
   - SYSTEM message: grading instructions (rubric, expected points, grading
     scale) -- comes from the YAML config / rubric document, same for every
     student.
-  - HUMAN message: the student's own answer text, verbatim.
+  - HUMAN message: the student's own answer text, verbatim -- plus, for a
+    `Question.include_images` question, the images extracted from the
+    answer as LangChain standard `image` content blocks (converted to each
+    provider's own shape by its integration).
 """
 
 from __future__ import annotations
 import logging
 import time
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from .models import Grade, GradeTrace, Question, grade_schema_for_scale
+from .models import ExtractedImage, Grade, GradeTrace, Question, grade_schema_for_scale
 from .sandbox import get_python_sandbox_tool
 
 if TYPE_CHECKING:
@@ -37,7 +41,7 @@ useful feedback for the student and teacher, not a precise score.
 {model_answer_section}
 # Points a good answer should cover
 {expected_points}
-{python_tool_section}
+{outputs_section}{images_section}{python_tool_section}
 # Grading
 Assign exactly one level:
 {grading_levels}
@@ -59,6 +63,29 @@ the answer text alone.
 """
 
 
+_OUTPUTS_SECTION = """
+# Cell outputs
+The student's answer includes the outputs their code produced when they ran
+it, each one after its code under a `--- output ---` line. Use them as
+evidence of what the code actually does. Code with no output after it was
+not run (or produced nothing).
+"""
+
+_IMAGES_SECTION = """
+# Figures
+{count} image(s) produced by the student's code (e.g. plots) are attached
+to the answer, in order. Judge them against the grading instructions as
+part of the answer: what they actually show matters more than what the
+code seems to intend.
+"""
+
+_NO_IMAGES_SECTION = """
+# Figures
+This question expects figures, but none were found in the student's answer
+(the code was not run, failed, or produced no image). Take that into account.
+"""
+
+
 def build_grading_section(grading_scale: dict[str, str]) -> str:
     """Render a rubric's grading_scale as the prompt's level-id: description
     list -- the part of the prompt that used to be a hardcoded 4-line block
@@ -67,7 +94,7 @@ def build_grading_section(grading_scale: dict[str, str]) -> str:
     return "\n".join(f"- {level}: {description}" for level, description in grading_scale.items())
 
 
-def build_system_prompt(question: Question, grading_scale: dict[str, str]) -> str:
+def build_system_prompt(question: Question, grading_scale: dict[str, str], image_count: int = 0) -> str:
     points = "\n".join(f"- {p}" for p in question.expected_points) or "(none specified)"
     context_section = f"\n# Context\n{question.context.strip()}\n" if question.context else ""
     # Only rendered when the question has one (see Question.model_answer's
@@ -75,18 +102,34 @@ def build_system_prompt(question: Question, grading_scale: dict[str, str]) -> st
     # avoids implying "no canonical answer" is itself meaningful feedback.
     model_answer_section = f"\n# Model answer\n{question.model_answer.strip()}\n" if question.model_answer else ""
     python_tool_section = _PYTHON_TOOL_SECTION if question.needs_python_sandbox else ""
+    outputs_section = _OUTPUTS_SECTION if question.include_outputs else ""
+    images_section = ""
+    if question.include_images:
+        images_section = _IMAGES_SECTION.format(count=image_count) if image_count else _NO_IMAGES_SECTION
     return SYSTEM_PROMPT_TEMPLATE.format(
         question=question.question.strip(),
         context_section=context_section,
         rubric=question.rubric.strip(),
         model_answer_section=model_answer_section,
         expected_points=points,
+        outputs_section=outputs_section,
+        images_section=images_section,
         python_tool_section=python_tool_section,
         grading_levels=build_grading_section(grading_scale),
     )
 
 
-def _grade_with_tools(chat_model: BaseChatModel, tools: list[BaseTool], system_prompt: str, student_answer: str, schema: type) -> dict:
+def build_human_message(student_answer: str, images: Sequence[ExtractedImage] = ()) -> HumanMessage:
+    """The student's answer verbatim; with images, a text block followed by
+    one standard `image` block per image."""
+    if not images:
+        return HumanMessage(content=student_answer)
+    blocks: list[dict] = [{"type": "text", "text": student_answer or "(no text answer)"}]
+    blocks.extend({"type": "image", "base64": image.data, "mime_type": image.mime_type} for image in images)
+    return HumanMessage(content=blocks)
+
+
+def _grade_with_tools(chat_model: BaseChatModel, tools: list[BaseTool], system_prompt: str, human_message: HumanMessage, schema: type) -> dict:
     """Call an agent with the available tools for this answer.
     Note that this is typically overkill for no-tool answers, but
     you know: DRY.
@@ -101,7 +144,7 @@ def _grade_with_tools(chat_model: BaseChatModel, tools: list[BaseTool], system_p
         tools=tools,
         response_format=schema,
     )
-    return agent.invoke({"messages": [SystemMessage(content=system_prompt), HumanMessage(content=student_answer)]})
+    return agent.invoke({"messages": [SystemMessage(content=system_prompt), human_message]})
 
 
 def _model_identity(chat_model: BaseChatModel) -> str:
@@ -223,6 +266,7 @@ def grade_answer(
     provider: str | None = None,
     model: str | None = None,
     on_trace: Callable[[GradeTrace], None] | None = None,
+    images: Sequence[ExtractedImage] = (),
 ) -> Grade:
     """Grade one answer, returning just the `Grade` as before.
 
@@ -235,13 +279,16 @@ def grade_answer(
     itself -- see that class's docstring. `worker/tasks.py` is the only
     current caller that passes it, to persist a `GradingTrace` document per
     question graded.
+
+    `images` are attached to the human message (see `build_human_message`);
+    the caller decides whether to pass any (`Question.include_images`).
     """
     logger.debug("Grading %s: %d char(s) of answer text", question.id, len(student_answer))
 
     # Built unconditionally (cheap, no network) even for a blank answer, so a
     # trace always has the exact prompt that would have been sent -- useful
     # context even when no LLM call was actually made for it.
-    system_prompt = build_system_prompt(question, grading_scale)
+    system_prompt = build_system_prompt(question, grading_scale, image_count=len(images))
 
     def _emit(grade: Grade, *, blank_short_circuit: bool, elapsed: float, messages: list[BaseMessage] | None = None) -> None:
         if on_trace is None:
@@ -262,10 +309,11 @@ def grade_answer(
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
                 elapsed_seconds=elapsed,
+                image_count=len(images),
             )
         )
 
-    if not student_answer.strip():
+    if not student_answer.strip() and not images:
         # Short-circuit blank answers instead of paying for an LLM call.
         # `grading_scale`'s first entry is, by convention, the "worst/no
         # answer" level -- see Rubric.grading_scale's docstring.
@@ -279,14 +327,20 @@ def grade_answer(
     schema = grade_schema_for_scale(grading_scale)
     logger.debug("%s: system prompt:\n%s", question.id, system_prompt)
 
-    logger.info("%s: calling LLM%s...", question.id, " (with python sandbox)" if question.needs_python_sandbox else "")
+    logger.info(
+        "%s: calling LLM%s%s...",
+        question.id,
+        " (with python sandbox)" if question.needs_python_sandbox else "",
+        f" with {len(images)} image(s)" if images else "",
+    )
     start = time.perf_counter()
 
     tools = []
     if question.needs_python_sandbox:
         tools.append(get_python_sandbox_tool())
 
-    result = _grade_with_tools(chat_model, tools, system_prompt, student_answer, schema)
+    human_message = build_human_message(student_answer, images)
+    result = _grade_with_tools(chat_model, tools, system_prompt, human_message, schema)
     raw = result["structured_response"]
     messages: list[BaseMessage] = result.get("messages", [])
 

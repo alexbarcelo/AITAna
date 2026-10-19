@@ -314,6 +314,38 @@ one that does.
   never pays for the check, and unit tests can construct the tool without
   Deno installed as long as they don't actually invoke it.
 
+## Cell outputs and image inputs
+
+Goal: grade what the student's code actually produced (printed values,
+errors, figures) instead of re-running it. Two per-question opt-ins on
+`Question` (`grading/models.py`), both default `false`:
+
+- **`include_outputs`** -- `student_answer` becomes the answer with each
+  cell's text outputs appended under an `--- output ---` line.
+- **`include_images`** -- images found in the answer are attached to the
+  grading call as multimodal input (LangChain standard `image` content
+  blocks, `grading.py`'s `build_human_message`; all four providers convert
+  them -- Ollama needs a vision model).
+
+Both add a short section to the system prompt (`# Cell outputs` /
+`# Figures`, the latter also when an image was expected but none found).
+
+Flow: the extractor fills `ExtractionResult.answers_with_outputs` and
+`.images` (`{answer_key: [ExtractedImage]}`, base64) -> `_rebuild_answers`
+picks the text variant and records `AnsweredQuestion.image_count` ->
+`_grade_answers` passes the images to `grade_answer(images=...)`. Only the
+notebook extractor reports either today (rules and caps in
+`notebook.py`'s "Outputs and images"); `extraction/__init__.py`'s
+`OUTPUT_FORMATS`/`IMAGE_FORMATS` list which formats do, and `Rubric`'s
+validator rejects a toggle on any other format (`422`). Another format
+gaining figures = fill `images` in its extractor + add it to
+`IMAGE_FORMATS`.
+
+Images are never persisted (not in `Submission`, not in `GradingTrace`,
+which only keeps `image_count`): `GET /submissions/{id}/answers/
+{question_id}/images/{index}` re-extracts them from the stored file for the
+submission page's thumbnails.
+
 ## Grading traces (`documents/grading_trace.py`, `api/routers/grading_traces.py`)
 
 Diagnostic record of every real `grade_answer()` call, kept for later

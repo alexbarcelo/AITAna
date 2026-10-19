@@ -1,4 +1,7 @@
+import base64
+import tempfile
 from datetime import UTC, datetime
+from pathlib import Path
 
 from beanie import Link, PydanticObjectId
 from beanie.operators import In
@@ -7,7 +10,7 @@ from pydantic import BaseModel
 
 from ... import storage
 from ...documents import Edition, Rubric, Student, Submission, SubmissionStatus
-from ...grading.extraction import FORMAT_FILE_INFO
+from ...grading.extraction import FORMAT_FILE_INFO, extract_answers
 from ...grading.models import Grade
 from ...worker.tasks import grade_submission
 from ..feedback_export import feedback_filename, render_feedback_html
@@ -243,6 +246,30 @@ async def download_submission_file(submission_id: PydanticObjectId) -> Response:
         media_type=content_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/{submission_id}/answers/{question_id}/images/{index}")
+async def get_answer_image(submission_id: PydanticObjectId, question_id: str, index: int) -> Response:
+    """The `index`-th image attached to this answer's grading call. Images
+    aren't stored anywhere -- this re-runs extraction on the stored file,
+    which is cheap for the formats that have images (notebooks)."""
+    submission = await Submission.get(submission_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    rubric = submission.rubric
+    question = next((q for q in rubric.questions if q.id == question_id), None)
+    if question is None:
+        raise HTTPException(status_code=404, detail=f"Question {question_id!r} not found in this rubric")
+
+    extension, _content_type = FORMAT_FILE_INFO[rubric.format]
+    with tempfile.TemporaryDirectory() as tmp:
+        file_path = Path(tmp) / f"submission{extension}"
+        file_path.write_bytes(storage.download_bytes(submission.file_object_key))
+        images = extract_answers(rubric.format, file_path).images.get(question.answer_key, [])
+    if not 0 <= index < len(images):
+        raise HTTPException(status_code=404, detail="Image not found")
+    image = images[index]
+    return Response(content=base64.b64decode(image.data), media_type=image.mime_type)
 
 
 @router.get("/{submission_id}/feedback.html")

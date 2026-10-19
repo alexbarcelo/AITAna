@@ -19,7 +19,7 @@ from ..documents import AnsweredQuestion, GradingTrace, Submission, SubmissionSt
 from ..grading.extraction import FORMAT_FILE_INFO, extract_answers
 from ..grading.grading import grade_answer
 from ..grading.llm import get_chat_model
-from ..grading.models import ExtractionResult, GradeTrace, Question
+from ..grading.models import ExtractedImage, ExtractionResult, GradeTrace, Question
 from ..settings import get_settings
 from .celery_app import celery_app
 
@@ -76,6 +76,7 @@ async def _grade_submission(submission_id: str, only_question_id: str | None = N
             settings.llm_provider,
             settings.llm_model,
             only_question_id=only_question_id,
+            images=extracted.images,
         )
 
         submission.status = SubmissionStatus.GRADED
@@ -100,14 +101,22 @@ def _rebuild_answers(
     question no longer in the rubric is dropped along with the question.
 
     With `keep_grades_except` set (single-question re-grade), the previous
-    LLM `grade` is also carried over for every *other* question."""
+    LLM `grade` is also carried over for every *other* question.
+
+    `student_answer` includes the cell outputs when `q.include_outputs` is
+    set; `image_count` is what `_grade_answers` will attach for
+    `q.include_images`."""
     previous_by_id = {a.question_id: a for a in previous}
     answers = []
     for q in questions:
+        answer_text = extracted.answers.get(q.answer_key, "")
+        if q.include_outputs:
+            answer_text = extracted.answers_with_outputs.get(q.answer_key, answer_text)
         answer = AnsweredQuestion(
             question_id=q.id,
-            student_answer=extracted.answers.get(q.answer_key, ""),
+            student_answer=answer_text,
             untagged_cells=extracted.untagged_cells.get(q.answer_key, 0),
+            image_count=len(extracted.images.get(q.answer_key, [])) if q.include_images else 0,
         )
         if (prev := previous_by_id.get(q.id)) is not None:
             answer.manual_grade = prev.manual_grade
@@ -127,6 +136,7 @@ async def _grade_answers(
     model: str,
     *,
     only_question_id: str | None = None,
+    images: dict[str, list[ExtractedImage]] | None = None,
 ) -> None:
     """Grade each question in order, saving after every single one.
 
@@ -146,6 +156,8 @@ async def _grade_answers(
     produced, and that's the part worth not losing.
 
     `only_question_id` skips every other question (no LLM call, no trace).
+    `images` (`ExtractionResult.images`, by answer key) are attached only for
+    questions with `include_images`.
     """
     for i, question in enumerate(questions):
         if only_question_id is not None and question.id != only_question_id:
@@ -164,6 +176,7 @@ async def _grade_answers(
             provider=provider,
             model=model,
             on_trace=_capture,
+            images=(images or {}).get(question.answer_key, []) if question.include_images else (),
         )
         if captured_trace is not None:
             await GradingTrace(submission=submission, question_id=question.id, trace=captured_trace).insert()

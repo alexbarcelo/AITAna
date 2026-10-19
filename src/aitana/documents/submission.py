@@ -29,6 +29,10 @@ class AnsweredQuestion(BaseModel):
     # Informational only, so a TA knows to double-check this answer; always
     # 0 for formats with no such heuristic (PDF).
     untagged_cells: int = 0
+    # Images attached to this answer's grading call (Question.include_images);
+    # not stored -- re-extracted from the file on demand for the UI
+    # (`GET /submissions/{id}/answers/{question_id}/images/{index}`).
+    image_count: int = 0
     # The LLM's grade, exactly as `grade_answer` produced it -- never edited
     # by hand. A TA's correction goes in `manual_grade` instead, so the
     # original LLM suggestion stays visible next to it (and keeps being

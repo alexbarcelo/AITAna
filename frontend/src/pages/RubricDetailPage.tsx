@@ -159,6 +159,22 @@ export default function RubricDetailPage() {
                     Python sandbox
                   </span>
                 )}
+                {q.include_outputs && (
+                  <span
+                    className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-normal text-slate-500"
+                    title="The student's cell outputs are appended to the answer sent to the LLM."
+                  >
+                    Cell outputs
+                  </span>
+                )}
+                {q.include_images && (
+                  <span
+                    className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-normal text-slate-500"
+                    title="Figures found in the answer are sent to the LLM as images."
+                  >
+                    Figures
+                  </span>
+                )}
               </h2>
               <span className="font-mono text-xs text-slate-400">
                 {q.id}

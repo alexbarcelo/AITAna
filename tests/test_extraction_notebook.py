@@ -235,3 +235,100 @@ def test_question_without_id_does_not_collect_cells(tmp_path):
 
     assert result.answers == {}
     assert result.untagged_cells == {}
+
+
+_PNG = "iVBORw0KGgo="
+
+
+def _code(source, outputs: list[dict], **kwargs) -> dict:
+    cell = _cell("code", source, **kwargs)
+    cell["outputs"] = outputs
+    return cell
+
+
+def test_extract_answers_reads_text_outputs(tmp_path):
+    notebook_path = tmp_path / "submission.ipynb"
+    _write_notebook(
+        notebook_path,
+        [
+            _code(
+                "print('hi')\nx",
+                [
+                    {"output_type": "stream", "name": "stdout", "text": ["hi\n"]},
+                    {"output_type": "execute_result", "data": {"text/plain": "42"}, "metadata": {}},
+                ],
+                tags=["aitana:answer"],
+                field="answer1",
+            ),
+            _code(
+                "boom()",
+                [{"output_type": "error", "ename": "NameError", "evalue": "name 'boom' is not defined", "traceback": ["\x1b[0;31m..."]}],
+                tags=["aitana:answer"],
+                field="answer2",
+            ),
+        ],
+    )
+
+    result = extract_answers(notebook_path)
+
+    assert result.answers == {"answer1": "print('hi')\nx", "answer2": "boom()"}
+    assert result.answers_with_outputs == {
+        "answer1": "print('hi')\nx\n--- output ---\nhi\n42",
+        "answer2": "boom()\n--- output ---\nNameError: name 'boom' is not defined",
+    }
+    assert result.images == {}
+
+
+def test_extract_answers_reads_images_and_drops_figure_repr(tmp_path):
+    notebook_path = tmp_path / "submission.ipynb"
+    figure = {
+        "output_type": "display_data",
+        "data": {"image/png": _PNG[:6] + "\n" + _PNG[6:], "text/plain": "<Figure size 640x480 with 1 Axes>"},
+        "metadata": {},
+    }
+    svg = {"output_type": "display_data", "data": {"image/svg+xml": "<svg/>", "text/plain": "<Figure>"}, "metadata": {}}
+    _write_notebook(
+        notebook_path, [_code("plt.plot(x)", [figure, svg], tags=["aitana:answer"], field="answer1")]
+    )
+
+    result = extract_answers(notebook_path)
+
+    assert [(i.mime_type, i.data) for i in result.images["answer1"]] == [("image/png", _PNG)]
+    assert result.answers_with_outputs == {"answer1": "plt.plot(x)"}  # no "<Figure ...>" noise
+
+
+def test_extract_answers_outputs_of_untagged_region_cells(tmp_path):
+    notebook_path = tmp_path / "submission.ipynb"
+    image = {"output_type": "display_data", "data": {"image/jpeg": _PNG}, "metadata": {}}
+    _write_notebook(
+        notebook_path,
+        [
+            _cell("markdown", "Q1", tags=["aitana:question"], field="answer1", editable=False),
+            _code("...", [{"output_type": "execute_result", "data": {"text/plain": "Ellipsis"}, "metadata": {}}],
+                  tags=["aitana:answer"], field="answer1"),
+            _code("plot()", [image]),
+        ],
+    )
+
+    result = extract_answers(notebook_path)
+
+    assert result.answers_with_outputs == {"answer1": "plot()"}  # executed placeholder adds nothing
+    assert len(result.images["answer1"]) == 1
+    assert result.untagged_cells == {"answer1": 1}
+
+
+def test_extract_answers_truncates_outputs_and_caps_images(tmp_path):
+    from aitana.grading.extraction import notebook
+
+    notebook_path = tmp_path / "submission.ipynb"
+    image = {"output_type": "display_data", "data": {"image/png": _PNG}, "metadata": {}}
+    long_text = {"output_type": "stream", "name": "stdout", "text": "x" * (notebook._MAX_OUTPUT_CHARS + 100)}
+    _write_notebook(
+        notebook_path,
+        [_code("go()", [long_text] + [image] * (notebook._MAX_IMAGES_PER_ANSWER + 2), tags=["aitana:answer"], field="answer1")],
+    )
+
+    result = extract_answers(notebook_path)
+
+    assert result.answers_with_outputs["answer1"].endswith("...[output truncated]")
+    assert len(result.images["answer1"]) == notebook._MAX_IMAGES_PER_ANSWER

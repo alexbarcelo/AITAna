@@ -813,3 +813,20 @@ async def test_rubric_submission_counts(client):
     resp = await client.get("/rubrics/submission-counts")
     assert resp.status_code == 200
     assert resp.json() == {str(used.id): 2}
+
+
+async def test_create_rubric_rejects_output_and_image_toggles_for_pdf(client):
+    course_id = await _make_course(client)
+    question = {"id": "answer1", "title": "Q1", "question": "Plot it", "rubric": "R", "include_images": True}
+
+    resp = await client.post("/rubrics", json={"title": "Plots", "course_id": course_id, "questions": [question]})
+    assert resp.status_code == 422
+    assert "include_images" in resp.json()["detail"]
+
+    resp = await client.post(
+        "/rubrics",
+        json={"title": "Plots", "course_id": course_id, "format": "notebook",
+              "questions": [{**question, "include_outputs": True}]},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["questions"][0]["include_outputs"] is True

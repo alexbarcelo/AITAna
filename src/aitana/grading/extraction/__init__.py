@@ -30,6 +30,13 @@ FORMAT_FILE_INFO: dict[SubmissionFormat, tuple[str, str]] = {
     SubmissionFormat.NOTEBOOK: (".ipynb", "application/x-ipynb+json"),
 }
 
+# Formats whose extractor fills `ExtractionResult.answers_with_outputs` /
+# `.images` -- i.e. where `Question.include_outputs` / `.include_images` mean
+# something (enforced by Rubric's validator). Supporting images for another
+# format = fill `images` in its extractor and add it here.
+OUTPUT_FORMATS: frozenset[SubmissionFormat] = frozenset({SubmissionFormat.NOTEBOOK})
+IMAGE_FORMATS: frozenset[SubmissionFormat] = frozenset({SubmissionFormat.NOTEBOOK})
+
 
 def extract_answers(fmt: SubmissionFormat, file_path: Path) -> ExtractionResult:
     return _EXTRACTORS[fmt](file_path)
