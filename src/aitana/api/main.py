@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ..db import init_db
 from ..storage import ensure_bucket
-from .routers import batches, courses, editions, grading_traces, rubrics, students, submissions
+from .routers import batches, courses, editions, grading_traces, llm, rubrics, students, submissions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s")
 
@@ -14,6 +14,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(na
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await llm.seed_llm_models_from_env()
     ensure_bucket()
     yield
 
@@ -35,6 +36,7 @@ app.include_router(rubrics.router)
 app.include_router(submissions.router)
 app.include_router(batches.router)
 app.include_router(grading_traces.router)
+app.include_router(llm.router)
 
 
 @app.get("/health")

@@ -325,11 +325,13 @@ def build_grading_info(
         "graded_at": datetime.now(UTC).isoformat(),
         "elapsed_seconds": round(elapsed_seconds, 3),
         "llm_calls": len(ai_messages),
+        # Always present, unlike the sparse keys below: `None` ("provider
+        # default, no effort requested") must be distinguishable from an
+        # answer graded before the effort was recorded at all.
+        "reasoning_effort": reasoning_effort,
     }
     if blank_short_circuit:
         info["blank_short_circuit"] = True
-    if reasoning_effort:
-        info["reasoning_effort"] = reasoning_effort
 
     features = []
     if question.needs_python_sandbox:

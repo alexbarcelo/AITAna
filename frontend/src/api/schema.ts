@@ -638,6 +638,119 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/llm/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Providers
+         * @description Every known provider with whether it's usable here (its optional
+         *     package installed and its key/URL in the environment). The frontend only
+         *     offers the available ones when adding a model.
+         */
+        get: operations["list_providers_llm_providers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/llm/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Models */
+        get: operations["list_models_llm_models_get"];
+        put?: never;
+        /**
+         * Create Model
+         * @description Register a model. `422` if the provider isn't usable here, `409` if
+         *     the same provider/model/reasoning-effort combination already exists (the
+         *     same model at a different effort is a separate entry). The first model ever added
+         *     becomes the default regardless of `is_default`, so grading always has
+         *     something to fall back to.
+         */
+        post: operations["create_model_llm_models_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/llm/models/{model_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Model
+         * @description `409` when deleting the default while other models exist -- pick a
+         *     new default first, so grading never silently loses its fallback. The
+         *     last remaining model can always be deleted. Past grades keep their own
+         *     record of which model produced them (`AnsweredQuestion.grading_info`),
+         *     so nothing else references a model.
+         */
+        delete: operations["delete_model_llm_models__model_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Model
+         * @description Change a model's reasoning effort (provider/identifier are its
+         *     identity -- register a new model instead). Takes effect for grading
+         *     enqueued from now on; already-queued jobs re-read the model when they
+         *     run, so they pick it up too. `409` if it would duplicate another entry.
+         */
+        patch: operations["update_model_llm_models__model_id__patch"];
+        trace?: never;
+    };
+    "/llm/models/{model_id}/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Default Model */
+        put: operations["set_default_model_llm_models__model_id__default_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/llm/models/{model_id}/favorite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Add Favorite Model */
+        put: operations["add_favorite_model_llm_models__model_id__favorite_put"];
+        post?: never;
+        /** Remove Favorite Model */
+        delete: operations["remove_favorite_model_llm_models__model_id__favorite_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -1006,6 +1119,61 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** LlmModelCreate */
+        LlmModelCreate: {
+            /** Provider */
+            provider: string;
+            /** Model */
+            model: string;
+            /** Reasoning Effort */
+            reasoning_effort?: ("low" | "medium" | "high") | null;
+            /**
+             * Is Default
+             * @default false
+             */
+            is_default: boolean;
+            /**
+             * Is Favorite
+             * @default false
+             */
+            is_favorite: boolean;
+        };
+        /** LlmModelUpdate */
+        LlmModelUpdate: {
+            /** Reasoning Effort */
+            reasoning_effort: ("low" | "medium" | "high") | null;
+        };
+        /**
+         * LlmModelView
+         * @description `LlmModel` plus the per-user/per-deployment bits the picker needs, so
+         *     the frontend gets everything in one request.
+         */
+        LlmModelView: {
+            id: components["schemas"]["PydanticObjectId"];
+            /** Provider */
+            provider: string;
+            /** Model */
+            model: string;
+            /** Reasoning Effort */
+            reasoning_effort: ("low" | "medium" | "high") | null;
+            /** Is Default */
+            is_default: boolean;
+            /** Is Favorite */
+            is_favorite: boolean;
+            /** Available */
+            available: boolean;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
+        };
+        /** LlmProvider */
+        LlmProvider: {
+            /** Name */
+            name: string;
+            /** Available */
+            available: boolean;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
         };
         /** @example 5eb7cf5a86d9755df3a6c593 */
         PydanticObjectId: string;
@@ -1824,7 +1992,10 @@ export interface operations {
     };
     test_rubric_answer_rubrics__rubric_id__test_answer_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description LLM model to grade with; defaults to the default model */
+                model_id?: components["schemas"]["PydanticObjectId"] | null;
+            };
             header?: never;
             path: {
                 rubric_id: components["schemas"]["PydanticObjectId"];
@@ -1895,7 +2066,10 @@ export interface operations {
     };
     create_submission_submissions_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description LLM model to grade with; defaults to the default model */
+                model_id?: components["schemas"]["PydanticObjectId"] | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2157,7 +2331,10 @@ export interface operations {
     };
     regrade_submissions_submissions_regrade_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description LLM model to grade with; defaults to the default model */
+                model_id?: components["schemas"]["PydanticObjectId"] | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2190,7 +2367,10 @@ export interface operations {
     };
     regrade_submission_submissions__submission_id__regrade_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description LLM model to grade with; defaults to the default model */
+                model_id?: components["schemas"]["PydanticObjectId"] | null;
+            };
             header?: never;
             path: {
                 submission_id: components["schemas"]["PydanticObjectId"];
@@ -2253,7 +2433,10 @@ export interface operations {
     };
     create_batch_batches_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description LLM model to grade with; defaults to the default model */
+                model_id?: components["schemas"]["PydanticObjectId"] | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2350,6 +2533,8 @@ export interface operations {
         parameters: {
             query?: {
                 question_id?: string | null;
+                /** @description LLM model to grade with; defaults to the default model */
+                model_id?: components["schemas"]["PydanticObjectId"] | null;
             };
             header?: never;
             path: {
@@ -2465,6 +2650,236 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GradingTrace"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_providers_llm_providers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmProvider"][];
+                };
+            };
+        };
+    };
+    list_models_llm_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmModelView"][];
+                };
+            };
+        };
+    };
+    create_model_llm_models_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LlmModelCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmModelView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_model_llm_models__model_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_model_llm_models__model_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LlmModelUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmModelView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_default_model_llm_models__model_id__default_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmModelView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_favorite_model_llm_models__model_id__favorite_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmModelView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_favorite_model_llm_models__model_id__favorite_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmModelView"];
                 };
             };
             /** @description Validation Error */

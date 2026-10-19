@@ -85,6 +85,32 @@ async def test_grade_answers_persists_every_question_not_just_the_first(mongo_db
     assert {t.trace.grade.level for t in traces} == {"solid", "almost_there", "some_effort"}
     assert all(t.trace.provider == "openai" and t.trace.model == "gpt-4o-mini" for t in traces)
     assert all(a.grading_info and a.grading_info["model"] == "gpt-4o-mini" for a in fresh.answers)
+    assert all(a.grading_info["reasoning_effort"] is None for a in fresh.answers)
+
+
+async def test_grade_answers_records_reasoning_effort(mongo_db, monkeypatch):
+    """The grading model's effort (LlmModel.reasoning_effort, passed in by
+    _grade_submission) lands in both the answer's audit info and the trace."""
+    course = Course(name="BDM", slug="bdm")
+    await course.insert()
+    edition = Edition(name="2026/27", slug="2026_27")
+    await edition.insert()
+    rubric = Rubric(slug="lab", title="Lab", course=course, questions=[Question(id="q1", title="Q1", question="?", rubric="R")])
+    await rubric.insert()
+    submission = Submission(
+        rubric=rubric, edition=edition, file_object_key="k", answers=[AnsweredQuestion(question_id="q1", student_answer="a")]
+    )
+    await submission.insert()
+
+    monkeypatch.setattr("aitana.grading.grading.create_agent", _fake_create_agent([Grade(level="solid", feedback="f")]))
+    await _grade_answers(
+        submission, rubric.questions, object(), DEFAULT_GRADING_SCALE, "openai", "gpt-5", reasoning_effort="high"
+    )
+
+    fresh = await Submission.get(submission.id)
+    assert fresh.answers[0].grading_info["reasoning_effort"] == "high"
+    [trace] = await GradingTrace.find_all().to_list()
+    assert trace.trace.info["reasoning_effort"] == "high"
 
 
 def test_rebuild_answers_carries_over_manual_overrides(mongo_db):

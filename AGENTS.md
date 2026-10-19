@@ -442,7 +442,9 @@ Ollama durations, ...). Built by `grading.py`'s `build_grading_info`,
 carried on `GradeTrace.info`, copied onto the answer by `_grade_answers`.
 
 - **Sparse and schemaless on purpose**: a key is only present when the
-  provider reported it; nothing queries or indexes it. Adding a key needs no
+  provider reported it (exception: `reasoning_effort`, always recorded from
+  the grading `LlmModel` -- `null` means "provider default", while an absent
+  key means the answer predates it); nothing queries or indexes it. Adding a key needs no
   frontend change -- `components/GradingInfo.tsx` renders known keys with
   labels and anything unknown under "Other".
 - The full prompt/thinking/tool transcript stays in `GradingTrace`; this is
@@ -498,6 +500,62 @@ submissions (no stats endpoint), always from `effectiveGrade`.
   mean, but ungraded answers still show as a neutral segment in the
   distribution bars.
 
+## Choosing the grading model (`api/routers/llm.py`)
+
+Which model grades is runtime data, not config: provider credentials stay in
+the environment, but the models themselves are registered from the UI.
+
+- **`LlmModel`** (`documents/llm_model.py`): `{provider, model}` (unique
+  pair; `model` is the provider's own identifier string) plus
+  `reasoning_effort` and `is_default`. Effort is a setting of the model, not
+  part of its identity -- one entry per model, not one per effort (that
+  would need a different unique index, and Beanie never drops an old one
+  without the global `allow_index_dropping`). It's the only field
+  editable after creation (`PATCH /llm/models/{id}`, body field required
+  since `null` is a real value) -- provider/identifier changes mean
+  registering a new model.
+  At most one default, enforced by the router (`_make_default` unsets the
+  others), not the database. No secrets stored -- a model whose provider
+  later loses its key stays listed, flagged unavailable.
+- **`UserSettings`** (`documents/user_settings.py`) holds
+  `favorite_model_ids`. There are no users yet, so it's a single document
+  with `key="global"`, always read through `get_user_settings()` -- the
+  future per-user migration keys it by user id instead. Default is
+  deliberately *not* here: it's deployment-wide.
+- **Provider availability** (`llm.py`'s `PROVIDER_REQUIREMENTS` /
+  `provider_unavailable_reason`): the provider's optional package installed
+  (`importlib.util.find_spec`, no actual import) *and* its env var set --
+  the API key, or `OLLAMA_BASE_URL` for Ollama (which is why
+  `.env.example` leaves it blank; `get_chat_model` still falls back to
+  localhost if called directly). `GET /llm/providers` reports every
+  provider with a reason; the frontend only offers available ones.
+- **Active vs. default**: the *active* model is a per-browser choice
+  (`frontend/src/lib/activeModel.ts`, localStorage), falling back to the
+  default. Every grading-triggering endpoint (`POST /submissions`, `POST
+  /batches`, the three regrade endpoints, `POST /rubrics/{id}/test-answer`)
+  takes `?model_id=` (a query param so multipart and JSON endpoints share
+  one shape, `MODEL_ID_QUERY`), and the frontend hooks attach the active
+  one themselves (`useActiveModelId`) -- callers never pass it.
+- **Resolved at enqueue time**: `require_llm_model` resolves `model_id` (or
+  the default) in the request and fails it there (`404` unknown id, `422`
+  no default / provider unavailable), then passes the concrete id to the
+  Celery task. The worker re-resolves it (`resolve_llm_model`; `None` ->
+  default, only for tasks queued before this existed); a model deleted in
+  between fails that submission with a clear error. Which model graded
+  each answer is already in `AnsweredQuestion.grading_info`.
+- `DELETE /llm/models/{id}` refuses (`409`) to delete the default while
+  other models exist; the first model ever added becomes default
+  automatically -- grading always has a fallback once any model exists.
+- **Upgrade path**: `LLM_PROVIDER`/`LLM_MODEL` are now optional (no
+  built-in default) and, with `LLM_REASONING_EFFORT`, only seed the first
+  default model on API startup if the collection is empty
+  (`seed_llm_models_from_env`; an invalid effort is logged and dropped).
+  None of the three affects grading otherwise.
+- Tests: the `client` fixture seeds a default `openai/gpt-4o-mini` model
+  with a fake `OPENAI_API_KEY`, so every grading endpoint test has
+  something to resolve; `client.delayed_model_ids` records what was
+  enqueued.
+
 ## Pluggable LLM providers (`grading/llm.py`)
 
 Four providers: OpenAI, Anthropic, OpenRouter (an OpenAI-compatible proxy in
@@ -515,9 +573,9 @@ an opaque `ImportError` surfacing from deep inside a grading task or the
 `test-answer` endpoint.
 
 - **`Dockerfile` installs `openai`, `ollama`, and `openrouter`** (matching
-  what `.env.example` documents and `Settings.llm_provider`'s `"openai"`
-  default expects to work out of the box) **but deliberately not
-  `anthropic`** -- both `api`/`worker` images come from this one Dockerfile
+  what `.env.example` documents) **but deliberately not
+  `anthropic`** (so Anthropic never shows up as an available provider in
+  the model picker of a stock image) -- both `api`/`worker` images come from this one Dockerfile
   (see "Python sandbox for grading" above for the same pattern with Deno),
   so this is the one place that decides which providers actually work in a
   stock `docker compose up`. Wanting Anthropic in a real deployment means
@@ -1336,7 +1394,7 @@ responsible for whichever LLM provider extras `uv sync` installed --
 `uv sync` (no `--extra` flags) alone gets none of the four (see "Pluggable
 LLM providers" above); match whatever `Dockerfile` installs
 (`--extra openai --extra ollama --extra openrouter`) or add `--extra
-anthropic` yourself if that's what `LLM_PROVIDER` is set to locally.
+anthropic` yourself if you want Anthropic models available locally.
 
 **If you ever test `POST /submissions` (or anything else that calls a
 Celery task's `.delay()`) against an isolated setup, that setup needs an

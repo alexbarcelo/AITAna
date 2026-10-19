@@ -12,6 +12,7 @@ from ...grading.extraction import FORMAT_FILE_INFO
 from ...grading.models import Grade
 from ...worker.tasks import extract_submission_file, grade_submission
 from ..feedback_export import feedback_filename, load_answer_images, render_feedback_html
+from .llm import MODEL_ID_QUERY, require_llm_model
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
@@ -26,17 +27,21 @@ router = APIRouter(prefix="/submissions", tags=["submissions"])
 _SHALLOW_LINKS = {"rubric": 1, "batch": 1}
 
 
-async def enqueue_regrade(submission: Submission, question_id: str | None = None) -> None:
+def enqueue_grading(submission: Submission, model_id: PydanticObjectId, question_id: str | None = None) -> None:
+    """`model_id` is always resolved by the caller (`require_llm_model`)
+    before enqueueing, so a missing default fails the request, not the job,
+    and the job grades with the model that was active when it was asked for."""
+    grade_submission.delay(str(submission.id), only_question_id=question_id, model_id=str(model_id))
+
+
+async def enqueue_regrade(submission: Submission, model_id: PydanticObjectId, question_id: str | None = None) -> None:
     """Reset a submission to `pending` and re-enqueue grading -- all of it,
     or only `question_id` (other answers keep their grades, see
     worker/tasks.py's `_grade_submission`)."""
     submission.status = SubmissionStatus.PENDING
     submission.error = None
     await submission.save()
-    if question_id is None:
-        grade_submission.delay(str(submission.id))
-    else:
-        grade_submission.delay(str(submission.id), only_question_id=question_id)
+    enqueue_grading(submission, model_id, question_id)
 
 
 async def _resolve_edition(rubric: Rubric, edition_id: PydanticObjectId | None) -> Edition:
@@ -69,7 +74,9 @@ async def create_submission(
     student_id: PydanticObjectId = Form(...),
     rubric_id: PydanticObjectId = Form(...),
     edition_id: PydanticObjectId | None = Form(None),
+    model_id: PydanticObjectId | None = MODEL_ID_QUERY,
 ) -> Submission:
+    llm_model = await require_llm_model(model_id)
     student = await Student.get(student_id)
     if student is None:
         raise HTTPException(status_code=404, detail="Student not found")
@@ -98,7 +105,7 @@ async def create_submission(
     submission.file_object_key = key
     await submission.save()
 
-    grade_submission.delay(str(submission.id))
+    enqueue_grading(submission, llm_model.id)
     return submission
 
 
@@ -293,10 +300,13 @@ class BulkRegradeResult(BaseModel):
 
 
 @router.post("/regrade", response_model=BulkRegradeResult, status_code=202)
-async def regrade_submissions(body: BulkRegradeRequest) -> BulkRegradeResult:
+async def regrade_submissions(
+    body: BulkRegradeRequest, model_id: PydanticObjectId | None = MODEL_ID_QUERY
+) -> BulkRegradeResult:
     """Re-grade an explicit set of submissions (e.g. whatever a filtered list
     shows). With `question_id`, only that question is re-graded; `422` if it
     isn't in every involved rubric."""
+    llm_model = await require_llm_model(model_id)
     submissions = await Submission.find(In(Submission.id, body.submission_ids)).to_list()
     if body.question_id is not None:
         rubric_ids = {s.rubric.ref.id for s in submissions}
@@ -306,12 +316,14 @@ async def regrade_submissions(body: BulkRegradeRequest) -> BulkRegradeResult:
         ):
             raise HTTPException(status_code=422, detail=f"Question {body.question_id!r} is not in every submission's rubric")
     for submission in submissions:
-        await enqueue_regrade(submission, body.question_id)
+        await enqueue_regrade(submission, llm_model.id, body.question_id)
     return BulkRegradeResult(regraded=len(submissions))
 
 
 @router.post("/{submission_id}/regrade", response_model=Submission, status_code=202)
-async def regrade_submission(submission_id: PydanticObjectId) -> Submission:
+async def regrade_submission(
+    submission_id: PydanticObjectId, model_id: PydanticObjectId | None = MODEL_ID_QUERY
+) -> Submission:
     """Force a submission back through extraction+grading from scratch.
 
     `_grade_submission` always re-downloads the raw file, re-extracts answers
@@ -322,9 +334,10 @@ async def regrade_submission(submission_id: PydanticObjectId) -> Submission:
     run). TA manual overrides (`manual_grade`) are the exception: they're
     carried over by question id (see worker/tasks.py's `_rebuild_answers`).
     """
+    llm_model = await require_llm_model(model_id)
     submission = await Submission.get(submission_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS)
     if submission is None:
         raise HTTPException(status_code=404, detail="Submission not found")
 
-    await enqueue_regrade(submission)
+    await enqueue_regrade(submission, llm_model.id)
     return submission

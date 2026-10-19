@@ -18,7 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from mongomock_motor import AsyncMongoMockClient
 
 from aitana.api.main import app
-from aitana.documents import DOCUMENT_MODELS
+from aitana.documents import DOCUMENT_MODELS, LlmModel
 
 # mongomock-motor 0.0.36 lags current pymongo/motor in two ways Beanie relies
 # on. Both shims are test-only; production code never touches mongomock.
@@ -93,16 +93,27 @@ async def client(monkeypatch, mongo_db):
 
     delayed_submission_ids: list[str] = []
     delayed_question_ids: list[str | None] = []
+    delayed_model_ids: list[str | None] = []
 
-    def fake_delay(submission_id: str, only_question_id: str | None = None) -> None:
+    def fake_delay(submission_id: str, only_question_id: str | None = None, model_id: str | None = None) -> None:
         delayed_submission_ids.append(submission_id)
         delayed_question_ids.append(only_question_id)
+        delayed_model_ids.append(model_id)
 
     monkeypatch.setattr("aitana.api.routers.submissions.grade_submission.delay", fake_delay)
+
+    # Every grading-triggering endpoint needs a usable model to resolve
+    # (api/routers/llm.py's require_llm_model): seed a default one whose
+    # provider counts as available (package installed in dev, fake key set).
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
+    default_llm_model = LlmModel(provider="openai", model="gpt-4o-mini", is_default=True)
+    await default_llm_model.insert()
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         ac.delayed_submission_ids = delayed_submission_ids  # type: ignore[attr-defined]
         ac.delayed_question_ids = delayed_question_ids  # type: ignore[attr-defined]
+        ac.delayed_model_ids = delayed_model_ids  # type: ignore[attr-defined]
+        ac.default_llm_model_id = str(default_llm_model.id)  # type: ignore[attr-defined]
         ac.fake_objects = fake_objects  # type: ignore[attr-defined]
         yield ac

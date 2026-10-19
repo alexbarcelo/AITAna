@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useActiveModelId } from '../lib/activeModel'
 import { client } from './client'
 import { IN_PROGRESS_STATUSES } from './types'
 import type {
@@ -9,7 +10,10 @@ import type {
   Course,
   Edition,
   Grade,
+  LlmModel,
+  LlmProvider,
   Question,
+  ReasoningEffort,
   Rubric,
   StudentImportFormat,
   StudentImportResult,
@@ -286,11 +290,12 @@ export function useDeleteRubric() {
 }
 
 export function useTestRubricAnswer() {
+  const modelId = useActiveModelId()
   return useMutation({
     mutationFn: ({ rubricId, questionId, answer }: { rubricId: string; questionId: string; answer: string }) =>
       unwrap(
         client.POST('/rubrics/{rubric_id}/test-answer', {
-          params: { path: { rubric_id: rubricId } },
+          params: { path: { rubric_id: rubricId }, query: { model_id: modelId } },
           body: { question_id: questionId, answer },
         }),
       ) as Promise<Grade>,
@@ -339,11 +344,12 @@ export function useSubmission(id: string | undefined) {
 
 export function useRegradeSubmission() {
   const queryClient = useQueryClient()
+  const modelId = useActiveModelId()
   return useMutation({
     mutationFn: (submissionId: string) =>
       unwrap(
         client.POST('/submissions/{submission_id}/regrade', {
-          params: { path: { submission_id: submissionId } },
+          params: { path: { submission_id: submissionId }, query: { model_id: modelId } },
         }),
       ) as unknown as Promise<Submission>,
     onSuccess: (submission) => {
@@ -405,6 +411,7 @@ export function useClearManualGrade() {
 
 export function useCreateSubmission() {
   const queryClient = useQueryClient()
+  const modelId = useActiveModelId()
   return useMutation({
     mutationFn: async ({
       file,
@@ -427,6 +434,7 @@ export function useCreateSubmission() {
       // in openapi-fetch, which passes FormData through untouched).
       return unwrap(
         client.POST('/submissions', {
+          params: { query: { model_id: modelId } },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           body: formData as any,
         }),
@@ -463,6 +471,7 @@ export function useBatch(id: string | undefined) {
 
 export function useCreateBatch() {
   const queryClient = useQueryClient()
+  const modelId = useActiveModelId()
   return useMutation({
     mutationFn: async ({
       file,
@@ -486,6 +495,7 @@ export function useCreateBatch() {
       // untouched.
       return unwrap(
         client.POST('/batches', {
+          params: { query: { model_id: modelId } },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           body: formData as any,
         }),
@@ -500,13 +510,92 @@ export function useCreateBatch() {
 
 export function useRegradeSubmissions() {
   const queryClient = useQueryClient()
+  const modelId = useActiveModelId()
   return useMutation({
     mutationFn: ({ submissionIds, questionId }: { submissionIds: string[]; questionId?: string }) =>
       unwrap(
         client.POST('/submissions/regrade', {
+          params: { query: { model_id: modelId } },
           body: { submission_ids: submissionIds, question_id: questionId ?? null },
         }),
       ) as unknown as Promise<RegradeResult>,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['submissions'] }),
+  })
+}
+
+// ---- LLM models ----
+// Grading-triggering hooks above send the active model (lib/activeModel.ts)
+// as `?model_id=` themselves -- callers never pass it.
+
+export function useLlmProviders() {
+  return useQuery({
+    queryKey: ['llm', 'providers'],
+    queryFn: () => unwrap(client.GET('/llm/providers')) as Promise<LlmProvider[]>,
+  })
+}
+
+export function useLlmModels() {
+  return useQuery({
+    queryKey: ['llm', 'models'],
+    queryFn: () => unwrap(client.GET('/llm/models')) as Promise<LlmModel[]>,
+  })
+}
+
+export function useCreateLlmModel() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: {
+      provider: string
+      model: string
+      reasoning_effort: ReasoningEffort | null
+      is_default: boolean
+      is_favorite: boolean
+    }) => unwrap(client.POST('/llm/models', { body })) as Promise<LlmModel>,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['llm', 'models'] }),
+  })
+}
+
+export function useUpdateLlmModel() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ modelId, reasoningEffort }: { modelId: string; reasoningEffort: ReasoningEffort | null }) =>
+      unwrap(
+        client.PATCH('/llm/models/{model_id}', {
+          params: { path: { model_id: modelId } },
+          body: { reasoning_effort: reasoningEffort },
+        }),
+      ) as Promise<LlmModel>,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['llm', 'models'] }),
+  })
+}
+
+export function useSetDefaultLlmModel() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (modelId: string) =>
+      unwrap(client.PUT('/llm/models/{model_id}/default', { params: { path: { model_id: modelId } } })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['llm', 'models'] }),
+  })
+}
+
+export function useSetFavoriteLlmModel() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ modelId, favorite }: { modelId: string; favorite: boolean }) => {
+      const params = { params: { path: { model_id: modelId } } }
+      return unwrap(
+        favorite ? client.PUT('/llm/models/{model_id}/favorite', params) : client.DELETE('/llm/models/{model_id}/favorite', params),
+      )
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['llm', 'models'] }),
+  })
+}
+
+export function useDeleteLlmModel() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (modelId: string) =>
+      unwrap(client.DELETE('/llm/models/{model_id}', { params: { path: { model_id: modelId } } })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['llm', 'models'] }),
   })
 }

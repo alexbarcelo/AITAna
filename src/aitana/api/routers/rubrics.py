@@ -11,8 +11,8 @@ from ...documents import Batch, Course, Edition, Rubric, Submission
 from ...grading.grading import grade_answer
 from ...grading.llm import get_chat_model
 from ...grading.models import DEFAULT_GRADING_SCALE, Grade, Question, SubmissionFormat
-from ...settings import get_settings
 from ...slugify import slugify
+from .llm import MODEL_ID_QUERY, require_llm_model
 
 router = APIRouter(prefix="/rubrics", tags=["rubrics"])
 
@@ -422,7 +422,9 @@ class TestAnswerRequest(BaseModel):
 
 
 @router.post("/{rubric_id}/test-answer", response_model=Grade)
-async def test_rubric_answer(rubric_id: PydanticObjectId, payload: TestAnswerRequest) -> Grade:
+async def test_rubric_answer(
+    rubric_id: PydanticObjectId, payload: TestAnswerRequest, model_id: PydanticObjectId | None = MODEL_ID_QUERY
+) -> Grade:
     """Grade one free-typed answer against a single question of this rubric,
     synchronously, with no Submission/file/MinIO/Celery involved -- lets a
     rubric author try out wording changes and see the LLM's actual response
@@ -436,11 +438,9 @@ async def test_rubric_answer(rubric_id: PydanticObjectId, payload: TestAnswerReq
     if question is None:
         raise HTTPException(status_code=404, detail=f"Question {payload.question_id!r} not found in this rubric")
 
-    settings = get_settings()
+    llm_model = await require_llm_model(model_id)
     try:
-        chat_model = get_chat_model(
-            settings.llm_provider, settings.llm_model, reasoning_effort=settings.llm_reasoning_effort
-        )
+        chat_model = get_chat_model(llm_model.provider, llm_model.model, reasoning_effort=llm_model.reasoning_effort)
         # grade_answer() makes a blocking network call to the LLM -- unlike
         # the batch pipeline (worker/tasks.py), which isolates that to a
         # separate Celery process entirely, this is a single quick "try it"

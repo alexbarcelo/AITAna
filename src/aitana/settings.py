@@ -26,16 +26,16 @@ class Settings(BaseSettings):
     # OPENROUTER_API_KEY, OLLAMA_BASE_URL) are read directly from the
     # environment by grading/llm.py, same as before -- see .env.example.
 
-    # Default grading provider/model, used by the worker task.
-    llm_provider: str = "openai"
-    llm_model: str = "gpt-4o-mini"
-    # Coarse, provider-agnostic "how hard should it think" dial: "low",
-    # "medium", "high", or unset (default) to leave every provider's own
-    # default reasoning behavior untouched -- see grading/llm.py's
-    # get_chat_model for exactly what this turns into per provider. Off by
-    # default because it isn't free (more tokens, slower responses) and not
-    # every configured model supports it -- an operator who wants
-    # GradeTrace.thinking populated opts in explicitly by setting this.
+    # Which models grade is stored in the database (documents/llm_model.py,
+    # managed from the UI). These two only *seed* the first default model on
+    # API startup when no model exists yet (`seed_llm_models_from_env`), so
+    # an existing .env keeps working after the upgrade -- once the
+    # collection has any model, they're ignored.
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    # Seeds the seeded model's reasoning effort ("low"/"medium"/"high"),
+    # same seed-only role as the two above -- reasoning effort is otherwise a
+    # per-model setting (LlmModel.reasoning_effort).
     llm_reasoning_effort: str | None = None
 
 

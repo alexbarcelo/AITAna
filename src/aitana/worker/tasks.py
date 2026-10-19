@@ -15,12 +15,11 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from .. import storage
 from ..db import init_db
-from ..documents import AnsweredQuestion, GradingTrace, Submission, SubmissionStatus
+from ..documents import AnsweredQuestion, GradingTrace, Submission, SubmissionStatus, resolve_llm_model
 from ..grading.extraction import FORMAT_FILE_INFO, extract_answers
 from ..grading.grading import grade_answer
 from ..grading.llm import get_chat_model
 from ..grading.models import ExtractedImage, ExtractionResult, GradeTrace, Question
-from ..settings import get_settings
 from .celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -31,14 +30,20 @@ _SHALLOW_RUBRIC_LINK = {"rubric": 1}
 
 
 @celery_app.task(name="aitana.grade_submission")
-def grade_submission(submission_id: str, only_question_id: str | None = None) -> None:
-    asyncio.run(_grade_submission(submission_id, only_question_id))
+def grade_submission(submission_id: str, only_question_id: str | None = None, model_id: str | None = None) -> None:
+    asyncio.run(_grade_submission(submission_id, only_question_id, model_id))
 
 
-async def _grade_submission(submission_id: str, only_question_id: str | None = None) -> None:
+async def _grade_submission(
+    submission_id: str, only_question_id: str | None = None, model_id: str | None = None
+) -> None:
     """`only_question_id` re-grades just that question: every other answer
     keeps its previous LLM grade (see `_rebuild_answers`) and is not sent to
-    the LLM again -- for re-running one question after a rubric tweak."""
+    the LLM again -- for re-running one question after a rubric tweak.
+
+    `model_id` is the `LlmModel` to grade with (the API always resolves and
+    passes one); `None` falls back to the current default, for tasks
+    enqueued before model selection existed."""
     await init_db()
     submission = await Submission.get(
         PydanticObjectId(submission_id), fetch_links=True, nesting_depths_per_field=_SHALLOW_RUBRIC_LINK
@@ -60,18 +65,16 @@ async def _grade_submission(submission_id: str, only_question_id: str | None = N
         )
         await submission.save()
 
-        settings = get_settings()
-        chat_model = get_chat_model(
-            settings.llm_provider, settings.llm_model, reasoning_effort=settings.llm_reasoning_effort
-        )
+        llm_model = await resolve_llm_model(model_id)
+        chat_model = get_chat_model(llm_model.provider, llm_model.model, reasoning_effort=llm_model.reasoning_effort)
         await _grade_answers(
             submission,
             rubric.questions,
             chat_model,
             rubric.grading_scale,
-            settings.llm_provider,
-            settings.llm_model,
-            reasoning_effort=settings.llm_reasoning_effort,
+            llm_model.provider,
+            llm_model.model,
+            reasoning_effort=llm_model.reasoning_effort,
             only_question_id=only_question_id,
             images=extracted.images,
         )

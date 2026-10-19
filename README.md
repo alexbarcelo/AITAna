@@ -255,9 +255,16 @@ For each question in the rubric:
 Blank answers are graded as the rubric's `grading_scale`'s first (worst)
 level without an LLM call -- `not_attempted` for the default scale.
 
-The LLM provider/model the worker grades with is set via `LLM_PROVIDER`/
-`LLM_MODEL` in `.env` -- one of `openai`, `openrouter`, or `ollama` (no
-Anthropic, by design -- see `src/aitana/grading/llm.py`).
+Grading models are managed in the web UI: the **Model** picker (top right)
+selects the *active* model this browser grades with, and **Manage models...**
+registers new ones (provider + model identifier, e.g. `openai` /
+`gpt-4o-mini`, plus an optional reasoning effort), marks one as the *default* (used when nothing else is
+picked) and others as favorites. Only providers whose package is installed
+and whose key (or, for Ollama, `OLLAMA_BASE_URL`) is set in `.env` can be
+picked -- credentials never leave the environment. The stock Docker image
+installs `openai`, `ollama` and `openrouter`; Anthropic needs `--extra
+anthropic` (see `AGENTS.md`). `LLM_PROVIDER`/`LLM_MODEL`/`LLM_REASONING_EFFORT`
+in `.env` only seed the first default model.
 
 ## Tests
 

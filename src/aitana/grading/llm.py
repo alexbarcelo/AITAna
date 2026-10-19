@@ -12,9 +12,10 @@ installed raises a clear `RuntimeError` naming the fix, not an opaque
 `ImportError` from deep inside a request.
 """
 
+import importlib.util
 import logging
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
@@ -29,9 +30,10 @@ logger = logging.getLogger(__name__)
 # The three-level "how hard should it think" dial `get_chat_model`'s
 # `reasoning_effort` accepts -- see its docstring for the per-provider
 # mapping. `None` (the default everywhere this is threaded through, e.g.
-# Settings.llm_reasoning_effort) means "leave the provider's own default
+# LlmModel.reasoning_effort) means "leave the provider's own default
 # reasoning behavior alone", not "low effort".
-_REASONING_EFFORTS = ("low", "medium", "high")
+ReasoningEffort = Literal["low", "medium", "high"]
+REASONING_EFFORTS = get_args(ReasoningEffort)
 
 # Anthropic's extended thinking wants an explicit *token budget*, not a named
 # effort level -- there's no "low/medium/high" concept on their API, so this
@@ -42,6 +44,50 @@ _REASONING_EFFORTS = ("low", "medium", "high")
 # tuned against real grading traffic -- revisit these numbers if a rubric's
 # questions warrant deeper thinking than "high" currently allows.
 _ANTHROPIC_THINKING_BUDGET_TOKENS = {"low": 1024, "medium": 4096, "high": 10000}
+
+
+# What each provider needs to be offered in the UI's "add a model" picker
+# (`available_providers`): its optional langchain-* package installed, plus
+# the one environment variable it can't work without. Credentials stay in the
+# environment on purpose -- the database only ever stores *which* model to
+# use, never a secret. Ollama has no key; its base URL plays that role, so an
+# Ollama provider only shows up once OLLAMA_BASE_URL is explicitly set.
+PROVIDER_REQUIREMENTS: dict[str, tuple[str, str]] = {
+    "openai": ("langchain_openai", "OPENAI_API_KEY"),
+    "anthropic": ("langchain_anthropic", "ANTHROPIC_API_KEY"),
+    "ollama": ("langchain_ollama", "OLLAMA_BASE_URL"),
+    "openrouter": ("langchain_openrouter", "OPENROUTER_API_KEY"),
+}
+
+
+def _module_installed(module_name: str) -> bool:
+    """`find_spec`, not a real import: answering "is it installed" for the
+    providers list shouldn't pay for importing four SDKs. A module forced to
+    `None` in `sys.modules` (how the tests simulate "not installed") makes
+    `find_spec` raise `ValueError` -- treated as missing, same as a real
+    `import` would."""
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except ValueError:
+        return False
+
+
+def provider_unavailable_reason(provider: str) -> str | None:
+    """`None` if `provider` can be used right now, else a short human reason
+    (shown in the UI next to a provider/model that can't be picked)."""
+    requirement = PROVIDER_REQUIREMENTS.get(provider)
+    if requirement is None:
+        return f"unknown provider {provider!r}"
+    module_name, env_var = requirement
+    if not _module_installed(module_name):
+        return f"package not installed (pip install 'aitana[{provider}]')"
+    if not os.environ.get(env_var):
+        return f"{env_var} is not set"
+    return None
+
+
+def available_providers() -> list[str]:
+    return [p for p in PROVIDER_REQUIREMENTS if provider_unavailable_reason(p) is None]
 
 
 def _missing_extra_error(extra: str, package: str) -> RuntimeError:
@@ -133,8 +179,8 @@ def get_chat_model(
         regardless of which backend model it's actually proxying to.
     """
     provider = provider.lower()
-    if reasoning_effort is not None and reasoning_effort not in _REASONING_EFFORTS:
-        raise ValueError(f"reasoning_effort must be one of {_REASONING_EFFORTS} or None, got {reasoning_effort!r}")
+    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
+        raise ValueError(f"reasoning_effort must be one of {REASONING_EFFORTS} or None, got {reasoning_effort!r}")
 
     logger.info(
         "Setting up chat model: provider=%s model=%s temperature=%s reasoning_effort=%s",

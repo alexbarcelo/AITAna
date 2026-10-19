@@ -506,7 +506,8 @@ def test_build_grading_info_is_sparse_when_provider_reports_nothing():
         elapsed_seconds=0.5,
         blank_short_circuit=False,
     )
-    assert set(info) == {"provider", "model", "graded_at", "elapsed_seconds", "llm_calls"}
+    assert set(info) == {"provider", "model", "graded_at", "elapsed_seconds", "llm_calls", "reasoning_effort"}
+    assert info["reasoning_effort"] is None
 
 
 def test_grade_answer_trace_carries_grading_info(monkeypatch):

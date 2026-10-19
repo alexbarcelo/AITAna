@@ -1,7 +1,10 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
+import ActiveModelProvider from './components/ActiveModelProvider'
+import ModelSelector from './components/ModelSelector'
 import BatchesPage from './pages/BatchesPage'
 import CoursesPage from './pages/CoursesPage'
 import EditionsPage from './pages/EditionsPage'
+import ModelsPage from './pages/ModelsPage'
 import RubricDetailPage from './pages/RubricDetailPage'
 import RubricsPage from './pages/RubricsPage'
 import StudentsPage from './pages/StudentsPage'
@@ -16,49 +19,57 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
 
 export default function App() {
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-5xl items-center gap-2 px-4 py-3">
-          <span className="mr-4 text-lg font-semibold">AITAna</span>
-          <nav className="flex gap-1">
-            <NavLink to="/" end className={navLinkClass}>
-              Submissions
-            </NavLink>
-            <NavLink to="/students" className={navLinkClass}>
-              Students
-            </NavLink>
-            <NavLink to="/courses" className={navLinkClass}>
-              Courses
-            </NavLink>
-            <NavLink to="/editions" className={navLinkClass}>
-              Editions
-            </NavLink>
-            <NavLink to="/rubrics" className={navLinkClass}>
-              Rubrics
-            </NavLink>
-            <NavLink to="/upload" className={navLinkClass}>
-              Upload submission
-            </NavLink>
-            <NavLink to="/batches" className={navLinkClass}>
-              Batches
-            </NavLink>
-          </nav>
-        </div>
-      </header>
+    <ActiveModelProvider>
+      <div className="min-h-screen bg-slate-50 text-slate-900">
+        <header className="border-b border-slate-200 bg-white">
+          <div className="mx-auto flex max-w-5xl items-center gap-2 px-4 py-3">
+            <span className="mr-4 text-lg font-semibold">AITAna</span>
+            <nav className="flex gap-1">
+              <NavLink to="/" end className={navLinkClass}>
+                Submissions
+              </NavLink>
+              <NavLink to="/students" className={navLinkClass}>
+                Students
+              </NavLink>
+              <NavLink to="/courses" className={navLinkClass}>
+                Courses
+              </NavLink>
+              <NavLink to="/editions" className={navLinkClass}>
+                Editions
+              </NavLink>
+              <NavLink to="/rubrics" className={navLinkClass}>
+                Rubrics
+              </NavLink>
+              <NavLink to="/upload" className={navLinkClass}>
+                Upload submission
+              </NavLink>
+              <NavLink to="/batches" className={navLinkClass}>
+                Batches
+              </NavLink>
+            </nav>
+          </div>
+          <div className="border-t border-slate-100">
+            <div className="mx-auto flex max-w-5xl justify-end px-4 py-2">
+              <ModelSelector />
+            </div>
+          </div>
+        </header>
 
-      <main className="mx-auto max-w-5xl px-4 py-8">
-        <Routes>
-          <Route path="/" element={<SubmissionsPage />} />
-          <Route path="/students" element={<StudentsPage />} />
-          <Route path="/courses" element={<CoursesPage />} />
-          <Route path="/editions" element={<EditionsPage />} />
-          <Route path="/rubrics" element={<RubricsPage />} />
-          <Route path="/rubrics/:id" element={<RubricDetailPage />} />
-          <Route path="/upload" element={<UploadSubmissionPage />} />
-          <Route path="/batches" element={<BatchesPage />} />
-          <Route path="/submissions/:id" element={<SubmissionDetailPage />} />
-        </Routes>
-      </main>
-    </div>
+        <main className="mx-auto max-w-5xl px-4 py-8">
+          <Routes>
+            <Route path="/" element={<SubmissionsPage />} />
+            <Route path="/students" element={<StudentsPage />} />
+            <Route path="/courses" element={<CoursesPage />} />
+            <Route path="/editions" element={<EditionsPage />} />
+            <Route path="/rubrics" element={<RubricsPage />} />
+            <Route path="/rubrics/:id" element={<RubricDetailPage />} />
+            <Route path="/upload" element={<UploadSubmissionPage />} />
+            <Route path="/batches" element={<BatchesPage />} />
+            <Route path="/submissions/:id" element={<SubmissionDetailPage />} />
+            <Route path="/models" element={<ModelsPage />} />
+          </Routes>
+        </main>
+      </div>
+    </ActiveModelProvider>
   )
 }

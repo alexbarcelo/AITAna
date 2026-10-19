@@ -19,6 +19,14 @@ export type SubmissionFormat = components['schemas']['SubmissionFormat']
 export type StudentImportFormat = components['schemas']['StudentImportFormat']
 export type StudentImportResult = components['schemas']['StudentImportResult']
 export type BatchType = components['schemas']['BatchType']
+/** A registered grading model, with this user's favorite flag and whether
+ * its provider is usable right now (see api/routers/llm.py). */
+export type LlmModel = components['schemas']['LlmModelView']
+export type LlmProvider = components['schemas']['LlmProvider']
+export type ReasoningEffort = NonNullable<LlmModel['reasoning_effort']>
+/** Mirrors the backend's `ReasoningEffort` (`grading/llm.py`); `null` (no
+ * entry here) leaves the provider's own default. */
+export const REASONING_EFFORTS: ReasoningEffort[] = ['low', 'medium', 'high']
 
 /**
  * `{level_id: description}`, worst -> best -- see `Rubric.grading_scale`'s

@@ -24,9 +24,9 @@ from pydantic import BaseModel
 from ... import storage
 from ...documents import Batch, BatchType, Rubric, Student, Submission
 from ...grading.extraction import FORMAT_FILE_INFO
-from ...worker.tasks import grade_submission
 from ..feedback_export import load_answer_images, render_feedback_html
-from .submissions import _SHALLOW_LINKS, _resolve_edition, enqueue_regrade
+from .llm import MODEL_ID_QUERY, require_llm_model
+from .submissions import _SHALLOW_LINKS, _resolve_edition, enqueue_grading, enqueue_regrade
 
 router = APIRouter(prefix="/batches", tags=["batches"])
 
@@ -148,7 +148,9 @@ async def create_batch(
     rubric_id: PydanticObjectId = Form(...),
     edition_id: PydanticObjectId | None = Form(None),
     type: BatchType = Form(...),
+    model_id: PydanticObjectId | None = MODEL_ID_QUERY,
 ) -> BatchUploadResult:
+    llm_model = await require_llm_model(model_id)
     rubric = await Rubric.get(rubric_id)
     if rubric is None:
         raise HTTPException(status_code=404, detail="Rubric not found")
@@ -199,7 +201,7 @@ async def create_batch(
         submission.file_object_key = key
         await submission.save()
 
-        grade_submission.delay(str(submission.id))
+        enqueue_grading(submission, llm_model.id)
         submissions.append(submission)
 
     return BatchUploadResult(batch=batch, created=len(submissions), submissions=submissions)
@@ -262,7 +264,9 @@ class BatchRegradeResult(BaseModel):
 
 
 @router.post("/{batch_id}/regrade", response_model=BatchRegradeResult, status_code=202)
-async def regrade_batch(batch_id: PydanticObjectId, question_id: str | None = None) -> BatchRegradeResult:
+async def regrade_batch(
+    batch_id: PydanticObjectId, question_id: str | None = None, model_id: PydanticObjectId | None = MODEL_ID_QUERY
+) -> BatchRegradeResult:
     """Force every submission in this batch back through extraction+grading
     from scratch -- the bulk version of `POST /submissions/{id}/regrade`
     (same per-submission reset: status back to `pending`, `error` cleared,
@@ -271,6 +275,7 @@ async def regrade_batch(batch_id: PydanticObjectId, question_id: str | None = No
 
     With `question_id`, only that question is re-graded (one LLM call per
     submission); every other answer keeps its current grade."""
+    llm_model = await require_llm_model(model_id)
     batch = await Batch.get(batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail="Batch not found")
@@ -279,6 +284,6 @@ async def regrade_batch(batch_id: PydanticObjectId, question_id: str | None = No
 
     submissions = await Submission.find(Submission.batch.id == batch_id).to_list()
     for submission in submissions:
-        await enqueue_regrade(submission, question_id)
+        await enqueue_regrade(submission, llm_model.id, question_id)
 
     return BatchRegradeResult(regraded=len(submissions))
