@@ -8,14 +8,25 @@ per-submission feedback -- see `batch_zip_entries` below for the batch
 case). Mirrors the ordinal grade-color ramp `GradeBadge`/`GradingGrid` use
 in the web UI (`frontend/src/lib/gradeColor.ts`) so the export reads
 consistently with what grading this submission in the app looks like.
+
+Cell outputs are part of the answer: text outputs are already inside
+`student_answer` (`Question.include_outputs`), and the figures sent to the
+LLM (`Question.include_images`) are re-extracted from the stored file
+(`load_answer_images`) and embedded as `data:` URIs, so the file stays
+self-contained.
 """
 
 from __future__ import annotations
 
 import html
+import logging
 import re
 
 from ..documents.submission import Submission
+from ..grading.models import ExtractedImage
+from ..worker.tasks import extract_submission_file
+
+logger = logging.getLogger(__name__)
 
 # Same 9-step, one-hue ramp as frontend/src/lib/gradeColor.ts's ORDINAL_STEPS
 # -- keep the two in sync if that ramp ever changes.
@@ -66,14 +77,45 @@ _STYLE = """
            font-size: .75rem; font-weight: 500; white-space: nowrap; }
   .answer { white-space: pre-wrap; background: #f8fafc; border-radius: .375rem;
             padding: .75rem; font-size: .875rem; color: #334155; margin: 0 0 .75rem; }
+  .figures { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 .75rem; }
+  .figures img { max-width: 100%; border: 1px solid #e2e8f0; border-radius: .375rem; background: #fff; }
   .feedback { font-size: .875rem; color: #475569; margin: 0; }
   .muted { color: #94a3b8; }
   footer { margin-top: 2rem; font-size: .75rem; color: #94a3b8; }
 """
 
 
-def render_feedback_html(submission: Submission) -> str:
+def load_answer_images(submission: Submission) -> dict[str, list[ExtractedImage]]:
+    """`{question_id: images}` for every answer that was graded with images
+    (`AnsweredQuestion.image_count`). Downloads and re-extracts the stored
+    file only when there's at least one; on failure, logs and returns `{}`
+    so the export still works, just without figures."""
+    wanted = {a.question_id for a in submission.answers if a.image_count}
+    if not wanted:
+        return {}
+    try:
+        extracted = extract_submission_file(submission)
+    except Exception:  # noqa: BLE001 -- a missing figure must not break the export
+        logger.exception("Could not re-extract images for submission %s", submission.id)
+        return {}
+    return {q.id: extracted.images.get(q.answer_key, []) for q in submission.rubric.questions if q.id in wanted}
+
+
+def _figures_html(images: list[ExtractedImage]) -> str:
+    if not images:
+        return ""
+    tags = "".join(
+        f'<img src="data:{html.escape(image.mime_type)};base64,{html.escape(image.data)}" alt="Figure {n}">'
+        for n, image in enumerate(images, start=1)
+    )
+    return f'<div class="figures">{tags}</div>'
+
+
+def render_feedback_html(submission: Submission, images: dict[str, list[ExtractedImage]] | None = None) -> str:
     """Render `submission`'s graded answers as a standalone HTML page.
+
+    `images` (`{question_id: [...]}`, see `load_answer_images`) are embedded
+    under their answer; omit it for a text-only export.
 
     `submission.rubric`/`.student`/`.edition` must already be resolved (i.e.
     fetched with `fetch_links=True`, as every submissions/batches endpoint
@@ -123,6 +165,7 @@ def render_feedback_html(submission: Submission) -> str:
             {badge}
           </div>
           <p class="answer">{answer_text}</p>
+          {_figures_html((images or {}).get(answer.question_id, []))}
           {feedback}
         </section>"""
         )

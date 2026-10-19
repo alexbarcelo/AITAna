@@ -122,3 +122,50 @@ async def test_render_feedback_html_prefers_manual_grade(mongo_db):
     assert "TA feedback text." in html_out
     assert "Solid" in html_out
     assert "LLM feedback text." not in html_out
+
+
+async def test_render_feedback_html_embeds_images_as_data_uris(mongo_db):
+    from aitana.grading.models import ExtractedImage
+
+    images = {"answer1": [ExtractedImage(mime_type="image/png", data="iVBORw0KGgo=")]}
+    html_out = render_feedback_html(_submission(), images)
+
+    assert '<img src="data:image/png;base64,iVBORw0KGgo=" alt="Figure 1">' in html_out
+    assert '<div class="figures">' not in render_feedback_html(_submission())
+
+
+async def test_render_feedback_html_includes_text_outputs(mongo_db):
+    answer = AnsweredQuestion(question_id="answer1", student_answer="print(1)\n--- output ---\n1")
+    html_out = render_feedback_html(_submission(answers=[answer]))
+    assert "--- output ---\n1" in html_out
+
+
+async def test_load_answer_images_only_extracts_when_needed(mongo_db, monkeypatch):
+    from aitana.api import feedback_export
+    from aitana.grading.models import ExtractedImage, ExtractionResult
+
+    calls = []
+    image = ExtractedImage(mime_type="image/png", data="AAAA")
+
+    def _fake_extract(submission):
+        calls.append(submission)
+        return ExtractionResult(images={"answer1": [image]})
+
+    monkeypatch.setattr(feedback_export, "extract_submission_file", _fake_extract)
+
+    assert feedback_export.load_answer_images(_submission()) == {}
+    assert calls == []  # no answer graded with images: no download
+
+    answer = AnsweredQuestion(question_id="answer1", student_answer="plot()", image_count=1)
+    assert feedback_export.load_answer_images(_submission(answers=[answer])) == {"answer1": [image]}
+
+
+async def test_load_answer_images_failure_returns_empty(mongo_db, monkeypatch):
+    from aitana.api import feedback_export
+
+    def _boom(submission):
+        raise RuntimeError("object not found")
+
+    monkeypatch.setattr(feedback_export, "extract_submission_file", _boom)
+    answer = AnsweredQuestion(question_id="answer1", student_answer="plot()", image_count=1)
+    assert feedback_export.load_answer_images(_submission(answers=[answer])) == {}

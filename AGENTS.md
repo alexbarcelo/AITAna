@@ -344,7 +344,11 @@ gaining figures = fill `images` in its extractor + add it to
 Images are never persisted (not in `Submission`, not in `GradingTrace`,
 which only keeps `image_count`): `GET /submissions/{id}/answers/
 {question_id}/images/{index}` re-extracts them from the stored file for the
-submission page's thumbnails.
+submission page's thumbnails, and the feedback HTML export
+(`feedback_export.load_answer_images`) does the same to embed them as
+`data:` URIs, keeping the file self-contained. Both go through
+`worker/tasks.py`'s `extract_submission_file`. Text outputs need nothing
+extra there: they're already part of `student_answer`.
 
 ## Grading traces (`documents/grading_trace.py`, `api/routers/grading_traces.py`)
 

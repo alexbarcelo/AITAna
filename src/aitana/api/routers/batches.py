@@ -25,7 +25,7 @@ from ... import storage
 from ...documents import Batch, BatchType, Rubric, Student, Submission
 from ...grading.extraction import FORMAT_FILE_INFO
 from ...worker.tasks import grade_submission
-from ..feedback_export import render_feedback_html
+from ..feedback_export import load_answer_images, render_feedback_html
 from .submissions import _SHALLOW_LINKS, _resolve_edition, enqueue_regrade
 
 router = APIRouter(prefix="/batches", tags=["batches"])
@@ -248,7 +248,7 @@ async def download_batch_feedback(batch_id: PydanticObjectId) -> Response:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for submission in submissions:
             folder = submission.batch_internal_id or str(submission.id)
-            zf.writestr(f"{folder}/feedback.html", render_feedback_html(submission))
+            zf.writestr(f"{folder}/feedback.html", render_feedback_html(submission, load_answer_images(submission)))
 
     return Response(
         content=buf.getvalue(),

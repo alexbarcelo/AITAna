@@ -1,7 +1,5 @@
 import base64
-import tempfile
 from datetime import UTC, datetime
-from pathlib import Path
 
 from beanie import Link, PydanticObjectId
 from beanie.operators import In
@@ -10,10 +8,10 @@ from pydantic import BaseModel
 
 from ... import storage
 from ...documents import Edition, Rubric, Student, Submission, SubmissionStatus
-from ...grading.extraction import FORMAT_FILE_INFO, extract_answers
+from ...grading.extraction import FORMAT_FILE_INFO
 from ...grading.models import Grade
-from ...worker.tasks import grade_submission
-from ..feedback_export import feedback_filename, render_feedback_html
+from ...worker.tasks import extract_submission_file, grade_submission
+from ..feedback_export import feedback_filename, load_answer_images, render_feedback_html
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
@@ -261,11 +259,7 @@ async def get_answer_image(submission_id: PydanticObjectId, question_id: str, in
     if question is None:
         raise HTTPException(status_code=404, detail=f"Question {question_id!r} not found in this rubric")
 
-    extension, _content_type = FORMAT_FILE_INFO[rubric.format]
-    with tempfile.TemporaryDirectory() as tmp:
-        file_path = Path(tmp) / f"submission{extension}"
-        file_path.write_bytes(storage.download_bytes(submission.file_object_key))
-        images = extract_answers(rubric.format, file_path).images.get(question.answer_key, [])
+    images = extract_submission_file(submission).images.get(question.answer_key, [])
     if not 0 <= index < len(images):
         raise HTTPException(status_code=404, detail="Image not found")
     image = images[index]
@@ -283,7 +277,7 @@ async def download_submission_feedback(submission_id: PydanticObjectId) -> Respo
         raise HTTPException(status_code=404, detail="Submission not found")
 
     return Response(
-        content=render_feedback_html(submission),
+        content=render_feedback_html(submission, load_answer_images(submission)),
         media_type="text/html",
         headers={"Content-Disposition": f'attachment; filename="{feedback_filename(submission)}"'},
     )

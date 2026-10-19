@@ -52,11 +52,7 @@ async def _grade_submission(submission_id: str, only_question_id: str | None = N
         await submission.save()
 
         rubric = submission.rubric
-        extension, _content_type = FORMAT_FILE_INFO[rubric.format]
-        with tempfile.TemporaryDirectory() as tmp:
-            file_path = Path(tmp) / f"submission{extension}"
-            storage.download_to_path(submission.file_object_key, file_path)
-            extracted = extract_answers(rubric.format, file_path)
+        extracted = extract_submission_file(submission)
 
         submission.status = SubmissionStatus.GRADING
         submission.answers = _rebuild_answers(
@@ -86,6 +82,18 @@ async def _grade_submission(submission_id: str, only_question_id: str | None = N
         submission.status = SubmissionStatus.FAILED
         submission.error = str(exc)
         await submission.save()
+
+
+def extract_submission_file(submission: Submission) -> ExtractionResult:
+    """Download the submission's stored file and run its rubric's extractor.
+    `submission.rubric` must be resolved. Also used outside grading to get
+    images back (they're never stored, see AGENTS.md "Cell outputs and image
+    inputs")."""
+    extension, _content_type = FORMAT_FILE_INFO[submission.rubric.format]
+    with tempfile.TemporaryDirectory() as tmp:
+        file_path = Path(tmp) / f"submission{extension}"
+        storage.download_to_path(submission.file_object_key, file_path)
+        return extract_answers(submission.rubric.format, file_path)
 
 
 def _rebuild_answers(
