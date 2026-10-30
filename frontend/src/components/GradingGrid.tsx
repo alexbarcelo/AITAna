@@ -1,5 +1,7 @@
+import type { ReactNode } from 'react'
 import { useState } from 'react'
 import AnswerGradeEditor from './AnswerGradeEditor'
+import AnswerImages from './AnswerImages'
 import GradeBadge from './GradeBadge'
 import { GradeDistributionBar, GradingStatsSummary } from './GradeStats'
 import { UntaggedCellsBadge } from './UntaggedCells'
@@ -232,7 +234,7 @@ function AnswerQuickView({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div
-        className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg bg-white p-4 shadow-xl"
+        className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-white p-4 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-3 flex items-start justify-between gap-3">
@@ -250,9 +252,13 @@ function AnswerQuickView({
             {grade && <GradeBadge level={grade.level} scale={scale} />}
           </div>
         </div>
+        <p className="mb-2 whitespace-pre-wrap text-sm text-slate-700">{question.question}</p>
+        <QuestionDetails question={question} />
+        <p className="mb-1 text-xs font-medium uppercase text-slate-400">Answer</p>
         <p className="mb-3 whitespace-pre-wrap rounded bg-slate-50 p-3 text-sm text-slate-700">
           {answer.student_answer || <span className="text-slate-400">No answer provided.</span>}
         </p>
+        <AnswerImages submissionId={submission._id} answer={answer} />
         <AnswerGradeEditor
           submissionId={submission._id}
           answer={answer}
@@ -265,6 +271,42 @@ function AnswerQuickView({
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * The question's grading aids (context, instructions, model answer, expected
+ * points), each collapsed by default: the quick view is about reading the
+ * answer, these are just one click away when the grade needs checking.
+ */
+function QuestionDetails({ question }: { question: Question }) {
+  const sections: { label: string; content: ReactNode }[] = []
+  if (question.context) sections.push({ label: 'Context', content: <p className="whitespace-pre-wrap">{question.context}</p> })
+  sections.push({ label: 'Grading instructions', content: <p className="whitespace-pre-wrap">{question.rubric}</p> })
+  if (question.model_answer) {
+    sections.push({ label: 'Model answer', content: <p className="whitespace-pre-wrap">{question.model_answer}</p> })
+  }
+  if ((question.expected_points?.length ?? 0) > 0) {
+    sections.push({
+      label: 'Expected points',
+      content: (
+        <ul className="list-inside list-disc">
+          {question.expected_points!.map((point, idx) => (
+            <li key={idx}>{point}</li>
+          ))}
+        </ul>
+      ),
+    })
+  }
+  return (
+    <div className="mb-3 divide-y divide-slate-100 rounded border border-slate-200">
+      {sections.map(({ label, content }) => (
+        <details key={label} className="px-3 py-1.5">
+          <summary className="cursor-pointer text-xs font-medium uppercase text-slate-400 hover:text-slate-600">{label}</summary>
+          <div className="mt-1 pb-1 text-sm text-slate-600">{content}</div>
+        </details>
+      ))}
     </div>
   )
 }

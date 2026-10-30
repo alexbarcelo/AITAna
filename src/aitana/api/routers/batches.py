@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from ... import storage
 from ...documents import Batch, BatchType, Rubric, Student, Submission
 from ...grading.extraction import FORMAT_FILE_INFO
-from ..feedback_export import load_answer_images, render_feedback_html
+from ..feedback_export import course_name, load_answer_images, render_feedback_html
 from .llm import MODEL_ID_QUERY, require_llm_model
 from .submissions import _SHALLOW_LINKS, _resolve_edition, enqueue_grading, enqueue_regrade
 
@@ -246,11 +246,14 @@ async def download_batch_feedback(batch_id: PydanticObjectId) -> Response:
         Submission.batch.id == batch_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS
     ).to_list()
 
+    # One rubric for the whole batch, so one course lookup.
+    course = await course_name(batch.rubric)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for submission in submissions:
             folder = submission.batch_internal_id or str(submission.id)
-            zf.writestr(f"{folder}/feedback.html", render_feedback_html(submission, load_answer_images(submission)))
+            html_out = render_feedback_html(submission, load_answer_images(submission), course=course)
+            zf.writestr(f"{folder}/feedback.html", html_out)
 
     return Response(
         content=buf.getvalue(),

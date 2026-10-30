@@ -69,68 +69,75 @@ export function UntaggedCellsReport({ submissions, rubric }: { submissions: Subm
   const total = perQuestion.reduce((sum, row) => sum + row.cells, 0)
 
   return (
-    <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">
-      <div>
-        <h2 className="font-medium text-amber-900">Extraction report: untagged cells</h2>
+    // Open by default (it's a "double-check this" flag); collapsible so it
+    // can be put away once reviewed. The cell count stays in the summary.
+    <details open className="group rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">
+      <summary className="cursor-pointer font-medium text-amber-900">
+        Extraction report: untagged cells
+        <span className="ml-1 font-normal text-amber-800 group-open:hidden">
+          ({total} cell(s) in {affected.length} submission(s))
+        </span>
+      </summary>
+      <div className="mt-3 space-y-3">
         <p className="text-amber-800">
           <span className="font-medium">{total}</span> cell(s) without the answer tag were joined into answers, across{' '}
           <span className="font-medium">{affected.length}</span> of {submissions.length} submission(s) and{' '}
           <span className="font-medium">{perQuestion.length}</span> question(s). Students added or recreated cells
           below these questions -- worth double-checking.
         </p>
-      </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <table className="w-full self-start rounded border border-amber-200 bg-white">
-          <thead className="text-left text-xs uppercase text-slate-500">
-            <tr>
-              <th className="px-3 py-1.5">Question</th>
-              <th className="px-3 py-1.5 text-right">Submissions</th>
-              <th className="px-3 py-1.5 text-right">Cells</th>
-            </tr>
-          </thead>
-          <tbody>
-            {perQuestion.map((row) => (
-              <tr key={row.question.id} className="border-t border-slate-100">
-                <td className="px-3 py-1.5">{row.question.title}</td>
-                <td className="px-3 py-1.5 text-right">{row.submissions}</td>
-                <td className="px-3 py-1.5 text-right">{row.cells}</td>
+        <div className="grid gap-4 md:grid-cols-2">
+          <table className="w-full self-start rounded border border-amber-200 bg-white">
+            <thead className="text-left text-xs uppercase text-slate-500">
+              <tr>
+                <th className="px-3 py-1.5">Question</th>
+                <th className="px-3 py-1.5 text-right">Submissions</th>
+                <th className="px-3 py-1.5 text-right">Cells</th>
               </tr>
-            ))}
-            <tr className="border-t border-slate-200 font-medium">
-              <td className="px-3 py-1.5">Total</td>
-              <td className="px-3 py-1.5 text-right">{affected.length}</td>
-              <td className="px-3 py-1.5 text-right">{total}</td>
-            </tr>
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {perQuestion.map((row) => (
+                <tr key={row.question.id} className="border-t border-slate-100">
+                  <td className="px-3 py-1.5">{row.question.title}</td>
+                  <td className="px-3 py-1.5 text-right">{row.submissions}</td>
+                  <td className="px-3 py-1.5 text-right">{row.cells}</td>
+                </tr>
+              ))}
+              <tr className="border-t border-slate-200 font-medium">
+                <td className="px-3 py-1.5">Total</td>
+                <td className="px-3 py-1.5 text-right">{affected.length}</td>
+                <td className="px-3 py-1.5 text-right">{total}</td>
+              </tr>
+            </tbody>
+          </table>
 
-        <table className="w-full self-start rounded border border-amber-200 bg-white">
-          <thead className="text-left text-xs uppercase text-slate-500">
-            <tr>
-              <th className="px-3 py-1.5">Submission</th>
-              <th className="px-3 py-1.5">Questions (cells)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {affected.map((s) => (
-              <tr key={s._id} className="border-t border-slate-100">
-                <td className="px-3 py-1.5">
-                  <Link to={`/submissions/${s._id}`} className="hover:underline">
-                    {s.student?.name ?? s.batch_internal_id ?? 'Unmatched'}
-                  </Link>
-                </td>
-                <td className="px-3 py-1.5 text-slate-600">
-                  {s.answers
-                    .filter((a) => a.untagged_cells > 0)
-                    .map((a) => `${titles.get(a.question_id) ?? a.question_id} (${a.untagged_cells})`)
-                    .join(', ')}
-                </td>
+          <table className="w-full self-start rounded border border-amber-200 bg-white">
+            <thead className="text-left text-xs uppercase text-slate-500">
+              <tr>
+                <th className="px-3 py-1.5">Submission</th>
+                <th className="px-3 py-1.5">Questions (cells)</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {affected.map((s) => (
+                <tr key={s._id} className="border-t border-slate-100">
+                  <td className="px-3 py-1.5">
+                    <Link to={`/submissions/${s._id}`} className="hover:underline">
+                      {s.student?.name ?? s.batch_internal_id ?? 'Unmatched'}
+                    </Link>
+                  </td>
+                  <td className="px-3 py-1.5 text-slate-600">
+                    {s.answers
+                      .filter((a) => a.untagged_cells > 0)
+                      .map((a) => `${titles.get(a.question_id) ?? a.question_id} (${a.untagged_cells})`)
+                      .join(', ')}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
-    </div>
+    </details>
   )
 }

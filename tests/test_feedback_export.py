@@ -8,7 +8,7 @@ already-in-memory data. `mongo_db` is still required as a fixture: Beanie's
 from aitana.api.feedback_export import feedback_filename, render_feedback_html
 from aitana.documents import Batch, BatchType, Course, Edition, Rubric, Student, Submission, SubmissionStatus
 from aitana.documents.submission import AnsweredQuestion
-from aitana.grading.models import Grade, Question
+from aitana.grading.models import Grade, Question, SubmissionFormat
 
 
 def _rubric(**overrides) -> Rubric:
@@ -154,10 +154,16 @@ async def test_load_answer_images_only_extracts_when_needed(mongo_db, monkeypatc
     monkeypatch.setattr(feedback_export, "extract_submission_file", _fake_extract)
 
     assert feedback_export.load_answer_images(_submission()) == {}
-    assert calls == []  # no answer graded with images: no download
+    assert calls == []  # no question with include_images: no download
 
-    answer = AnsweredQuestion(question_id="answer1", student_answer="plot()", image_count=1)
-    assert feedback_export.load_answer_images(_submission(answers=[answer])) == {"answer1": [image]}
+    # Keyed off the rubric's current toggle, not the stored image_count: an
+    # answer graded before include_images was turned on still gets figures.
+    rubric = _rubric(
+        format=SubmissionFormat.NOTEBOOK,
+        questions=[Question(id="answer1", title="Q1", question="Plot it", rubric="R", include_images=True)],
+    )
+    answer = AnsweredQuestion(question_id="answer1", student_answer="plot()", image_count=0)
+    assert feedback_export.load_answer_images(_submission(rubric=rubric, answers=[answer])) == {"answer1": [image]}
 
 
 async def test_load_answer_images_failure_returns_empty(mongo_db, monkeypatch):
@@ -167,5 +173,29 @@ async def test_load_answer_images_failure_returns_empty(mongo_db, monkeypatch):
         raise RuntimeError("object not found")
 
     monkeypatch.setattr(feedback_export, "extract_submission_file", _boom)
+    rubric = _rubric(
+        format=SubmissionFormat.NOTEBOOK,
+        questions=[Question(id="answer1", title="Q1", question="Plot it", rubric="R", include_images=True)],
+    )
     answer = AnsweredQuestion(question_id="answer1", student_answer="plot()", image_count=1)
-    assert feedback_export.load_answer_images(_submission(answers=[answer])) == {}
+    assert feedback_export.load_answer_images(_submission(rubric=rubric, answers=[answer])) == {}
+
+
+async def test_render_feedback_html_header_shows_course(mongo_db):
+    html_out = render_feedback_html(_submission(), course="BDM")
+    assert "s1 &middot; BDM &middot; 2026/27" in html_out
+
+
+async def test_course_name_resolved_document(mongo_db):
+    from aitana.api.feedback_export import course_name
+
+    assert await course_name(_rubric()) == "BDM"
+
+
+async def test_render_feedback_html_shows_question_and_labels(mongo_db):
+    html_out = render_feedback_html(_submission())
+    question = html_out.index('<p class="question-text">What happened?</p>')
+    answer = html_out.index("Answer:")
+    feedback = html_out.index("Feedback:")
+    assert question < answer < html_out.index("It crashed because") < feedback
+    assert feedback < html_out.index("Correctly identifies the OOM kill.")

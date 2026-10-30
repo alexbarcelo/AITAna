@@ -350,6 +350,13 @@ submission page's thumbnails, and the feedback HTML export
 `worker/tasks.py`'s `extract_submission_file`. Text outputs need nothing
 extra there: they're already part of `student_answer`.
 
+The export picks which answers get figures from the rubric's *current*
+`include_images`, not the stored `image_count` -- that count is a
+grading-time snapshot, 0 for any answer graded before the toggle was on (or
+by a worker still running pre-feature code; the `worker` container has no
+`--reload`). The UI thumbnails still go by `image_count`, so they only
+appear after a re-grade in that situation.
+
 ## Grading traces (`documents/grading_trace.py`, `api/routers/grading_traces.py`)
 
 Diagnostic record of every real `grade_answer()` call, kept for later

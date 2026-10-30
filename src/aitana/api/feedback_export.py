@@ -22,6 +22,9 @@ import html
 import logging
 import re
 
+from beanie import Link
+
+from ..documents.rubric import Rubric
 from ..documents.submission import Submission
 from ..grading.models import ExtractedImage
 from ..worker.tasks import extract_submission_file
@@ -75,6 +78,9 @@ _STYLE = """
   .question-header h2 { font-size: 1rem; font-weight: 500; margin: 0; }
   .badge { display: inline-block; border-radius: 999px; padding: .125rem .625rem;
            font-size: .75rem; font-weight: 500; white-space: nowrap; }
+  .question-text { white-space: pre-wrap; font-size: .875rem; color: #334155; margin: 0 0 .75rem; }
+  .label { font-size: .75rem; font-weight: 500; text-transform: uppercase; color: #94a3b8;
+           margin: 0 0 .25rem; }
   .answer { white-space: pre-wrap; background: #f8fafc; border-radius: .375rem;
             padding: .75rem; font-size: .875rem; color: #334155; margin: 0 0 .75rem; }
   .figures { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 .75rem; }
@@ -86,11 +92,15 @@ _STYLE = """
 
 
 def load_answer_images(submission: Submission) -> dict[str, list[ExtractedImage]]:
-    """`{question_id: images}` for every answer that was graded with images
-    (`AnsweredQuestion.image_count`). Downloads and re-extracts the stored
-    file only when there's at least one; on failure, logs and returns `{}`
-    so the export still works, just without figures."""
-    wanted = {a.question_id for a in submission.answers if a.image_count}
+    """`{question_id: images}` for every answer whose question currently has
+    `include_images` set. Keyed off the rubric, not the stored
+    `AnsweredQuestion.image_count`: that's a grading-time snapshot, 0 for an
+    answer graded before the toggle was turned on. Downloads and re-extracts
+    the stored file only when there's at least one such question; on
+    failure, logs and returns `{}` so the export still works, just without
+    figures."""
+    answered = {a.question_id for a in submission.answers}
+    wanted = {q.id for q in submission.rubric.questions if q.include_images and q.id in answered}
     if not wanted:
         return {}
     try:
@@ -111,11 +121,27 @@ def _figures_html(images: list[ExtractedImage]) -> str:
     return f'<div class="figures">{tags}</div>'
 
 
-def render_feedback_html(submission: Submission, images: dict[str, list[ExtractedImage]] | None = None) -> str:
+async def course_name(rubric: Rubric) -> str:
+    """`rubric.course`'s name for the export header. Submissions are fetched
+    with `rubric` capped at depth 1 (AGENTS.md sharp edge #6), so `course`
+    is usually still an unresolved `Link` -- `.fetch()` is a plain get by id."""
+    course = rubric.course
+    if isinstance(course, Link):
+        course = await course.fetch()
+    return course.name
+
+
+def render_feedback_html(
+    submission: Submission,
+    images: dict[str, list[ExtractedImage]] | None = None,
+    *,
+    course: str | None = None,
+) -> str:
     """Render `submission`'s graded answers as a standalone HTML page.
 
     `images` (`{question_id: [...]}`, see `load_answer_images`) are embedded
-    under their answer; omit it for a text-only export.
+    under their answer; omit it for a text-only export. `course` (see
+    `course_name`) is shown next to the edition in the header when given.
 
     `submission.rubric`/`.student`/`.edition` must already be resolved (i.e.
     fetched with `fetch_links=True`, as every submissions/batches endpoint
@@ -150,7 +176,7 @@ def render_feedback_html(submission: Submission, images: dict[str, list[Extracte
             else:
                 style = "background:#f1f5f9;color:#475569;"
             badge = f'<span class="badge" style="{style}">{html.escape(_prettify_level(grade.level))}</span>'
-            feedback = f'<p class="feedback">{html.escape(grade.feedback)}</p>'
+            feedback = f'<p class="label">Feedback:</p><p class="feedback">{html.escape(grade.feedback)}</p>'
 
         answer_text = (
             html.escape(answer.student_answer)
@@ -164,6 +190,8 @@ def render_feedback_html(submission: Submission, images: dict[str, list[Extracte
             <h2>{html.escape(title)}</h2>
             {badge}
           </div>
+          {f'<p class="question-text">{html.escape(question.question)}</p>' if question else ""}
+          <p class="label">Answer:</p>
           <p class="answer">{answer_text}</p>
           {_figures_html((images or {}).get(answer.question_id, []))}
           {feedback}
@@ -184,7 +212,7 @@ def render_feedback_html(submission: Submission, images: dict[str, list[Extracte
 <div class="page">
   <header>
     <h1>{html.escape(identifier)} &middot; {html.escape(rubric.title)}</h1>
-    <p class="meta">{html.escape(secondary)} &middot; {html.escape(submission.edition.name)}</p>
+    <p class="meta">{" &middot; ".join(html.escape(part) for part in (secondary, course, submission.edition.name) if part)}</p>
   </header>
   {notice}
   {"".join(sections)}

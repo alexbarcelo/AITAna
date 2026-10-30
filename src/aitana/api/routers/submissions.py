@@ -11,7 +11,7 @@ from ...documents import Edition, Rubric, Student, Submission, SubmissionStatus
 from ...grading.extraction import FORMAT_FILE_INFO
 from ...grading.models import Grade
 from ...worker.tasks import extract_submission_file, grade_submission
-from ..feedback_export import feedback_filename, load_answer_images, render_feedback_html
+from ..feedback_export import course_name, feedback_filename, load_answer_images, render_feedback_html
 from .llm import MODEL_ID_QUERY, require_llm_model
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
@@ -284,7 +284,9 @@ async def download_submission_feedback(submission_id: PydanticObjectId) -> Respo
         raise HTTPException(status_code=404, detail="Submission not found")
 
     return Response(
-        content=render_feedback_html(submission, load_answer_images(submission)),
+        content=render_feedback_html(
+            submission, load_answer_images(submission), course=await course_name(submission.rubric)
+        ),
         media_type="text/html",
         headers={"Content-Disposition": f'attachment; filename="{feedback_filename(submission)}"'},
     )
