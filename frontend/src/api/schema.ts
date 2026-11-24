@@ -312,7 +312,12 @@ export interface paths {
         put?: never;
         /**
          * Create Submission
-         * @description `llm_segmentation` only matters for free-form PDF rubrics: whether to
+         * @description Either `student_id` (a roster student) or `label` (a labelled
+         *     submission, e.g. a group project -- see `Submission.label`) is
+         *     required; giving both is a `422` too, since a submission is one or the
+         *     other.
+         *
+         *     `llm_segmentation` only matters for free-form PDF rubrics: whether to
          *     ask the LLM for a segmentation suggestion right after conversion.
          */
         post: operations["create_submission_submissions_post"];
@@ -356,6 +361,29 @@ export interface paths {
          *     submission.
          */
         put: operations["set_submission_student_submissions__submission_id__student_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/submissions/{submission_id}/label": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Submission Label
+         * @description Rename a labelled submission's `label` (e.g. fix a typo in a group
+         *     name). Same blank-is-none rule as `create_submission`, but a blank label
+         *     is a `422` here rather than a way to clear it -- a labelled submission
+         *     always needs some identifier.
+         */
+        put: operations["set_submission_label_submissions__submission_id__label_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -598,6 +626,12 @@ export interface paths {
         /**
          * Create Batch
          * @description `llm_segmentation`: see `create_submission` (free-form PDFs only).
+         *
+         *     `match_students=false` makes every item a labelled submission (e.g.
+         *     group projects): no roster auto-match, and `Submission.label` is the
+         *     folder name minus Atenea's `_<id>_assignsubmission_file` suffix (the
+         *     group name, for a group assignment). `batch_internal_id` is still kept
+         *     verbatim either way, for the feedback zip.
          */
         post: operations["create_batch_batches_post"];
         delete?: never;
@@ -1015,12 +1049,19 @@ export interface components {
              * @default true
              */
             llm_segmentation: boolean;
+            /**
+             * Match Students
+             * @default true
+             */
+            match_students: boolean;
         };
         /** Body_create_submission_submissions_post */
         Body_create_submission_submissions_post: {
             /** File */
             file: string;
-            student_id: components["schemas"]["PydanticObjectId"];
+            student_id?: components["schemas"]["PydanticObjectId"] | null;
+            /** Label */
+            label?: string | null;
             rubric_id: components["schemas"]["PydanticObjectId"];
             edition_id?: components["schemas"]["PydanticObjectId"] | null;
             /**
@@ -1466,6 +1507,8 @@ export interface components {
             grading_scale?: {
                 [key: string]: string;
             };
+            /** Context */
+            context?: string | null;
             /** Questions */
             questions: components["schemas"]["Question"][];
             /**
@@ -1493,6 +1536,8 @@ export interface components {
             grading_scale?: {
                 [key: string]: string;
             };
+            /** Context */
+            context?: string | null;
             /** Questions */
             questions: components["schemas"]["Question"][];
         };
@@ -1510,6 +1555,11 @@ export interface components {
              * @default false
              */
             grade: boolean;
+        };
+        /** SetSubmissionLabel */
+        SetSubmissionLabel: {
+            /** Label */
+            label: string;
         };
         /** SetSubmissionStudent */
         SetSubmissionStudent: {
@@ -1573,6 +1623,12 @@ export interface components {
          *     Grading doesn't need `student` at all (see `worker/tasks.py`), so this
          *     doesn't block a batch item from being graded -- only from being
          *     attributed to a specific student until something matches it up later.
+         *
+         *     A *labelled* submission (e.g. a group project, where matching to
+         *     roster students is more work than it's worth) also has no `student`,
+         *     deliberately: `label` is the free-form identifier the professor gave it
+         *     instead ("Group 3", a team name, ...). See AGENTS.md "Labelled
+         *     submissions".
          */
         Submission: {
             /** @description MongoDB document ObjectID */
@@ -1586,6 +1642,8 @@ export interface components {
             } | {
                 [key: string]: unknown;
             } | null;
+            /** Label */
+            label?: string | null;
             /** Rubric */
             rubric: {
                 /** Id */
@@ -2376,6 +2434,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SetSubmissionStudent"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Submission"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_submission_label_submissions__submission_id__label_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetSubmissionLabel"];
             };
         };
         responses: {

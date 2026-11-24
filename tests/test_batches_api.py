@@ -104,6 +104,28 @@ async def test_create_batch_auto_matches_students_by_folder_name(client):
     assert submissions["Turing Alan_1002_assignsubmission_file"]["student"]["student_id"] == alan["student_id"]
 
 
+async def test_create_batch_without_student_matching_is_labelled(client):
+    """match_students=false (group projects): no auto-match even when a
+    roster student's name fits, and each item is labelled by its folder
+    name minus Atenea's suffix."""
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id)
+    await client.post("/students", json={"student_id": "s1", "name": "Ada Lovelace"})
+
+    resp = await client.post(
+        "/batches",
+        data={"rubric_id": rubric_id, "type": "atenea", "match_students": "false"},
+        files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+    )
+    assert resp.status_code == 202
+    submissions = {s["batch_internal_id"]: s for s in resp.json()["submissions"]}
+    ada = submissions["Lovelace Ada_1001_assignsubmission_file"]
+    assert ada["student"] is None
+    assert ada["label"] == "Lovelace Ada"
+    assert submissions["Turing Alan_1002_assignsubmission_file"]["label"] == "Turing Alan"
+
+
 async def test_create_batch_leaves_ambiguous_name_match_unmatched(client):
     course_id = await _make_course(client)
     edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]

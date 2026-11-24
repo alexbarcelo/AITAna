@@ -105,6 +105,7 @@ async def _grade_submission(
             reasoning_effort=llm_model.reasoning_effort,
             only_question_id=only_question_id,
             images=extracted.images,
+            rubric_context=rubric.context,
         )
 
         submission.status = SubmissionStatus.GRADED
@@ -315,6 +316,7 @@ async def _grade_answers(
     reasoning_effort: str | None = None,
     only_question_id: str | None = None,
     images: dict[str, list[ExtractedImage]] | None = None,
+    rubric_context: str | None = None,
 ) -> None:
     """Grade each question in order, saving after every single one.
 
@@ -359,6 +361,7 @@ async def _grade_answers(
             reasoning_effort=reasoning_effort,
             on_trace=_capture,
             images=(images or {}).get(question.answer_key, []) if question.include_images else (),
+            rubric_context=rubric_context,
         )
         if captured_trace is not None:
             await GradingTrace(submission=submission, question_id=question.id, trace=captured_trace).insert()

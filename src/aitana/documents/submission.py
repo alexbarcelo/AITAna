@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from pymongo import IndexModel
 
 from ..grading.models import AnswerSegment, ConvertedDocument, Grade
+from ..slugify import slugify
 from .batch import Batch
 from .edition import Edition
 from .rubric import Rubric
@@ -80,9 +81,20 @@ class Submission(Document):
     against our roster at upload time, only `rubric`/`edition` are known.
     Grading doesn't need `student` at all (see `worker/tasks.py`), so this
     doesn't block a batch item from being graded -- only from being
-    attributed to a specific student until something matches it up later."""
+    attributed to a specific student until something matches it up later.
+
+    A *labelled* submission (e.g. a group project, where matching to
+    roster students is more work than it's worth) also has no `student`,
+    deliberately: `label` is the free-form identifier the professor gave it
+    instead ("Group 3", a team name, ...). See AGENTS.md "Labelled
+    submissions"."""
 
     student: Link[Student] | None = None
+    # Free-form identifier for a submission not attributed to a roster
+    # student -- set by the uploader for a single labelled upload, or from
+    # the zip folder name for a batch uploaded with `match_students=false`.
+    # Display-only: never a lookup key, not unique.
+    label: str | None = None
     rubric: Link[Rubric]
     # Always set, even when the rubric itself has no fixed edition: a
     # submission always happens within some specific term, and this is the
@@ -120,6 +132,26 @@ class Submission(Document):
     segmented_at: datetime | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def display_name(self) -> str:
+        """Who/what this submission is, for humans: the student's name, else
+        the `label`, else the batch folder name, else the id.
+        Assumes `student` is resolved (fetched with `fetch_links=True`)."""
+        if self.student is not None:
+            return self.student.name
+        return self.label or self.batch_internal_id or str(self.id)
+
+    @property
+    def file_identifier(self) -> str:
+        """Same fallback chain as `display_name`, but filename-safe and
+        starting from the institutional `student_id` -- for download
+        filenames."""
+        if self.student is not None:
+            return self.student.student_id
+        if self.label:
+            return slugify(self.label)
+        return self.batch_internal_id or str(self.id)
 
     class Settings:
         name = "submissions"

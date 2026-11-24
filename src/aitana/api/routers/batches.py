@@ -143,6 +143,12 @@ def _match_student(folder_name: str, students: list[Student]) -> Student | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def _folder_label(folder_name: str) -> str:
+    """Label for a batch item when students aren't matched: the folder name without Atenea's fixed
+    suffix, or the whole folder name if stripping leaves nothing."""
+    return _ATENEA_FOLDER_NAME_SUFFIX_RE.sub("", folder_name).strip() or folder_name
+
+
 class BatchUploadResult(BaseModel):
     batch: Batch
     created: int
@@ -156,9 +162,16 @@ async def create_batch(
     edition_id: PydanticObjectId | None = Form(None),
     type: BatchType = Form(...),
     llm_segmentation: bool = Form(True),
+    match_students: bool = Form(True),
     model_id: PydanticObjectId | None = MODEL_ID_QUERY,
 ) -> BatchUploadResult:
-    """`llm_segmentation`: see `create_submission` (free-form PDFs only)."""
+    """`llm_segmentation`: see `create_submission` (free-form PDFs only).
+
+    `match_students=false` makes every item a labelled submission (e.g.
+    group projects): no roster auto-match, and `Submission.label` is the
+    folder name minus Atenea's `_<id>_assignsubmission_file` suffix (the
+    group name, for a group assignment). `batch_internal_id` is still kept
+    verbatim either way, for the feedback zip."""
     rubric = await Rubric.get(rubric_id)
     if rubric is None:
         raise HTTPException(status_code=404, detail="Rubric not found")
@@ -191,14 +204,15 @@ async def create_batch(
     # One query for the whole roster, matched per item in memory -- cheaper
     # than a query per item, and `_match_student` needs the full list anyway
     # to detect an ambiguous (shared-name) match.
-    students = await Student.find_all().to_list()
+    students = await Student.find_all().to_list() if match_students else []
 
     submissions: list[Submission] = []
     for item in items:
         submission = Submission(
             rubric=rubric,
             edition=edition,
-            student=_match_student(item.folder_name, students),
+            student=_match_student(item.folder_name, students) if match_students else None,
+            label=None if match_students else _folder_label(item.folder_name),
             batch=batch,
             batch_internal_id=item.folder_name,
             file_object_key="",

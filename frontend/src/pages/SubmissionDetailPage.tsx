@@ -6,9 +6,10 @@ import AnswerImages from '../components/AnswerImages'
 import GradeBadge from '../components/GradeBadge'
 import { GradingInfoTooltip, SubmissionGradingInfoTooltip } from '../components/GradingInfo'
 import MatchStudentDialog from '../components/MatchStudentDialog'
+import RenameLabelDialog from '../components/RenameLabelDialog'
 import StatusBadge from '../components/StatusBadge'
 import { UntaggedCellsBadge, UntaggedCellsSummary } from '../components/UntaggedCells'
-import { effectiveGrade, FORMAT_FILE_INFO, IN_PROGRESS_STATUSES, SEGMENTED_FORMATS } from '../api/types'
+import { effectiveGrade, FORMAT_FILE_INFO, IN_PROGRESS_STATUSES, SEGMENTED_FORMATS, submissionName } from '../api/types'
 
 export default function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -28,13 +29,22 @@ export default function SubmissionDetailPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="flex items-center gap-1 text-xl font-semibold">
-            {submission.student ? submission.student.name : 'Unmatched'} &middot; {submission.rubric.title}
-            {submission.batch_internal_id && (
+            {submission.student || submission.label ? submissionName(submission) : 'Unmatched'} &middot;{' '}
+            {submission.rubric.title}
+            {submission.label && !submission.student && (
+              <RenameLabelDialog submissionId={submission._id} currentLabel={submission.label} />
+            )}
+            {submission.batch_internal_id && !submission.label && (
               <MatchStudentDialog submissionId={submission._id} currentStudentId={submission.student?.student_id} />
             )}
           </h1>
           <p className="text-sm text-slate-500">
-            {submission.student ? submission.student.student_id : submission.batch_internal_id} &middot;{' '}
+            {/* A labelled submission's label is already the heading -- nothing to show before the edition. */}
+            {!submission.student && submission.label ? null : (
+              <>
+                {submission.student ? submission.student.student_id : submission.batch_internal_id} &middot;{' '}
+              </>
+            )}
             {submission.edition.name}
             {submission.batch && (
               <>

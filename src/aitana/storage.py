@@ -52,6 +52,12 @@ def batch_object_key(rubric_slug: str, submission_id: str, extension: str) -> st
     return f"{rubric_slug}/_batch/{submission_id}{extension}"
 
 
+def labelled_object_key(rubric_slug: str, submission_id: str, extension: str) -> str:
+    """Like `object_key`, for a labelled single upload (no student, only a
+    free-form `Submission.label`, which isn't a safe/stable path segment)."""
+    return f"{rubric_slug}/_labelled/{submission_id}{extension}"
+
+
 def derived_object_key(file_object_key: str, name: str) -> str:
     """Key for a file derived from a stored submission file (a free-form
     PDF's converted Markdown and images): stored next to it, under a folder

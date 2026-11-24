@@ -97,6 +97,7 @@ function UploadBatchForm() {
   const [type, setType] = useState<BatchType>(BATCH_TYPE_OPTIONS[0])
   const [file, setFile] = useState<File | null>(null)
   const [llmSegmentation, setLlmSegmentation] = useState(true)
+  const [matchStudents, setMatchStudents] = useState(true)
 
   // Same "rubric's own edition, else the uploader must pick one" logic as
   // UploadSubmissionPage -- a batch upload asks for exactly the same two
@@ -116,7 +117,7 @@ function UploadBatchForm() {
     e.preventDefault()
     if (!canSubmit || !file) return
     createBatch.mutate(
-      { file, rubricId, type, editionId: needsExplicitEdition ? editionId : undefined, llmSegmentation },
+      { file, rubricId, type, editionId: needsExplicitEdition ? editionId : undefined, llmSegmentation, matchStudents },
       {
         onSuccess: () => {
           setFile(null)
@@ -131,7 +132,8 @@ function UploadBatchForm() {
         <h2 className="text-sm font-medium text-slate-900">Upload a batch</h2>
         <p className="text-sm text-slate-500">
           Upload a zip with one folder per student submission -- everyone in the zip is graded against the same
-          rubric. Each submission starts unmatched to a student until a later step links them up.
+          rubric. Folder names are auto-matched to roster students by name; turn that off for group projects to
+          identify each submission by a label taken from its folder name instead.
         </p>
       </div>
       <div className="flex flex-wrap items-end gap-3">
@@ -217,6 +219,11 @@ function UploadBatchForm() {
           {createBatch.isPending ? 'Uploading...' : 'Upload batch'}
         </button>
       </div>
+      <label className="flex items-center gap-2 text-sm text-slate-700">
+        <input type="checkbox" checked={matchStudents} onChange={(e) => setMatchStudents(e.target.checked)} />
+        Match folders to roster students
+        <span className="text-xs text-slate-400">(uncheck to label each submission by its folder name, e.g. groups)</span>
+      </label>
       {segmented && <LlmSegmentationCheckbox checked={llmSegmentation} onChange={setLlmSegmentation} />}
       {createBatch.isSuccess && (
         <p className="text-sm text-emerald-600">

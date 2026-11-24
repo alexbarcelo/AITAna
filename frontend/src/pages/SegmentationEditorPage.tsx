@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { API_URL } from '../api/client'
 import { useSaveSegments, useSubmission, useSubmissionDocument, useSubmissions, useSuggestSegments } from '../api/hooks'
 import type { AnswerSegment, Question, Submission } from '../api/types'
-import { IN_PROGRESS_STATUSES } from '../api/types'
+import { IN_PROGRESS_STATUSES, submissionName } from '../api/types'
 import StatusBadge from '../components/StatusBadge'
 
 /**
@@ -202,7 +202,7 @@ function Editor({
         <div>
           <h1 className="text-lg font-semibold">
             <Link to={`/submissions/${submission._id}`} className="hover:underline">
-              {submission.student ? submission.student.name : (submission.batch_internal_id ?? 'Unmatched')}
+              {submissionName(submission) ?? 'Unmatched'}
             </Link>{' '}
             &middot; {submission.rubric.title} &middot; segmentation
           </h1>

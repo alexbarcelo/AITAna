@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import type { Submission, SubmissionRubric } from '../api/types'
+import { submissionName, type Submission, type SubmissionRubric } from '../api/types'
 import { totalUntaggedCells } from '../lib/untaggedCells'
 
 /**
@@ -123,7 +123,7 @@ export function UntaggedCellsReport({ submissions, rubric }: { submissions: Subm
                 <tr key={s._id} className="border-t border-slate-100">
                   <td className="px-3 py-1.5">
                     <Link to={`/submissions/${s._id}`} className="hover:underline">
-                      {s.student?.name ?? s.batch_internal_id ?? 'Unmatched'}
+                      {submissionName(s) ?? 'Unmatched'}
                     </Link>
                   </td>
                   <td className="px-3 py-1.5 text-slate-600">

@@ -33,7 +33,7 @@ SYSTEM_PROMPT_TEMPLATE = """\
 You are a teaching assistant grading a master's-level student's answer to a
 hands-on lab question. Grade at a COARSE level only: the goal is fast,
 useful feedback for the student and teacher, not a precise score.
-
+{rubric_context_section}
 # Question
 {question}
 {context_section}
@@ -95,8 +95,16 @@ def build_grading_section(grading_scale: dict[str, str]) -> str:
     return "\n".join(f"- {level}: {description}" for level, description in grading_scale.items())
 
 
-def build_system_prompt(question: Question, grading_scale: dict[str, str], image_count: int = 0) -> str:
+def build_system_prompt(
+    question: Question, grading_scale: dict[str, str], image_count: int = 0, *, rubric_context: str | None = None
+) -> str:
     points = "\n".join(f"- {p}" for p in question.expected_points) or "(none specified)"
+    # Rubric-wide background (Rubric.context), shared by every question --
+    # placed before the question itself; the per-question `# Context` below
+    # narrows it down.
+    rubric_context_section = (
+        f"\n# Assignment context\n{rubric_context.strip()}\n" if rubric_context and rubric_context.strip() else ""
+    )
     context_section = f"\n# Context\n{question.context.strip()}\n" if question.context else ""
     # Only rendered when the question has one (see Question.model_answer's
     # docstring) -- most questions don't, and omitting the heading entirely
@@ -108,6 +116,7 @@ def build_system_prompt(question: Question, grading_scale: dict[str, str], image
     if question.include_images:
         images_section = _IMAGES_SECTION.format(count=image_count) if image_count else _NO_IMAGES_SECTION
     return SYSTEM_PROMPT_TEMPLATE.format(
+        rubric_context_section=rubric_context_section,
         question=question.question.strip(),
         context_section=context_section,
         rubric=question.rubric.strip(),
@@ -381,6 +390,7 @@ def grade_answer(
     reasoning_effort: str | None = None,
     on_trace: Callable[[GradeTrace], None] | None = None,
     images: Sequence[ExtractedImage] = (),
+    rubric_context: str | None = None,
 ) -> Grade:
     """Grade one answer, returning just the `Grade` as before.
 
@@ -397,6 +407,9 @@ def grade_answer(
     `images` are attached to the human message (see `build_human_message`);
     the caller decides whether to pass any (`Question.include_images`).
 
+    `rubric_context` is the owning rubric's `Rubric.context` (rubric-wide
+    background, see `build_system_prompt`).
+
     `reasoning_effort` is informational only (the chat model is already
     configured with it) -- recorded in the trace's `info` (see
     `build_grading_info`).
@@ -406,7 +419,7 @@ def grade_answer(
     # Built unconditionally (cheap, no network) even for a blank answer, so a
     # trace always has the exact prompt that would have been sent -- useful
     # context even when no LLM call was actually made for it.
-    system_prompt = build_system_prompt(question, grading_scale, image_count=len(images))
+    system_prompt = build_system_prompt(question, grading_scale, image_count=len(images), rubric_context=rubric_context)
 
     def _emit(grade: Grade, *, blank_short_circuit: bool, elapsed: float, messages: list[BaseMessage] | None = None) -> None:
         if on_trace is None:

@@ -44,8 +44,9 @@ this section before touching any of `Course`, `Edition`, `Rubric.course`/
   "Pluggable submission formats" below for why this lives on the rubric, not
   the submission. `grading_scale: dict[str, str]` (default the original
   4-level scale) is the `{level_id: description}` the LLM grades against --
-  see "Pluggable grading scales" below. `questions: list[Question]` is
-  embedded, not referenced.
+  see "Pluggable grading scales" below. `context: str | None` is optional
+  rubric-wide background shared by every question (see "Grading
+  internals"). `questions: list[Question]` is embedded, not referenced.
 - **`Submission`** -- normally one per student x rubric. `student`,
   `rubric`, `edition`, and `batch` are all Beanie `Link` fields; `student`
   and `batch` are the only optional ones. `edition` is set on *every*
@@ -1132,6 +1133,41 @@ already true before editions became global, and is *more* clearly
 by-design now that an edition never claimed to belong to one course in the
 first place).
 
+## Labelled submissions
+
+For group projects, where attributing a submission to roster students is
+more work than it's worth: `Submission.label: str | None` is a free-form,
+display-only identifier ("Group 3"), used *instead of* `student` (not
+unique, never a lookup key).
+
+Deliberately *not* called "anonymous": the professor knows exactly who
+handed it in (it just isn't linked to the roster), and "anonymous" is the
+natural name for a possible future blind-grading feature. It's also
+distinct from "Unmatched" (a batch item not linked to a student *yet*).
+
+- **Single upload** (`POST /submissions`): `student_id` is now optional,
+  `label` is new; exactly one of them is required (`422` for neither or
+  both; a blank label counts as none). Labelled files are stored under
+  `storage.labelled_object_key` (`<rubric>/_labelled/<id><ext>`) -- the
+  label isn't a safe path segment.
+- **Batch upload** (`POST /batches`): `match_students` form field (default
+  `true`). `false` skips `_match_student` entirely and sets `label` to the
+  folder name minus Atenea's suffix (`_folder_label`; for a Moodle group
+  assignment that's the group name). `batch_internal_id` is still stored
+  verbatim, so the feedback zip works unchanged.
+- **Display**: `Submission.display_name`/`.file_identifier` (backend, used
+  by the feedback export and download filenames) and `submissionName()`
+  (`frontend/src/api/types.ts`) share one fallback chain: student ->
+  label -> batch folder name -> id. Use them rather than reading
+  `.student` directly. The UI hides the "match student" button on a
+  labelled submission (it was deliberately left unmatched), though `PUT
+  /submissions/{id}/student` still works on it -- `label` is then simply
+  shadowed by the student.
+- **Renaming**: `PUT /submissions/{id}/label` (`{label}`, stripped; blank
+  is `422` -- this renames, it never clears), behind a pencil button
+  (`RenameLabelDialog.tsx`) on labelled submissions in the list and detail
+  pages, in place of the match-student one.
+
 ## Creating a submission (`api/routers/submissions.py`)
 
 `POST /submissions` needs a definite `edition`, but not every rubric fixes
@@ -1446,7 +1482,11 @@ See file docstrings for the mechanics:
 See "Pluggable grading scales" above for why that schema is
 built per-call rather than a fixed `Grade` type).
 
-`build_system_prompt` (`grading.py`) composes, in order: `# Question`
+`build_system_prompt` (`grading.py`) composes, in order: an optional
+`# Assignment context` block (the rubric-wide `Rubric.context`, passed in as
+the keyword-only `rubric_context` -- `Question` stays rubric-agnostic, so
+`grade_answer`/`_grade_answers`/`test-answer` thread it through explicitly;
+omitted when unset or blank), `# Question`
 (`question.question`, the task as posed -- *not* `title`, which is UI-only
 and never sent to the LLM), an optional `# Context` block (only rendered
 when `question.context` is set -- omitted entirely otherwise, not left as

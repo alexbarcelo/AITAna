@@ -398,6 +398,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
   const [gradingScaleRows, setGradingScaleRows] = useState<GradingScaleRow[]>(
     presetToRows(rubric?.grading_scale ?? GRADING_SCALE_PRESETS[0].scale),
   )
+  const [rubricContext, setRubricContext] = useState(rubric?.context ?? '')
   const [questions, setQuestions] = useState<DraftQuestion[]>(rubric ? rubric.questions.map(questionToDraft) : [emptyQuestion()])
 
   function updateQuestion(index: number, patch: Partial<DraftQuestion>) {
@@ -416,6 +417,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
       // comment for why that order (worst -> best) is load-bearing, not
       // cosmetic.
       grading_scale: Object.fromEntries(gradingScaleRows.map((row) => [row.id.trim(), row.description])),
+      context: rubricContext.trim() || null,
       questions: questions.map((q) => toQuestion(q, format)),
     }
     if (isEdit) {
@@ -429,6 +431,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
           setEditionId('')
           setFormat('pdf')
           setGradingScaleRows(presetToRows(GRADING_SCALE_PRESETS[0].scale))
+          setRubricContext('')
           setQuestions([emptyQuestion()])
           onDone?.()
         },
@@ -465,6 +468,17 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
       </div>
 
       <GradingScaleEditor rows={gradingScaleRows} onChange={setGradingScaleRows} />
+
+      <div>
+        <label className="block text-xs font-medium text-slate-600">Rubric context (optional)</label>
+        <textarea
+          placeholder="Background shared by every question (lab setup, dataset, tools available...). Sent with each question's grading prompt."
+          value={rubricContext}
+          onChange={(e) => setRubricContext(e.target.value)}
+          rows={3}
+          className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
+        />
+      </div>
 
       <div className="space-y-3">
         {questions.map((q, i) => (

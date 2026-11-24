@@ -148,8 +148,13 @@ def render_feedback_html(
     does) -- this never re-fetches anything itself.
     """
     rubric = submission.rubric
-    identifier = submission.student.name if submission.student else (submission.batch_internal_id or str(submission.id))
-    secondary = submission.student.student_id if submission.student else (submission.batch_internal_id or "unmatched")
+    identifier = submission.display_name
+    if submission.student:
+        secondary = submission.student.student_id
+    elif submission.label:
+        secondary = ""  # the label is already the heading
+    else:
+        secondary = submission.batch_internal_id or "unmatched"
 
     notice = ""
     if submission.status in ("pending", "extracting", "grading"):
@@ -224,5 +229,4 @@ def render_feedback_html(
 
 
 def feedback_filename(submission: Submission) -> str:
-    identifier = submission.student.student_id if submission.student else (submission.batch_internal_id or str(submission.id))
-    return f"{identifier}_{submission.rubric.slug}_feedback.html"
+    return f"{submission.file_identifier}_{submission.rubric.slug}_feedback.html"

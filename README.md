@@ -47,6 +47,11 @@ React (Vite) --> FastAPI --> MongoDB (students, courses, editions, rubrics, subm
   edition it belongs to (see "Creating a submission" below for how that's
   decided). The original file stays in MinIO and can be re-downloaded, and
   grading can be forced to re-run at any time (discarding previous grades).
+  A submission can also be **labelled** -- no roster student, just a
+  free-form label (e.g. "Group 3") -- for group projects where matching
+  students isn't worth it: tick "Identify by label instead" on the upload form, or untick
+  "Match folders to roster students" on a batch upload (each item is then
+  labelled by its folder name).
 
 Grading is asynchronous: uploading a submission returns immediately
 (`status=pending`), and a Celery worker extracts answers from the raw file
@@ -205,6 +210,8 @@ grading_scale:           # optional; {level_id: description}, worst -> best; def
   some_effort: On-topic but misses most key points or has major misconceptions.
   almost_there: Covers most key points with minor gaps or imprecision.
   solid: Covers the key points correctly and shows clear understanding.
+context: |               # optional -- background shared by every question (lab setup, dataset...)
+  What the whole lab/exam is about, sent with every question's grading prompt.
 questions:
   - id: answer1          # label; also the default answer-slot name (PDF field / notebook tag)
     field: answer1       # optional override if the answer slot is named differently
@@ -260,8 +267,9 @@ real exam at it.
 ## How grading works
 
 For each question in the rubric:
-- `question` (the task as posed) + `context` (optional environment/state
-  info) + `rubric` (grading instructions) + `expected_points` + the
+- the rubric's own `context` (optional, shared by every question) +
+  `question` (the task as posed) + `context` (optional environment/state
+  info for this question) + `rubric` (grading instructions) + `expected_points` + the
   rubric's `grading_scale` (level ids and descriptions, see above) become
   the LLM's **system prompt**.
 - The student's extracted answer text is the **user/human message**.

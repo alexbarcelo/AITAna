@@ -4,10 +4,11 @@ import { API_URL } from '../api/client'
 import { useBatch, useBatches, useCourses, useEditions, useRegradeSubmissions, useRubrics, useStudents, useSubmissions } from '../api/hooks'
 import GradingGrid from '../components/GradingGrid'
 import MatchStudentDialog from '../components/MatchStudentDialog'
+import RenameLabelDialog from '../components/RenameLabelDialog'
 import StatusBadge from '../components/StatusBadge'
 import { UntaggedCellsBadge, UntaggedCellsReport } from '../components/UntaggedCells'
 import { totalUntaggedCells } from '../lib/untaggedCells'
-import { BATCH_TYPE_LABELS, IN_PROGRESS_STATUSES } from '../api/types'
+import { BATCH_TYPE_LABELS, IN_PROGRESS_STATUSES, submissionName } from '../api/types'
 import { formatDateTime } from '../lib/date'
 
 const FILTER_KEYS = ['student_id', 'rubric_id', 'course_id', 'edition_id', 'batch_id']
@@ -328,9 +329,10 @@ export default function SubmissionsPage() {
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-1">
                     <Link to={`/submissions/${s._id}`} className="text-slate-900 hover:underline">
-                      {s.student ? s.student.name : <span className="text-slate-400">Unmatched</span>}
+                      {s.student || s.label ? submissionName(s) : <span className="text-slate-400">Unmatched</span>}
                     </Link>
-                    {s.batch_internal_id && (
+                    {s.label && !s.student && <RenameLabelDialog submissionId={s._id} currentLabel={s.label} />}
+                    {s.batch_internal_id && !s.label && (
                       <MatchStudentDialog submissionId={s._id} currentStudentId={s.student?.student_id} />
                     )}
                   </div>

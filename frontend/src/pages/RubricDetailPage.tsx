@@ -145,6 +145,13 @@ export default function RubricDetailPage() {
         </div>
       </div>
 
+      {rubric.context && (
+        <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4">
+          <p className="text-xs font-medium uppercase text-slate-400">Rubric context</p>
+          <p className="whitespace-pre-wrap text-sm text-slate-600">{rubric.context}</p>
+        </div>
+      )}
+
       <div className="space-y-4">
         {rubric.questions.map((q, i) => (
           <div key={q.id} className="rounded-lg border border-slate-200 bg-white p-4">

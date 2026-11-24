@@ -127,6 +127,35 @@ def test_build_system_prompt_includes_context_when_present():
     assert "The student had already run `docker compose up -d`." in prompt
 
 
+def test_build_system_prompt_omits_rubric_context_when_absent():
+    assert "# Assignment context" not in build_system_prompt(_question(), DEFAULT_GRADING_SCALE)
+    assert "# Assignment context" not in build_system_prompt(_question(), DEFAULT_GRADING_SCALE, rubric_context="  ")
+
+
+def test_build_system_prompt_includes_rubric_context_before_question_and_its_context():
+    question = _question(question="What does `docker ps` show?", context="Step 3 of the lab.")
+
+    prompt = build_system_prompt(question, DEFAULT_GRADING_SCALE, rubric_context="Lab on Docker networking.")
+
+    assert "# Assignment context\nLab on Docker networking." in prompt
+    assert prompt.index("# Assignment context") < prompt.index("# Question") < prompt.index("# Context")
+
+
+def test_grade_answer_passes_rubric_context_into_trace_prompt(monkeypatch):
+    expected = Grade(level="solid", feedback="ok")
+    monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected))
+    traces: list[GradeTrace] = []
+    grade_answer(
+        _FakeChatModel(expected),
+        _question(),
+        "answer",
+        DEFAULT_GRADING_SCALE,
+        on_trace=traces.append,
+        rubric_context="Shared lab background.",
+    )
+    assert "Shared lab background." in traces[0].system_prompt
+
+
 def test_build_system_prompt_renders_grading_scale_as_grading_section():
     question = _question()
     custom_scale = {"fail": "Did not meet the bar.", "pass": "Met the bar."}

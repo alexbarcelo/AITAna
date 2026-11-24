@@ -10,7 +10,10 @@ export default function UploadSubmissionPage() {
   const createSubmission = useCreateSubmission()
   const navigate = useNavigate()
 
+  // Labelled = no roster student, just a free-form label (group projects).
+  const [labelled, setLabelled] = useState(false)
   const [studentId, setStudentId] = useState('')
+  const [label, setLabel] = useState('')
   const [rubricId, setRubricId] = useState('')
   const [editionId, setEditionId] = useState('')
   const [file, setFile] = useState<File | null>(null)
@@ -30,7 +33,8 @@ export default function UploadSubmissionPage() {
   const segmented = Boolean(selectedRubric && SEGMENTED_FORMATS.includes(selectedRubric.format))
 
   const needsExplicitEdition = Boolean(selectedRubric) && !fixedEdition
-  const canSubmit = Boolean(file && studentId && rubricId && (fixedEdition || editionId))
+  const hasOwner = labelled ? label.trim() !== '' : studentId !== ''
+  const canSubmit = Boolean(file && hasOwner && rubricId && (fixedEdition || editionId))
 
   function handleRubricChange(nextRubricId: string) {
     setRubricId(nextRubricId)
@@ -42,7 +46,13 @@ export default function UploadSubmissionPage() {
     e.preventDefault()
     if (!canSubmit || !file) return
     createSubmission.mutate(
-      { file, studentId, rubricId, editionId: needsExplicitEdition ? editionId : undefined, llmSegmentation },
+      {
+        file,
+        ...(labelled ? { label: label.trim() } : { studentId }),
+        rubricId,
+        editionId: needsExplicitEdition ? editionId : undefined,
+        llmSegmentation,
+      },
       {
         onSuccess: (submission) => navigate(`/submissions/${submission._id}`),
       },
@@ -58,22 +68,38 @@ export default function UploadSubmissionPage() {
 
       <form onSubmit={handleSubmit} className="space-y-4 rounded-lg border border-slate-200 bg-white p-4">
         <div>
-          <label className="block text-xs font-medium text-slate-600">Student</label>
-          <select
-            required
-            value={studentId}
-            onChange={(e) => setStudentId(e.target.value)}
-            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-          >
-            <option value="" disabled>
-              Select a student
-            </option>
-            {students?.map((s) => (
-              <option key={s._id} value={s._id ?? ''}>
-                {s.name} ({s.student_id})
+          <div className="flex items-center justify-between">
+            <label className="block text-xs font-medium text-slate-600">{labelled ? 'Label' : 'Student'}</label>
+            <label className="flex items-center gap-1 text-xs text-slate-600">
+              <input type="checkbox" checked={labelled} onChange={(e) => setLabelled(e.target.checked)} />
+              Identify by label instead (e.g. a group)
+            </label>
+          </div>
+          {labelled ? (
+            <input
+              required
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="e.g. Group 3"
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            />
+          ) : (
+            <select
+              required
+              value={studentId}
+              onChange={(e) => setStudentId(e.target.value)}
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            >
+              <option value="" disabled>
+                Select a student
               </option>
-            ))}
-          </select>
+              {students?.map((s) => (
+                <option key={s._id} value={s._id ?? ''}>
+                  {s.name} ({s.student_id})
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         <div>

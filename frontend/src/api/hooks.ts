@@ -168,6 +168,7 @@ export function useCreateRubric() {
       // its own `format` state, so this isn't a real constraint in practice.
       format: SubmissionFormat
       grading_scale?: Record<string, string>
+      context?: string | null
       questions: Question[]
     }) => unwrap(client.POST('/rubrics', { body })) as Promise<Rubric>,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['rubrics'] }),
@@ -190,6 +191,7 @@ export function useUpdateRubric() {
       // optional despite defaulting server-side.
       format: SubmissionFormat
       grading_scale?: Record<string, string>
+      context?: string | null
       questions: Question[]
     }) =>
       unwrap(
@@ -378,6 +380,23 @@ export function useSetSubmissionStudent() {
   })
 }
 
+export function useSetSubmissionLabel() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ submissionId, label }: { submissionId: string; label: string }) =>
+      unwrap(
+        client.PUT('/submissions/{submission_id}/label', {
+          params: { path: { submission_id: submissionId } },
+          body: { label },
+        }),
+      ) as unknown as Promise<Submission>,
+    onSuccess: (submission) => {
+      queryClient.setQueryData(['submissions', submission._id], submission)
+      queryClient.invalidateQueries({ queryKey: ['submissions'] })
+    },
+  })
+}
+
 export function useSetManualGrade() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -418,12 +437,15 @@ export function useCreateSubmission() {
     mutationFn: async ({
       file,
       studentId,
+      label,
       rubricId,
       editionId,
       llmSegmentation = true,
     }: {
       file: File
-      studentId: string
+      /** Exactly one of `studentId` / `label` (labelled submission). */
+      studentId?: string
+      label?: string
       rubricId: string
       editionId?: string
       /** Free-form PDF rubrics only: ask the LLM for a segmentation suggestion. */
@@ -431,7 +453,8 @@ export function useCreateSubmission() {
     }) => {
       const formData = new FormData()
       formData.append('file', file)
-      formData.append('student_id', studentId)
+      if (studentId) formData.append('student_id', studentId)
+      if (label) formData.append('label', label)
       formData.append('rubric_id', rubricId)
       if (editionId) formData.append('edition_id', editionId)
       formData.append('llm_segmentation', String(llmSegmentation))
@@ -485,12 +508,15 @@ export function useCreateBatch() {
       editionId,
       type,
       llmSegmentation = true,
+      matchStudents = true,
     }: {
       file: File
       rubricId: string
       editionId?: string
       type: BatchType
       llmSegmentation?: boolean
+      /** `false`: no roster matching -- each submission is labelled by its folder name (group projects). */
+      matchStudents?: boolean
     }) => {
       const formData = new FormData()
       formData.append('file', file)
@@ -498,6 +524,7 @@ export function useCreateBatch() {
       if (editionId) formData.append('edition_id', editionId)
       formData.append('type', type)
       formData.append('llm_segmentation', String(llmSegmentation))
+      formData.append('match_students', String(matchStudents))
       // See useCreateSubmission for why `body` is cast here: openapi-fetch
       // types multipart bodies from the JSON-ish schema, but the actual
       // wire format is a FormData instance, which it passes through

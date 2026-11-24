@@ -7,7 +7,7 @@ import { GradeDistributionBar, GradingStatsSummary } from './GradeStats'
 import { UntaggedCellsBadge } from './UntaggedCells'
 import { gradeColor, prettifyLevel } from '../lib/gradeColor'
 import { formatScore, gradeStats, type GradeStats } from '../lib/gradeStats'
-import { effectiveGrade, IN_PROGRESS_STATUSES, type AnsweredQuestion, type Question, type Submission, type SubmissionRubric } from '../api/types'
+import { effectiveGrade, IN_PROGRESS_STATUSES, submissionName, type AnsweredQuestion, type Question, type Submission, type SubmissionRubric } from '../api/types'
 
 /**
  * Students (rows) x questions (columns) grading overview for a batch --
@@ -45,7 +45,7 @@ export default function GradingGrid({
 
   const scale = rubric.grading_scale
   const studentStats = new Map(submissions.map((s) => [s._id, gradeStats(s.answers, scale)]))
-  const rowName = (s: Submission) => s.student?.name ?? s.batch_internal_id ?? ''
+  const rowName = (s: Submission) => submissionName(s) ?? ''
   const rows = [...submissions].sort((a, b) => {
     if (sortBy !== 'name') {
       // Unscored rows always sink to the bottom, whichever direction.
@@ -107,7 +107,7 @@ export default function GradingGrid({
             {rows.map((s) => (
               <tr key={s._id} className="border-b border-slate-100 last:border-0">
                 <td className="sticky left-0 z-10 whitespace-nowrap border-r border-slate-200 bg-white px-3 py-2 font-medium text-slate-900">
-                  {s.student ? s.student.name : <span className="text-slate-400">{s.batch_internal_id ?? 'Unmatched'}</span>}
+                  {s.student || s.label ? submissionName(s) : <span className="text-slate-400">{s.batch_internal_id ?? 'Unmatched'}</span>}
                 </td>
                 <td className="border-r border-slate-200 px-3 py-2">
                   <ScoreCell stats={studentStats.get(s._id)!} scale={scale} />
@@ -240,7 +240,7 @@ function AnswerQuickView({
         <div className="mb-3 flex items-start justify-between gap-3">
           <div>
             <h2 className="font-medium text-slate-900">{question.title}</h2>
-            <p className="text-xs text-slate-500">{submission.student ? submission.student.name : submission.batch_internal_id}</p>
+            <p className="text-xs text-slate-500">{submissionName(submission)}</p>
           </div>
           <div className="flex items-center gap-2">
             <UntaggedCellsBadge count={answer.untagged_cells} />

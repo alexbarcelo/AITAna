@@ -98,17 +98,31 @@ async def _resolve_edition(rubric: Rubric, edition_id: PydanticObjectId | None) 
 @router.post("", response_model=Submission, status_code=202)
 async def create_submission(
     file: UploadFile = File(...),
-    student_id: PydanticObjectId = Form(...),
+    student_id: PydanticObjectId | None = Form(None),
+    label: str | None = Form(None),
     rubric_id: PydanticObjectId = Form(...),
     edition_id: PydanticObjectId | None = Form(None),
     llm_segmentation: bool = Form(True),
     model_id: PydanticObjectId | None = MODEL_ID_QUERY,
 ) -> Submission:
-    """`llm_segmentation` only matters for free-form PDF rubrics: whether to
+    """Either `student_id` (a roster student) or `label` (a labelled
+    submission, e.g. a group project -- see `Submission.label`) is
+    required; giving both is a `422` too, since a submission is one or the
+    other.
+
+    `llm_segmentation` only matters for free-form PDF rubrics: whether to
     ask the LLM for a segmentation suggestion right after conversion."""
-    student = await Student.get(student_id)
-    if student is None:
-        raise HTTPException(status_code=404, detail="Student not found")
+    label = (label or "").strip() or None
+    if (student_id is None) == (label is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Give either a student_id or a label (for a labelled submission), not both",
+        )
+    student = None
+    if student_id is not None:
+        student = await Student.get(student_id)
+        if student is None:
+            raise HTTPException(status_code=404, detail="Student not found")
     rubric = await Rubric.get(rubric_id)
     if rubric is None:
         raise HTTPException(status_code=404, detail="Rubric not found")
@@ -127,10 +141,13 @@ async def create_submission(
             detail=f"This rubric expects a {extension} file ({rubric.format.value}), got {filename!r}",
         )
 
-    submission = Submission(student=student, rubric=rubric, edition=edition, file_object_key="")
+    submission = Submission(student=student, label=label, rubric=rubric, edition=edition, file_object_key="")
     await submission.insert()
 
-    key = storage.object_key(rubric.slug, student.student_id, str(submission.id), extension)
+    if student is not None:
+        key = storage.object_key(rubric.slug, student.student_id, str(submission.id), extension)
+    else:
+        key = storage.labelled_object_key(rubric.slug, str(submission.id), extension)
     storage.upload_file(key, await file.read(), content_type)
     submission.file_object_key = key
     await submission.save()
@@ -201,6 +218,28 @@ async def set_submission_student(submission_id: PydanticObjectId, payload: SetSu
     # holds the full document, no second round-trip needed to serialize it
     # back out.
     submission.student = student
+    await submission.save()
+    return submission
+
+
+class SetSubmissionLabel(BaseModel):
+    label: str
+
+
+@router.put("/{submission_id}/label", response_model=Submission)
+async def set_submission_label(submission_id: PydanticObjectId, payload: SetSubmissionLabel) -> Submission:
+    """Rename a labelled submission's `label` (e.g. fix a typo in a group
+    name). Same blank-is-none rule as `create_submission`, but a blank label
+    is a `422` here rather than a way to clear it -- a labelled submission
+    always needs some identifier."""
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status_code=422, detail="Label can't be blank")
+    submission = await Submission.get(submission_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    submission.label = label
+    submission.updated_at = datetime.now(UTC)
     await submission.save()
     return submission
 
@@ -284,11 +323,9 @@ async def download_submission_file(submission_id: PydanticObjectId, inline: bool
 
     extension, content_type = FORMAT_FILE_INFO[submission.rubric.format]
     file_bytes = storage.download_bytes(submission.file_object_key)
-    # A batch-created submission has no student yet (see Submission.student's
-    # docstring) -- fall back to its batch folder name, or the submission id
-    # as a last resort, so this never breaks on a null student.
-    identifier = submission.student.student_id if submission.student else (submission.batch_internal_id or str(submission.id))
-    filename = f"{identifier}_{submission.rubric.slug}{extension}"
+    # Never breaks on a null student (batch-created or labelled) -- see
+    # Submission.file_identifier's fallback chain.
+    filename = f"{submission.file_identifier}_{submission.rubric.slug}{extension}"
     return Response(
         content=file_bytes,
         media_type=content_type,

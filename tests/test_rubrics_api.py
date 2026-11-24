@@ -197,6 +197,16 @@ async def test_create_rubric_with_custom_grading_scale(client):
     assert resp.json()["grading_scale"] == {"fail": "Did not meet the bar.", "pass": "Met the bar."}
 
 
+async def test_create_rubric_with_context(client):
+    course_id = await _make_course(client)
+    resp = await client.post(
+        "/rubrics",
+        json={"title": "Lab", "course_id": course_id, "context": "Shared setup.", "questions": [_question_payload()]},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["context"] == "Shared setup."
+
+
 async def test_create_rubric_with_empty_grading_scale_422(client):
     course_id = await _make_course(client)
     resp = await client.post(
@@ -525,6 +535,41 @@ async def test_test_rubric_answer_unknown_question_id(client, monkeypatch):
 
 
 # ---- PUT /rubrics/{id} (manual edit) ----
+
+
+async def test_upload_rubric_yaml_with_context_key(client):
+    course_id = await _make_course(client)
+    resp = await client.post(
+        "/rubrics/upload",
+        data={"course_id": course_id},
+        files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC + b"context: |\n  Shared setup.\n", "application/x-yaml")},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["context"] == "Shared setup.\n"
+
+
+async def test_upload_rubric_yaml_non_string_context_422(client):
+    course_id = await _make_course(client)
+    resp = await client.post(
+        "/rubrics/upload",
+        data={"course_id": course_id},
+        files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC + b"context:\n  - a list\n", "application/x-yaml")},
+    )
+    assert resp.status_code == 422
+
+
+async def test_update_rubric_sets_and_clears_context(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(course_id)
+    body = {"title": "Lab", "slug": rubric.slug, "course_id": course_id, "questions": [_question_payload()]}
+
+    resp = await client.put(f"/rubrics/{rubric.id}", json={**body, "context": "Shared setup."})
+    assert resp.status_code == 200
+    assert resp.json()["context"] == "Shared setup."
+
+    resp = await client.put(f"/rubrics/{rubric.id}", json=body)
+    assert resp.status_code == 200
+    assert resp.json()["context"] is None
 
 
 async def test_update_rubric_manual_edit(client):

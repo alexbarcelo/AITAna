@@ -52,6 +52,66 @@ async def test_create_submission_uploads_file_and_enqueues_grading(client):
     assert client.fake_objects[body["file_object_key"]] == b"%PDF-1.4 fake content"
 
 
+async def test_create_labelled_submission(client):
+    """Group projects: no roster student, just a free-form label."""
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id)
+
+    resp = await client.post(
+        "/submissions",
+        data={"label": "  Group 3  ", "rubric_id": rubric_id},
+        files={"file": ("answers.pdf", b"%PDF-1.4 group", "application/pdf")},
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["student"] is None
+    assert body["label"] == "Group 3"
+    assert "/_labelled/" in body["file_object_key"]
+    assert client.fake_objects[body["file_object_key"]] == b"%PDF-1.4 group"
+    assert client.delayed_submission_ids == [body["_id"]]
+
+
+async def test_rename_submission_label(client):
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id)
+    submission_id = (
+        await client.post(
+            "/submissions",
+            data={"label": "Grup 3", "rubric_id": rubric_id},
+            files={"file": ("answers.pdf", b"%PDF-1.4", "application/pdf")},
+        )
+    ).json()["_id"]
+
+    resp = await client.put(f"/submissions/{submission_id}/label", json={"label": " Group 3 "})
+    assert resp.status_code == 200
+    assert resp.json()["label"] == "Group 3"
+    assert (await Submission.get(submission_id)).label == "Group 3"
+
+    assert (await client.put(f"/submissions/{submission_id}/label", json={"label": "  "})).status_code == 422
+    missing = "/submissions/507f1f77bcf86cd799439011/label"
+    assert (await client.put(missing, json={"label": "x"})).status_code == 404
+
+
+async def test_create_submission_requires_exactly_one_of_student_or_label(client):
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id)
+
+    for data in (
+        {"rubric_id": rubric_id},
+        {"rubric_id": rubric_id, "label": "   "},
+        {"rubric_id": rubric_id, "label": "Group 3", "student_id": student_id},
+    ):
+        resp = await client.post(
+            "/submissions", data=data, files={"file": ("answers.pdf", b"data", "application/pdf")}
+        )
+        assert resp.status_code == 422, data
+    assert client.delayed_submission_ids == []
+
+
 async def test_create_submission_uses_rubrics_edition_automatically(client):
     """Uploading against a rubric that has a fixed edition shouldn't need an
     explicit edition_id -- the rubric's own edition is used."""

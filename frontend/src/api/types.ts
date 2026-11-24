@@ -127,6 +127,8 @@ export interface Rubric {
   edition: NestedEdition | null
   format: SubmissionFormat
   grading_scale: GradingScale
+  /** Rubric-wide background shared by every question's grading prompt. */
+  context?: string | null
   questions: Question[]
   created_at: string
   updated_at: string
@@ -176,6 +178,9 @@ export interface Submission {
   edition: Edition
   batch: Batch | null
   batch_internal_id: string | null
+  /** Labelled submissions only (no `student`, e.g. a group project): the
+   * free-form identifier given at upload time. */
+  label?: string | null
   file_object_key: string
   status: SubmissionStatus
   answers: AnsweredQuestion[]
@@ -187,6 +192,13 @@ export interface Submission {
   segmented_at?: string | null
   created_at: string
   updated_at: string
+}
+
+/** Who/what a submission is, for display -- same fallback chain as the
+ * backend's `Submission.display_name`: student, label, batch
+ * folder name. `null` when none applies (shouldn't happen in practice). */
+export function submissionName(s: Pick<Submission, 'student' | 'label' | 'batch_internal_id'>): string | null {
+  return s.student?.name ?? s.label ?? s.batch_internal_id ?? null
 }
 
 /** Response of `POST /batches` -- mirrors `StudentImportResult`'s shape. */

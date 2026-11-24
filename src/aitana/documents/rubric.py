@@ -50,6 +50,12 @@ class Rubric(Document):
     # (`frontend/src/api/gradingScalePresets.ts`), but any {id: description}
     # dict is valid -- there's no fixed set of allowed levels.
     grading_scale: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_GRADING_SCALE))
+    # Optional rubric-wide background (the lab's setup, the dataset, the
+    # tools available...), shared by every question. Rendered as an
+    # "# Assignment context" section in each question's grading prompt, ahead
+    # of the per-question `Question.context` (see grading/grading.py's
+    # build_system_prompt). Saves repeating the same text in every question.
+    context: str | None = None
     questions: list[Question]
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

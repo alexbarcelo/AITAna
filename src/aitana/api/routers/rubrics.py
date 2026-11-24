@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import yaml
@@ -37,6 +38,8 @@ class RubricCreate(BaseModel):
     # Rubric.grading_scale's docstring). Defaults to the original 4-level
     # scale.
     grading_scale: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_GRADING_SCALE))
+    # Rubric-wide background shared by every question (see Rubric.context).
+    context: str | None = None
     questions: list[Question]
 
 
@@ -90,6 +93,7 @@ async def _insert_rubric(
     edition: Edition | None,
     fmt: SubmissionFormat,
     grading_scale: dict[str, str],
+    context: str | None = None,
 ) -> Rubric:
     await _check_slug_available(slug)
     try:
@@ -99,7 +103,14 @@ async def _insert_rubric(
         # which builds grading_scale from a free-form YAML value) 422
         # instead of 500ing on a bad value.
         rubric = Rubric(
-            slug=slug, title=title, course=course, edition=edition, format=fmt, grading_scale=grading_scale, questions=questions
+            slug=slug,
+            title=title,
+            course=course,
+            edition=edition,
+            format=fmt,
+            grading_scale=grading_scale,
+            context=context,
+            questions=questions,
         )
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=f"Invalid rubric: {exc}") from exc
@@ -116,6 +127,7 @@ async def _apply_rubric_update(
     edition: Edition | None,
     fmt: SubmissionFormat,
     grading_scale: dict[str, str],
+    context: str | None = None,
 ) -> Rubric:
     """Update `rubric` in place with new field values -- shared by both edit
     paths (the manual-edit PUT and the "upload updated version" YAML PUT)."""
@@ -129,6 +141,7 @@ async def _apply_rubric_update(
     rubric.edition = edition
     rubric.format = fmt
     rubric.grading_scale = grading_scale
+    rubric.context = context
     rubric.questions = questions
     rubric.updated_at = datetime.now(UTC)
     try:
@@ -195,7 +208,9 @@ async def create_rubric(payload: RubricCreate) -> Rubric:
             raise HTTPException(status_code=404, detail="Edition not found")
 
     slug = payload.slug or slugify(payload.title)
-    return await _insert_rubric(slug, payload.title, payload.questions, course, edition, payload.format, payload.grading_scale)
+    return await _insert_rubric(
+        slug, payload.title, payload.questions, course, edition, payload.format, payload.grading_scale, payload.context
+    )
 
 
 @router.put("/{rubric_id}", response_model=Rubric)
@@ -222,7 +237,7 @@ async def update_rubric(rubric_id: PydanticObjectId, payload: RubricCreate) -> R
 
     slug = payload.slug or slugify(payload.title)
     return await _apply_rubric_update(
-        rubric, slug, payload.title, payload.questions, course, edition, payload.format, payload.grading_scale
+        rubric, slug, payload.title, payload.questions, course, edition, payload.format, payload.grading_scale, payload.context
     )
 
 
@@ -257,7 +272,7 @@ async def _parse_rubric_yaml(
     *,
     default_slug: str,
     honor_yaml_course_edition: bool = True,
-) -> tuple[str, str, list[Question], Course, Edition | None, SubmissionFormat, dict[str, str]]:
+) -> tuple[str, str, list[Question], Course, Edition | None, SubmissionFormat, dict[str, str], str | None]:
     """Shared YAML-body parsing for both `POST /rubrics/upload` (create) and
     `PUT /rubrics/{rubric_id}/upload` (the "upload updated version" edit
     flow) -- everything about interpreting the file/form fields is identical
@@ -339,7 +354,12 @@ async def _parse_rubric_yaml(
     # here.
     grading_scale = raw["grading_scale"] if raw.get("grading_scale") is not None else dict(DEFAULT_GRADING_SCALE)
 
-    return resolved_slug, title, questions, course, edition, resolved_format, grading_scale
+    # Optional top-level `context:` key (Rubric.context), YAML only.
+    context = raw.get("context")
+    if context is not None and not isinstance(context, str):
+        raise HTTPException(status_code=422, detail="The YAML `context:` key must be a string")
+
+    return resolved_slug, title, questions, course, edition, resolved_format, grading_scale, context
 
 
 @router.post("/upload", response_model=Rubric, status_code=201)
@@ -352,10 +372,10 @@ async def upload_rubric_yaml(
 ) -> Rubric:
     """Create a rubric from an uploaded YAML file (see README.md for the format)."""
     filename_stem = Path(yaml_file.filename or "rubric").stem.removesuffix("_questions")
-    resolved_slug, title, questions, course, edition, resolved_format, grading_scale = await _parse_rubric_yaml(
+    resolved_slug, title, questions, course, edition, resolved_format, grading_scale, context = await _parse_rubric_yaml(
         yaml_file, slug, course_id, edition_id, format, default_slug=slugify(filename_stem)
     )
-    return await _insert_rubric(resolved_slug, title, questions, course, edition, resolved_format, grading_scale)
+    return await _insert_rubric(resolved_slug, title, questions, course, edition, resolved_format, grading_scale, context)
 
 
 @router.put("/{rubric_id}/upload", response_model=Rubric)
@@ -384,10 +404,12 @@ async def update_rubric_yaml(
     if rubric is None:
         raise HTTPException(status_code=404, detail="Rubric not found")
 
-    resolved_slug, title, questions, course, edition, resolved_format, grading_scale = await _parse_rubric_yaml(
+    resolved_slug, title, questions, course, edition, resolved_format, grading_scale, context = await _parse_rubric_yaml(
         yaml_file, slug, course_id, edition_id, format, default_slug=rubric.slug, honor_yaml_course_edition=False
     )
-    return await _apply_rubric_update(rubric, resolved_slug, title, questions, course, edition, resolved_format, grading_scale)
+    return await _apply_rubric_update(
+        rubric, resolved_slug, title, questions, course, edition, resolved_format, grading_scale, context
+    )
 
 
 @router.delete("/{rubric_id}", status_code=204)
@@ -446,6 +468,12 @@ async def test_rubric_answer(
         # separate Celery process entirely, this is a single quick "try it"
         # call, so a threadpool hop off the event loop is enough rather than
         # standing up a task+poll flow for one question.
-        return await run_in_threadpool(grade_answer, chat_model, question, payload.answer, rubric.grading_scale)
+        return await run_in_threadpool(
+            partial(grade_answer, rubric_context=rubric.context),
+            chat_model,
+            question,
+            payload.answer,
+            rubric.grading_scale,
+        )
     except Exception as exc:  # noqa: BLE001 -- surface any LLM/config failure as a clean error, not a raw 500
         raise HTTPException(status_code=502, detail=f"Grading failed: {exc}") from exc
