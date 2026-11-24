@@ -218,10 +218,20 @@ answer's span is a **segment**). Code: `grading/extraction/generic_document.py`
   `to_stored_format` do the check and conversion for both `POST
   /submissions` and `POST /batches` (a batch converts every item before
   writing anything, so one unreadable file is a `422` naming it and nothing
-  is created). Only the PDF is stored -- the original `.docx` is not kept --
-  so `FORMAT_FILE_INFO` stays `.pdf` and the editor's iframe, the download and
-  the Markdown conversion need no `.docx` awareness at all. Conversion runs in
-  `run_in_threadpool`.
+  is created). The PDF is *the* stored file -- `FORMAT_FILE_INFO` stays
+  `.pdf` and the editor's iframe, `/file` and the Markdown conversion need no
+  `.docx` awareness at all. Conversion runs in `run_in_threadpool`.
+- **The original upload is kept for provenance**, but only as a side file:
+  `store_original_upload` writes the untouched bytes to
+  `derived_object_key(file_object_key, "original<ext>")` (so
+  `delete_submission_files` removes it with the rest) and sets
+  `Submission.original_object_key`; `GET /submissions/{id}/original` serves
+  it (`UPLOAD_CONTENT_TYPES`; the uploaded filename via RFC 5987
+  `filename*`, since names may be non-ASCII), shown as "Download original"
+  on the submission page. Nothing else reads it.
+  `Submission.original_filename` (the uploaded name; for a batch item, its
+  name inside the zip folder) is set for *every* upload, converted or not.
+  Submissions uploaded before this have neither (`/original` is `404`).
 - **LibreOffice does the `.docx` layout, via a Gotenberg sidecar**
   (`gotenberg` compose service, `POST /forms/libreoffice/convert`;
   `GOTENBERG_URL`/`GOTENBERG_TIMEOUT` settings, read by the router and passed

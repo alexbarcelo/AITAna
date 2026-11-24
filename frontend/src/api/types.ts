@@ -201,6 +201,11 @@ export interface Submission {
    * free-form identifier given at upload time. */
   label?: string | null
   file_object_key: string
+  /** Uploaded file's name (null for submissions predating it). */
+  original_filename?: string | null
+  /** Set only when the upload was converted before storing (e.g. `.docx` ->
+   * PDF): the untouched upload, served by `GET /submissions/{id}/original`. */
+  original_object_key?: string | null
   status: SubmissionStatus
   answers: AnsweredQuestion[]
   error?: string | null

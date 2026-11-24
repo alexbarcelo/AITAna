@@ -446,6 +446,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/submissions/{submission_id}/original": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Original Upload
+         * @description The file exactly as uploaded, for a submission that was converted
+         *     before storing (e.g. a `.docx` against a generic-document rubric --
+         *     `/file` serves the converted PDF). `404` when there's no separate
+         *     original: the upload was stored as-is (use `/file`), or it predates
+         *     keeping originals.
+         */
+        get: operations["download_original_upload_submissions__submission_id__original_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/submissions/{submission_id}/answers/{question_id}/images/{index}": {
         parameters: {
             query?: never;
@@ -1680,6 +1704,10 @@ export interface components {
             };
             /** File Object Key */
             file_object_key: string;
+            /** Original Filename */
+            original_filename?: string | null;
+            /** Original Object Key */
+            original_object_key?: string | null;
             /** @default pending */
             status: components["schemas"]["SubmissionStatus"];
             /** Answers */
@@ -2641,6 +2669,37 @@ export interface operations {
             query?: {
                 inline?: boolean;
             };
+            header?: never;
+            path: {
+                submission_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_original_upload_submissions__submission_id__original_get: {
+        parameters: {
+            query?: never;
             header?: never;
             path: {
                 submission_id: components["schemas"]["PydanticObjectId"];

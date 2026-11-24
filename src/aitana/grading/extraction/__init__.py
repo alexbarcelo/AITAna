@@ -43,6 +43,13 @@ UPLOAD_CONVERSIONS: dict[SubmissionFormat, frozenset[str]] = {
     SubmissionFormat.GENERIC_DOCUMENT: frozenset({".docx"}),
 }
 
+# Content type each UPLOAD_CONVERSIONS extension is served back as, when the
+# original (pre-conversion) upload is downloaded for provenance
+# (`GET /submissions/{id}/original`).
+UPLOAD_CONTENT_TYPES: dict[str, str] = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
 
 def accepted_upload_extensions(fmt: SubmissionFormat) -> list[str]:
     """Every extension an upload against a `fmt` rubric may have."""

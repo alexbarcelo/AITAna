@@ -107,6 +107,16 @@ class Submission(Document):
     # Rubric.format's docstring for why format lives on the rubric, not the
     # submission).
     file_object_key: str
+    # Provenance of the upload. `original_filename` is the uploaded file's
+    # name (for a batch item, the file's name inside its zip folder) -- set
+    # for every upload, `None` only for submissions predating it.
+    # `original_object_key` is set only when the upload was converted before
+    # storing (e.g. `.docx` -> PDF for a generic document): the untouched
+    # uploaded bytes, kept under `storage.derived_object_key(file_object_key,
+    # "original<ext>")` so deleting the submission removes them too.
+    # Served by `GET /submissions/{id}/original`.
+    original_filename: str | None = None
+    original_object_key: str | None = None
     status: SubmissionStatus = SubmissionStatus.PENDING
     answers: list[AnsweredQuestion] = Field(default_factory=list)
     error: str | None = None

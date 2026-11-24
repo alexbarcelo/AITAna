@@ -260,6 +260,17 @@ async def test_create_generic_batch_converts_docx_items(client, minimal_docx):
     assert all(data.startswith(b"%PDF") for data in stored)
     assert b"%PDF-1.4 alan" in stored  # PDFs stored untouched
 
+    # Provenance: every item records its in-zip filename; only the converted
+    # .docx keeps a separate original, byte-for-byte.
+    by_folder = {s["batch_internal_id"]: s for s in resp.json()["submissions"]}
+    ada = by_folder["Lovelace Ada_1001_assignsubmission_file"]
+    alan = by_folder["Turing Alan_1002_assignsubmission_file"]
+    assert ada["original_filename"] == "answers.docx"
+    assert alan["original_filename"] == "answers.pdf"
+    assert alan["original_object_key"] is None
+    assert ada["original_object_key"].endswith("/original.docx")
+    assert client.fake_objects[ada["original_object_key"]] == minimal_docx("Ada")
+
 
 async def test_create_generic_batch_unreadable_docx_writes_nothing(client, minimal_docx):
     course_id = await _make_course(client)

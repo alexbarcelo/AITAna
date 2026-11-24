@@ -36,6 +36,8 @@ from .submissions import (
     enqueue_segment_suggestion,
     expected_extensions_text,
     guard_not_in_progress,
+    original_upload_name,
+    store_original_upload,
     to_stored_format,
     upload_extension,
 )
@@ -219,7 +221,7 @@ async def create_batch(
     students = await Student.find_all().to_list() if match_students else []
 
     submissions: list[Submission] = []
-    for item, data in zip(items, stored_data, strict=True):
+    for item, ext, data in zip(items, item_extensions, stored_data, strict=True):
         submission = Submission(
             rubric=rubric,
             edition=edition,
@@ -228,12 +230,14 @@ async def create_batch(
             batch=batch,
             batch_internal_id=item.folder_name,
             file_object_key="",
+            original_filename=original_upload_name(item.filename),
         )
         await submission.insert()
 
         key = storage.batch_object_key(rubric.slug, str(submission.id), extension)
         storage.upload_file(key, data, content_type)
         submission.file_object_key = key
+        store_original_upload(submission, rubric.format, item.data, ext)
         await submission.save()
 
         enqueue_initial_processing(submission, rubric, resolved_model_id, llm_segmentation)

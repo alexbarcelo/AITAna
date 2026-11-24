@@ -564,6 +564,58 @@ async def test_create_generic_submission_converts_docx_to_pdf(client, minimal_do
     assert client.delayed_prepares == [(resp.json()["_id"], client.default_llm_model_id)]
 
 
+async def test_converted_upload_keeps_original_for_provenance(client, minimal_docx):
+    """The .docx itself is kept next to the converted PDF and downloadable,
+    under its uploaded name (non-ASCII safe); deleting the submission
+    removes it with the rest."""
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
+    docx = minimal_docx("My answer")
+
+    resp = await client.post(
+        "/submissions",
+        data={"student_id": student_id, "rubric_id": rubric_id},
+        files={"file": ("Resposta Àlex.docx", docx, "application/octet-stream")},
+    )
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["original_filename"] == "Resposta Àlex.docx"
+    original_key = body["original_object_key"]
+    assert original_key == body["file_object_key"].removesuffix(".pdf") + "/original.docx"
+    assert client.fake_objects[original_key] == docx
+
+    resp = await client.get(f"/submissions/{body['_id']}/original")
+    assert resp.status_code == 200
+    assert resp.content == docx
+    assert resp.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument")
+    disposition = resp.headers["content-disposition"]
+    assert disposition.startswith('attachment; filename="Resposta _lex.docx"')
+    assert "filename*=UTF-8''Resposta%20%C3%80lex.docx" in disposition
+
+    assert (await client.delete(f"/submissions/{body['_id']}?force=true")).status_code == 204
+    assert original_key not in client.fake_objects
+
+
+async def test_unconverted_upload_has_no_separate_original(client):
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
+
+    resp = await client.post(
+        "/submissions",
+        data={"student_id": student_id, "rubric_id": rubric_id},
+        files={"file": ("answers.pdf", b"%PDF-1.4 data", "application/pdf")},
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["original_filename"] == "answers.pdf"
+    assert resp.json()["original_object_key"] is None
+    assert len(client.fake_objects) == 1
+    assert (await client.get(f"/submissions/{resp.json()['_id']}/original")).status_code == 404
+
+
 async def test_create_generic_submission_rejects_unreadable_docx(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)

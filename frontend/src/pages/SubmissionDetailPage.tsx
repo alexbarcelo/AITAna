@@ -68,6 +68,15 @@ export default function SubmissionDetailPage() {
           >
             Download {fileInfo.fileLabel}
           </a>
+          {submission.original_object_key && (
+            <a
+              href={`${API_URL}/submissions/${submission._id}/original`}
+              title={`The file as uploaded${submission.original_filename ? ` (${submission.original_filename})` : ''}, before conversion to PDF`}
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
+            >
+              Download original
+            </a>
+          )}
           <a
             href={`${API_URL}/submissions/${submission._id}/feedback.html`}
             title="Standalone HTML page with this submission's feedback -- no internet connection needed to view it"

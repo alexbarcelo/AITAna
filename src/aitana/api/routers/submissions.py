@@ -1,5 +1,7 @@
 import base64
 import logging
+from pathlib import PurePosixPath
+from urllib.parse import quote
 from datetime import UTC, datetime
 
 from beanie import Link, PydanticObjectId
@@ -10,7 +12,12 @@ from pydantic import BaseModel
 
 from ... import storage
 from ...documents import Edition, GradingTrace, Rubric, SegmentationSource, Student, Submission, SubmissionStatus
-from ...grading.extraction import FORMAT_FILE_INFO, SEGMENTED_FORMATS, accepted_upload_extensions
+from ...grading.extraction import (
+    FORMAT_FILE_INFO,
+    SEGMENTED_FORMATS,
+    UPLOAD_CONTENT_TYPES,
+    accepted_upload_extensions,
+)
 from ...grading.extraction.generic_document import (
     DocumentConversionError,
     SegmentationError,
@@ -116,6 +123,34 @@ async def to_stored_format(fmt: SubmissionFormat, extension: str, data: bytes, f
         raise HTTPException(status_code=422, detail=f"{filename!r}: {exc}") from exc
 
 
+def original_upload_name(filename: str | None) -> str | None:
+    """The uploaded file's own name, without any client-side directory part."""
+    name = PurePosixPath((filename or "").replace("\\", "/")).name
+    return name or None
+
+
+def store_original_upload(submission: Submission, fmt: SubmissionFormat, data: bytes, extension: str) -> None:
+    """Keep the untouched uploaded bytes when they were converted before
+    storing (`to_stored_format`), for provenance -- next to the stored file,
+    in its derived folder, so `storage.delete_submission_files` removes them
+    too. A no-op for an upload stored as-is (the stored file *is* the
+    original). Needs `submission.file_object_key` already set; the caller
+    saves the submission."""
+    if extension == FORMAT_FILE_INFO[fmt][0]:
+        return
+    key = storage.derived_object_key(submission.file_object_key, f"original{extension}")
+    storage.upload_file(key, data, UPLOAD_CONTENT_TYPES.get(extension, "application/octet-stream"))
+    submission.original_object_key = key
+
+
+def content_disposition(disposition: str, filename: str) -> str:
+    """`Content-Disposition` value that survives a non-ASCII filename (an
+    original upload's name may have accents): an ASCII fallback plus the
+    RFC 5987 `filename*` form, which browsers prefer."""
+    fallback = filename.encode("ascii", "replace").decode().replace("?", "_").replace('"', "_").replace("\\", "_")
+    return f"{disposition}; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename)}"
+
+
 async def _resolve_edition(rubric: Rubric, edition_id: PydanticObjectId | None) -> Edition:
     """A submission always has a definite edition, even for a rubric that
     doesn't fix one (e.g. a lab reused across years): use the rubric's own
@@ -189,9 +224,17 @@ async def create_submission(
             detail=f"This rubric expects a {expected_extensions_text(rubric.format)} file "
             f"({rubric.format.value}), got {filename!r}",
         )
-    data = await to_stored_format(rubric.format, uploaded_extension, await file.read(), filename)
+    raw = await file.read()
+    data = await to_stored_format(rubric.format, uploaded_extension, raw, filename)
 
-    submission = Submission(student=student, label=label, rubric=rubric, edition=edition, file_object_key="")
+    submission = Submission(
+        student=student,
+        label=label,
+        rubric=rubric,
+        edition=edition,
+        file_object_key="",
+        original_filename=original_upload_name(filename),
+    )
     await submission.insert()
 
     if student is not None:
@@ -200,6 +243,7 @@ async def create_submission(
         key = storage.labelled_object_key(rubric.slug, str(submission.id), extension)
     storage.upload_file(key, data, content_type)
     submission.file_object_key = key
+    store_original_upload(submission, rubric.format, raw, uploaded_extension)
     await submission.save()
 
     enqueue_initial_processing(submission, rubric, resolved_model_id, llm_segmentation)
@@ -418,6 +462,31 @@ async def download_submission_file(submission_id: PydanticObjectId, inline: bool
         content=file_bytes,
         media_type=content_type,
         headers={"Content-Disposition": f'{"inline" if inline else "attachment"}; filename="{filename}"'},
+    )
+
+
+@router.get("/{submission_id}/original")
+async def download_original_upload(submission_id: PydanticObjectId) -> Response:
+    """The file exactly as uploaded, for a submission that was converted
+    before storing (e.g. a `.docx` against a generic-document rubric --
+    `/file` serves the converted PDF). `404` when there's no separate
+    original: the upload was stored as-is (use `/file`), or it predates
+    keeping originals."""
+    submission = await Submission.get(submission_id)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if submission.original_object_key is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No separate original upload stored for this submission (it was stored as uploaded, "
+            "or predates keeping originals) -- the stored file is at /file",
+        )
+    extension = "." + submission.original_object_key.rsplit(".", 1)[-1]
+    filename = submission.original_filename or f"{submission.id}{extension}"
+    return Response(
+        content=storage.download_bytes(submission.original_object_key),
+        media_type=UPLOAD_CONTENT_TYPES.get(extension, "application/octet-stream"),
+        headers={"Content-Disposition": content_disposition("attachment", filename)},
     )
 
 
