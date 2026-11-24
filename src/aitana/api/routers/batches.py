@@ -30,10 +30,12 @@ from .submissions import (
     _SHALLOW_LINKS,
     _resolve_edition,
     _upload_model,
+    delete_submissions,
     enqueue_initial_processing,
     enqueue_regrade,
     enqueue_segment_suggestion,
     expected_extensions_text,
+    guard_not_in_progress,
     to_stored_format,
     upload_extension,
 )
@@ -293,6 +295,22 @@ async def download_batch_feedback(batch_id: PydanticObjectId) -> Response:
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{batch.rubric.slug}_feedback.zip"'},
     )
+
+
+@router.delete("/{batch_id}", status_code=204)
+async def delete_batch(batch_id: PydanticObjectId, force: bool = False) -> None:
+    """Delete a batch together with every submission it created (and their
+    grading traces and stored files) -- a batch is just the record of one
+    zip upload, so its submissions go with it. Same in-progress guard as
+    `DELETE /submissions/{id}`, applied to the whole batch up front: either
+    everything is deleted or nothing is."""
+    batch = await Batch.get(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    submissions = await Submission.find(Submission.batch.id == batch_id).to_list()
+    guard_not_in_progress(submissions, force)
+    await delete_submissions(submissions)
+    await batch.delete()
 
 
 class BatchRegradeResult(BaseModel):

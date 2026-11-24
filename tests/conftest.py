@@ -139,6 +139,13 @@ async def client(monkeypatch, mongo_db):
     monkeypatch.setattr("aitana.storage.download_to_path", fake_download_to_path)
     monkeypatch.setattr("aitana.storage.download_bytes", lambda key: fake_objects[key])
 
+    def fake_delete_submission_files(file_object_key: str) -> None:
+        prefix = file_object_key.rsplit(".", 1)[0] + "/"
+        for key in [k for k in fake_objects if k == file_object_key or k.startswith(prefix)]:
+            del fake_objects[key]
+
+    monkeypatch.setattr("aitana.storage.delete_submission_files", fake_delete_submission_files)
+
     delayed_submission_ids: list[str] = []
     delayed_question_ids: list[str | None] = []
     delayed_model_ids: list[str | None] = []

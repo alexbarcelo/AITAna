@@ -678,3 +678,50 @@ async def test_suggest_segments_enqueues(client):
     assert resp.status_code == 202
     assert resp.json()["status"] == "segmenting"
     assert client.delayed_suggestions == [(submission_id, client.default_llm_model_id)]
+
+
+# ---- DELETE /submissions/{id} ----
+
+
+async def _make_uploaded_submission(client) -> dict:
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id)
+    return (
+        await client.post(
+            "/submissions",
+            data={"student_id": student_id, "rubric_id": rubric_id},
+            files={"file": ("answers.pdf", b"data", "application/pdf")},
+        )
+    ).json()
+
+
+async def test_delete_submission_removes_document_and_file(client):
+    created = await _make_uploaded_submission(client)
+    submission = await Submission.get(created["_id"])
+    submission.status = SubmissionStatus.GRADED
+    await submission.save()
+    client.fake_objects[created["file_object_key"].rsplit(".", 1)[0] + "/document.md"] = b"# derived"
+
+    resp = await client.delete(f"/submissions/{created['_id']}")
+    assert resp.status_code == 204
+    assert await Submission.get(created["_id"]) is None
+    assert client.fake_objects == {}
+
+
+async def test_delete_submission_in_progress_needs_force(client):
+    created = await _make_uploaded_submission(client)  # still `pending`
+
+    resp = await client.delete(f"/submissions/{created['_id']}")
+    assert resp.status_code == 409
+    assert await Submission.get(created["_id"]) is not None
+
+    resp = await client.delete(f"/submissions/{created['_id']}?force=true")
+    assert resp.status_code == 204
+    assert await Submission.get(created["_id"]) is None
+
+
+async def test_delete_submission_not_found(client):
+    resp = await client.delete("/submissions/000000000000000000000000")
+    assert resp.status_code == 404

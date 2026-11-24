@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { useCreateStudent, useImportStudents, useStudents } from '../api/hooks'
+import { useCreateStudent, useDeleteStudent, useImportStudents, useStudents } from '../api/hooks'
+import { TrashIcon } from '../components/DeleteSubmissionButton'
 import { STUDENT_IMPORT_FORMAT_LABELS } from '../api/types'
 import type { StudentImportFormat } from '../api/types'
 
@@ -8,6 +9,13 @@ const IMPORT_FORMAT_OPTIONS = Object.keys(STUDENT_IMPORT_FORMAT_LABELS) as Stude
 export default function StudentsPage() {
   const { data: students, isLoading, error } = useStudents()
   const createStudent = useCreateStudent()
+  const deleteStudent = useDeleteStudent()
+
+  function handleDelete(student: { _id?: string | null; name: string; student_id: string }) {
+    if (!student._id) return
+    if (!window.confirm(`Delete student "${student.name}" (${student.student_id})? This can't be undone.`)) return
+    deleteStudent.mutate(student._id)
+  }
 
   const [studentId, setStudentId] = useState('')
   const [name, setName] = useState('')
@@ -76,6 +84,11 @@ export default function StudentsPage() {
 
       {isLoading && <p className="text-sm text-slate-500">Loading...</p>}
       {error && <p className="text-sm text-red-600">Failed to load students.</p>}
+      {deleteStudent.isError && (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">
+          {deleteStudent.error.message || 'Failed to delete the student.'}
+        </p>
+      )}
 
       {students && (
         <table className="w-full overflow-hidden rounded-lg border border-slate-200 bg-white text-sm">
@@ -85,6 +98,7 @@ export default function StudentsPage() {
               <th className="px-4 py-2">Name</th>
               <th className="px-4 py-2">Username</th>
               <th className="px-4 py-2">Email</th>
+              <th className="px-4 py-2"></th>
             </tr>
           </thead>
           <tbody>
@@ -94,11 +108,22 @@ export default function StudentsPage() {
                 <td className="px-4 py-2">{s.name}</td>
                 <td className="px-4 py-2 text-slate-500">{s.username ?? '—'}</td>
                 <td className="px-4 py-2 text-slate-500">{s.email ?? '—'}</td>
+                <td className="px-4 py-2 text-right">
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(s)}
+                    disabled={deleteStudent.isPending}
+                    title="Delete student"
+                    className="inline-flex items-center rounded p-0.5 text-slate-400 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
+                  >
+                    <TrashIcon />
+                  </button>
+                </td>
               </tr>
             ))}
             {students.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-6 text-center text-slate-400">
+                <td colSpan={5} className="px-4 py-6 text-center text-slate-400">
                   No students yet.
                 </td>
               </tr>

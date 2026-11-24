@@ -406,3 +406,33 @@ async def test_regrade_batch_single_question(client):
 async def test_regrade_batch_not_found(client):
     resp = await client.post("/batches/000000000000000000000000/regrade")
     assert resp.status_code == 404
+
+
+# ---- DELETE /batches/{id} ----
+
+
+async def test_delete_batch(client):
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id)
+    body = (
+        await client.post(
+            "/batches",
+            data={"rubric_id": rubric_id, "type": "atenea"},
+            files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+        )
+    ).json()
+    batch_id = body["batch"]["_id"]
+
+    resp = await client.delete(f"/batches/{batch_id}")
+    assert resp.status_code == 204
+    assert (await client.get(f"/batches/{batch_id}")).status_code == 404
+    # The batch's submissions are found via `Submission.batch.id == ...`,
+    # which mongomock can't match inside a DBRef (AGENTS.md sharp edge #3),
+    # so their deletion (and the in-progress 409) isn't asserted here --
+    # same pattern as regrade_batch, needs a real MongoDB to exercise.
+
+
+async def test_delete_batch_not_found(client):
+    resp = await client.delete("/batches/000000000000000000000000")
+    assert resp.status_code == 404

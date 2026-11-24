@@ -30,6 +30,27 @@ async function unwrap<T>(promise: Promise<{ data?: T; error?: unknown }>): Promi
   return data as T
 }
 
+/** Error thrown by `unwrapWithStatus`: carries the HTTP status (so a caller
+ * can react to e.g. a `409` specifically) and FastAPI's `detail` message. */
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+/** Like `unwrap`, for callers that need to tell error statuses apart. */
+async function unwrapWithStatus<T>(promise: Promise<{ data?: T; error?: unknown; response: Response }>): Promise<T> {
+  const { data, error, response } = await promise
+  if (error !== undefined) {
+    const detail = (error as { detail?: unknown })?.detail
+    throw new ApiError(response.status, typeof detail === 'string' ? detail : `Request failed (${response.status})`)
+  }
+  return data as T
+}
+
 /** Newest-first by `created_at` -- used for every course/edition dropdown so
  * the thing someone most likely just set up (this term's course, this
  * term's edition) sorts to the top instead of wherever Mongo's natural
@@ -84,6 +105,15 @@ export function useImportStudents() {
 }
 
 // ---- Courses ----
+
+export function useDeleteStudent() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (studentId: string) =>
+      unwrapWithStatus(client.DELETE('/students/{student_id}', { params: { path: { student_id: studentId } } })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['students'] }),
+  })
+}
 
 export function useCourses() {
   return useQuery({
@@ -285,7 +315,8 @@ export function useUpdateRubricYaml() {
 export function useDeleteRubric() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (rubricId: string) => unwrap(client.DELETE('/rubrics/{rubric_id}', { params: { path: { rubric_id: rubricId } } })),
+    mutationFn: (rubricId: string) =>
+      unwrapWithStatus(client.DELETE('/rubrics/{rubric_id}', { params: { path: { rubric_id: rubricId } } })),
     onSuccess: (_data, rubricId) => {
       queryClient.removeQueries({ queryKey: ['rubrics', rubricId] })
       queryClient.invalidateQueries({ queryKey: ['rubrics'] })
@@ -358,6 +389,24 @@ export function useRegradeSubmission() {
       ) as unknown as Promise<Submission>,
     onSuccess: (submission) => {
       queryClient.setQueryData(['submissions', submission._id], submission)
+      queryClient.invalidateQueries({ queryKey: ['submissions'] })
+    },
+  })
+}
+
+/** `force` deletes even while the submission is still being processed
+ * (the API answers `409` otherwise) -- for jobs that were lost. */
+export function useDeleteSubmission() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ submissionId, force = false }: { submissionId: string; force?: boolean }) =>
+      unwrapWithStatus(
+        client.DELETE('/submissions/{submission_id}', {
+          params: { path: { submission_id: submissionId }, query: { force } },
+        }),
+      ),
+    onSuccess: (_data, { submissionId }) => {
+      queryClient.removeQueries({ queryKey: ['submissions', submissionId] })
       queryClient.invalidateQueries({ queryKey: ['submissions'] })
     },
   })
@@ -495,6 +544,23 @@ export function useBatch(id: string | undefined) {
         client.GET('/batches/{batch_id}', { params: { path: { batch_id: id! } } }),
       ) as unknown as Promise<Batch>,
     enabled: Boolean(id),
+  })
+}
+
+/** Deletes the batch and every submission it created. Same `force`
+ * semantics as `useDeleteSubmission`. */
+export function useDeleteBatch() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ batchId, force = false }: { batchId: string; force?: boolean }) =>
+      unwrapWithStatus(
+        client.DELETE('/batches/{batch_id}', { params: { path: { batch_id: batchId }, query: { force } } }),
+      ),
+    onSuccess: (_data, { batchId }) => {
+      queryClient.removeQueries({ queryKey: ['batches', batchId] })
+      queryClient.invalidateQueries({ queryKey: ['batches'] })
+      queryClient.invalidateQueries({ queryKey: ['submissions'] })
+    },
   })
 }
 

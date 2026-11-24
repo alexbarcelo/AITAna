@@ -195,3 +195,21 @@ async def test_import_students_unknown_format(client):
         files={"file": ("roster.csv", ATENEA_CSV, "text/csv")},
     )
     assert resp.status_code == 422
+
+
+async def test_delete_student(client):
+    created = (await client.post("/students", json={"student_id": "s1", "name": "Ada Lovelace"})).json()
+    resp = await client.delete(f"/students/{created['_id']}")
+    assert resp.status_code == 204
+    assert (await client.get(f"/students/{created['_id']}")).status_code == 404
+
+
+async def test_delete_student_not_found(client):
+    resp = await client.delete("/students/000000000000000000000000")
+    assert resp.status_code == 404
+
+
+# No positive-match test for "delete is blocked while a submission links to
+# this student": the `Submission.student.id == ...` check can't match inside
+# a stored DBRef under mongomock (AGENTS.md sharp edge #3), same gap as
+# DELETE /rubrics/{id}'s guard.

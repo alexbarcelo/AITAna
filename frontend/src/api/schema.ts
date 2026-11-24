@@ -33,7 +33,14 @@ export interface paths {
         get: operations["get_student_students__student_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Student
+         * @description `409` if any submission is linked to this student. MongoDB has no
+         *     referential integrity (a Link is just a stored DBRef), so this has to be
+         *     an explicit check -- otherwise those submissions would be left pointing
+         *     at a missing student.
+         */
+        delete: operations["delete_student_students__student_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -338,7 +345,8 @@ export interface paths {
         get: operations["get_submission_submissions__submission_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete Submission */
+        delete: operations["delete_submission_submissions__submission_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -651,7 +659,15 @@ export interface paths {
         get: operations["get_batch_batches__batch_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Batch
+         * @description Delete a batch together with every submission it created (and their
+         *     grading traces and stored files) -- a batch is just the record of one
+         *     zip upload, so its submissions go with it. Same in-progress guard as
+         *     `DELETE /submissions/{id}`, applied to the whole batch up front: either
+         *     everything is deleted or nothing is.
+         */
+        delete: operations["delete_batch_batches__batch_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1830,6 +1846,35 @@ export interface operations {
             };
         };
     };
+    delete_student_students__student_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                student_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     import_students_students_import_post: {
         parameters: {
             query?: never;
@@ -2422,6 +2467,37 @@ export interface operations {
             };
         };
     };
+    delete_submission_submissions__submission_id__delete: {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: never;
+            path: {
+                submission_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     set_submission_student_submissions__submission_id__student_put: {
         parameters: {
             query?: never;
@@ -2949,6 +3025,37 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Batch"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_batch_batches__batch_id__delete: {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: never;
+            path: {
+                batch_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

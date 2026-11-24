@@ -1,8 +1,9 @@
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { API_URL } from '../api/client'
 import { useRegradeSubmission, useSubmission } from '../api/hooks'
 import AnswerGradeEditor from '../components/AnswerGradeEditor'
 import AnswerImages from '../components/AnswerImages'
+import DeleteSubmissionButton from '../components/DeleteSubmissionButton'
 import GradeBadge from '../components/GradeBadge'
 import { GradingInfoTooltip, SubmissionGradingInfoTooltip } from '../components/GradingInfo'
 import MatchStudentDialog from '../components/MatchStudentDialog'
@@ -15,6 +16,7 @@ export default function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>()
   const { data: submission, isLoading, error } = useSubmission(id)
   const regrade = useRegradeSubmission()
+  const navigate = useNavigate()
 
   if (isLoading) return <p className="text-sm text-slate-500">Loading...</p>
   if (error || !submission) return <p className="text-sm text-red-600">Failed to load this submission.</p>
@@ -95,6 +97,10 @@ export default function SubmissionDetailPage() {
           >
             {regrade.isPending ? 'Re-grading...' : 'Re-grade'}
           </button>
+          <DeleteSubmissionButton
+            submission={submission}
+            onDeleted={() => navigate(submission.batch ? `/?batch_id=${submission.batch._id}` : '/')}
+          />
         </div>
       </div>
 

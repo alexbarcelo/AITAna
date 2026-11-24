@@ -124,7 +124,7 @@ export default function RubricDetailPage() {
           </div>
           {deleteRubric.isError && (
             <p className="mt-1 text-sm text-red-600">
-              {(deleteRubric.error as { message?: string })?.message ?? 'Failed to delete this rubric.'}
+              {deleteRubric.error.message || 'Failed to delete this rubric.'}
             </p>
           )}
         </div>

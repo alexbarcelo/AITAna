@@ -7,7 +7,7 @@ from beanie import PydanticObjectId
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from ...documents import Student
+from ...documents import Student, Submission
 
 router = APIRouter(prefix="/students", tags=["students"])
 
@@ -38,6 +38,24 @@ async def get_student(student_id: PydanticObjectId) -> Student:
     if student is None:
         raise HTTPException(status_code=404, detail="Student not found")
     return student
+
+
+@router.delete("/{student_id}", status_code=204)
+async def delete_student(student_id: PydanticObjectId) -> None:
+    """`409` if any submission is linked to this student. MongoDB has no
+    referential integrity (a Link is just a stored DBRef), so this has to be
+    an explicit check -- otherwise those submissions would be left pointing
+    at a missing student."""
+    student = await Student.get(student_id)
+    if student is None:
+        raise HTTPException(status_code=404, detail="Student not found")
+    linked = await Submission.find(Submission.student.id == student.id).count()
+    if linked:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete {student.name}: {linked} submission(s) are linked to this student.",
+        )
+    await student.delete()
 
 
 class StudentImportFormat(str, Enum):

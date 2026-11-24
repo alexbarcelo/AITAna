@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useBatches, useCreateBatch, useEditions, useRubrics, useSuggestBatchSegments } from '../api/hooks'
+import { ApiError, useBatches, useCreateBatch, useDeleteBatch, useEditions, useRubrics, useSuggestBatchSegments } from '../api/hooks'
 import { BATCH_TYPE_LABELS, SEGMENTED_FORMATS } from '../api/types'
 import type { Batch, BatchType } from '../api/types'
+import { TrashIcon } from '../components/DeleteSubmissionButton'
 import LlmSegmentationCheckbox from '../components/LlmSegmentationCheckbox'
 import { formatDateTime } from '../lib/date'
 
@@ -48,7 +49,10 @@ export default function BatchesPage() {
                 <td className="px-4 py-2 text-slate-500">{batch.item_count}</td>
                 <td className="px-4 py-2 text-slate-500">{formatDateTime(batch.created_at)}</td>
                 <td className="px-4 py-2 text-right">
-                  {SEGMENTED_FORMATS.includes(batch.rubric.format) && <SuggestSegmentsButton batch={batch} />}
+                  <span className="inline-flex items-center gap-2">
+                    {SEGMENTED_FORMATS.includes(batch.rubric.format) && <SuggestSegmentsButton batch={batch} />}
+                    <DeleteBatchButton batch={batch} />
+                  </span>
                 </td>
               </tr>
             ))}
@@ -68,6 +72,45 @@ export default function BatchesPage() {
 
 /** Generic-document batches: LLM segmentation suggestion for every submission
  * not segmented yet (e.g. uploaded without LLM-assisted segmentation). */
+function DeleteBatchButton({ batch }: { batch: Batch }) {
+  const deleteBatch = useDeleteBatch()
+
+  function handleClick() {
+    const what = `the batch for "${batch.rubric.title}" (${batch.edition.name}, uploaded ${formatDateTime(batch.created_at)})`
+    if (!window.confirm(`Delete ${what} and all ${batch.item_count} of its submissions? This can't be undone.`)) return
+    deleteBatch.mutate(
+      { batchId: batch._id },
+      {
+        onError: (err) => {
+          // 409: some submissions are still being processed. Lost jobs never
+          // finish, so offer to delete anyway instead of a dead end.
+          if (err instanceof ApiError && err.status === 409) {
+            if (window.confirm('Some submissions in this batch are still being processed (or stuck if their jobs were lost). Delete anyway?'))
+              deleteBatch.mutate(
+                { batchId: batch._id, force: true },
+                { onError: (e) => window.alert(e.message || 'Failed to delete this batch.') },
+              )
+            return
+          }
+          window.alert(err.message || 'Failed to delete this batch.')
+        },
+      },
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={deleteBatch.isPending}
+      title="Delete batch and its submissions"
+      className="inline-flex items-center rounded p-0.5 text-slate-400 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
+    >
+      <TrashIcon />
+    </button>
+  )
+}
+
 function SuggestSegmentsButton({ batch }: { batch: Batch }) {
   const suggest = useSuggestBatchSegments()
   return (

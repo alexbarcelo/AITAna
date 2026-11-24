@@ -989,6 +989,28 @@ Two things worth knowing if you touch this:
   credentials are wired up, and the frontend shows whatever message comes
   back.
 
+## Deleting students, submissions and batches
+
+All behind a native `confirm()` naming what's deleted, same as rubrics.
+
+- **`DELETE /students/{id}`**: `409` if any `Submission.student` links to
+  it. MongoDB has no referential integrity (a `Link` is just a stored
+  DBRef, nothing rejects a dangling one), so this is an explicit count, not
+  a propagated DB error. Not positively testable under mongomock (sharp
+  edge #3).
+- **`DELETE /submissions/{id}`** removes the document, its
+  `GradingTrace`s and its MinIO objects (raw file plus the generic-document
+  derived folder, `storage.delete_submission_files`). Mongo first, storage
+  after and best-effort (logged): a failure there only orphans objects.
+  **`409` while in progress unless `?force=true`**: the worker's `save()` is
+  an upsert, so deleting mid-run would resurrect the document pointing at a
+  deleted file. `force` exists for lost jobs; the UI (`DeleteSubmissionButton.tsx`)
+  sends it when the user confirms deleting an in-progress submission.
+- **`DELETE /batches/{id}`** deletes the batch *and* all its submissions
+  (same helpers, `delete_submissions`/`guard_not_in_progress`), all-or-nothing
+  on the in-progress check. The UI tries without `force` and, on `409`,
+  asks again before retrying with it (`ApiError.status` in `hooks.ts`).
+
 ## Batch student import (`api/routers/students.py`)
 
 `POST /students/import` -- multipart (`file`, `format` form field). Bulk

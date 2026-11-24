@@ -1,4 +1,5 @@
 import base64
+import logging
 from datetime import UTC, datetime
 
 from beanie import Link, PydanticObjectId
@@ -8,7 +9,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from ... import storage
-from ...documents import Edition, Rubric, SegmentationSource, Student, Submission, SubmissionStatus
+from ...documents import Edition, GradingTrace, Rubric, SegmentationSource, Student, Submission, SubmissionStatus
 from ...grading.extraction import FORMAT_FILE_INFO, SEGMENTED_FORMATS, accepted_upload_extensions
 from ...grading.extraction.generic_document import (
     DocumentConversionError,
@@ -23,6 +24,8 @@ from ...settings import get_settings
 from ...worker.tasks import extract_submission_file, grade_submission, prepare_submission, suggest_segments_task
 from ..feedback_export import course_name, feedback_filename, load_answer_images, render_feedback_html
 from .llm import MODEL_ID_QUERY, require_llm_model
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
@@ -298,6 +301,44 @@ _IN_PROGRESS_STATUSES = {
     SubmissionStatus.EXTRACTING,
     SubmissionStatus.GRADING,
 }
+
+
+def guard_not_in_progress(submissions: list[Submission], force: bool) -> None:
+    """`409` if any of these is still being worked on, unless `force`. The
+    worker saves its in-memory copy after every step, and Beanie's `save()`
+    is an upsert -- deleting mid-run would get the document recreated,
+    pointing at a file that no longer exists. `force` exists for jobs that
+    were lost and will never finish (same situation as the frontend's
+    "still in progress (or stuck)" regrade confirmation)."""
+    busy = [s for s in submissions if s.status in _IN_PROGRESS_STATUSES]
+    if busy and not force:
+        what = "This submission is" if len(submissions) == 1 else f"{len(busy)} submission(s) are"
+        raise HTTPException(
+            status_code=409, detail=f"{what} still being processed; pass force=true to delete anyway."
+        )
+
+
+async def delete_submissions(submissions: list[Submission]) -> None:
+    """Delete submissions with their grading traces and stored files. Mongo
+    goes first: a storage failure afterwards only leaves orphaned objects
+    (logged), never a submission pointing at a missing file."""
+    for submission in submissions:
+        await GradingTrace.find(GradingTrace.submission.id == submission.id).delete()
+        await submission.delete()
+    for submission in submissions:
+        try:
+            storage.delete_submission_files(submission.file_object_key)
+        except Exception:
+            logger.exception("Could not delete stored files for submission %s", submission.id)
+
+
+@router.delete("/{submission_id}", status_code=204)
+async def delete_submission(submission_id: PydanticObjectId, force: bool = False) -> None:
+    submission = await Submission.get(submission_id)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    guard_not_in_progress([submission], force)
+    await delete_submissions([submission])
 
 
 async def _get_with_rubric(submission_id: PydanticObjectId) -> Submission:

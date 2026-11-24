@@ -96,3 +96,19 @@ def download_bytes(key: str) -> bytes:
     finally:
         response.close()
         response.release_conn()
+
+
+def delete_submission_files(file_object_key: str) -> None:
+    """Remove a submission's raw file plus everything derived from it (a
+    generic document's Markdown and images, under `derived_object_key`'s
+    folder). Deleting a missing object is a no-op in S3/MinIO, so this is
+    safe to call for a submission that never got that far."""
+    client = get_client()
+    bucket = get_settings().minio_bucket
+    derived_prefix = derived_object_key(file_object_key, "")
+    keys = [file_object_key] + [
+        obj.object_name for obj in client.list_objects(bucket, prefix=derived_prefix, recursive=True)
+    ]
+    for key in keys:
+        client.remove_object(bucket, key)
+    logger.info("Deleted %d object(s) for %s/%s", len(keys), bucket, file_object_key)

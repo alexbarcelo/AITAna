@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { API_URL } from '../api/client'
 import { useBatch, useBatches, useCourses, useEditions, useRegradeSubmissions, useRubrics, useStudents, useSubmissions } from '../api/hooks'
+import DeleteSubmissionButton from '../components/DeleteSubmissionButton'
 import GradingGrid from '../components/GradingGrid'
 import MatchStudentDialog from '../components/MatchStudentDialog'
 import RenameLabelDialog from '../components/RenameLabelDialog'
@@ -321,6 +322,7 @@ export default function SubmissionsPage() {
               {showRubricColumn && <th className="px-4 py-2">Rubric</th>}
               <th className="px-4 py-2">Status</th>
               <th className="px-4 py-2">Created</th>
+              <th className="px-4 py-2"></th>
             </tr>
           </thead>
           <tbody>
@@ -352,11 +354,14 @@ export default function SubmissionsPage() {
                   </div>
                 </td>
                 <td className="px-4 py-2 text-slate-500">{formatDateTime(s.created_at)}</td>
+                <td className="px-4 py-2 text-right">
+                  <DeleteSubmissionButton submission={s} iconOnly />
+                </td>
               </tr>
             ))}
             {submissions.length === 0 && (
               <tr>
-                <td colSpan={2 + Number(showFolder) + Number(showRubricColumn) + 2} className="px-4 py-6 text-center text-slate-400">
+                <td colSpan={3 + Number(showFolder) + Number(showRubricColumn) + 2} className="px-4 py-6 text-center text-slate-400">
                   No submissions match these filters.
                 </td>
               </tr>
