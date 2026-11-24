@@ -317,7 +317,7 @@ export interface paths {
          *     required; giving both is a `422` too, since a submission is one or the
          *     other.
          *
-         *     `llm_segmentation` only matters for free-form PDF rubrics: whether to
+         *     `llm_segmentation` only matters for generic-document rubrics: whether to
          *     ask the LLM for a segmentation suggestion right after conversion.
          */
         post: operations["create_submission_submissions_post"];
@@ -579,7 +579,7 @@ export interface paths {
          * Set Submission Segments
          * @description Save a professor's segmentation. Without `grade`, the submission is
          *     left `awaiting_segmentation` (any existing grades are now stale); with
-         *     it, grading is enqueued -- the only way a free-form PDF gets graded.
+         *     it, grading is enqueued -- the only way a generic document gets graded.
          *     `422` on invalid segments, or on `grade` with a question still missing
          *     its segment.
          */
@@ -625,7 +625,7 @@ export interface paths {
         put?: never;
         /**
          * Create Batch
-         * @description `llm_segmentation`: see `create_submission` (free-form PDFs only).
+         * @description `llm_segmentation`: see `create_submission` (generic documents only).
          *
          *     `match_students=false` makes every item a labelled submission (e.g.
          *     group projects): no roster auto-match, and `Submission.label` is the
@@ -722,7 +722,7 @@ export interface paths {
         put?: never;
         /**
          * Suggest Batch Segments
-         * @description LLM segmentation suggestion for every free-form PDF in this batch
+         * @description LLM segmentation suggestion for every generic document in this batch
          *     that is converted, waiting for segmentation, and has no segments yet --
          *     e.g. a batch uploaded without LLM-assisted segmentation. Never touches
          *     a submission someone already segmented.
@@ -921,7 +921,7 @@ export interface components {
     schemas: {
         /**
          * AnswerSegment
-         * @description Where one question's answer lives in a converted free-form PDF, as
+         * @description Where one question's answer lives in a converted generic document, as
          *     1-based inclusive Markdown line numbers.
          *
          *     `start_line=None` means "the student did not answer this question"
@@ -1110,8 +1110,8 @@ export interface components {
         };
         /**
          * ConvertedDocument
-         * @description Result of converting a free-form PDF submission to Markdown (see
-         *     extraction/pdf_generic.py). The Markdown itself and the images live in
+         * @description Result of converting a generic document submission to Markdown (see
+         *     extraction/generic_document.py). The Markdown itself and the images live in
          *     MinIO, only this metadata is stored on the `Submission`.
          *
          *     The stored Markdown is the coordinate system every `AnswerSegment` is
@@ -1155,7 +1155,7 @@ export interface components {
         };
         /**
          * DocumentImage
-         * @description One image extracted while converting a free-form PDF to Markdown,
+         * @description One image extracted while converting a generic document to Markdown,
          *     stored in MinIO. `line` is the 1-based Markdown line holding its
          *     `![](name)` reference -- which segment that line falls into decides
          *     which answer the image belongs to.
@@ -1185,7 +1185,7 @@ export interface components {
         };
         /**
          * DocumentView
-         * @description A converted free-form PDF, for the segmentation editor.
+         * @description A converted generic document, for the segmentation editor.
          */
         DocumentView: {
             /** Markdown */
@@ -1501,7 +1501,7 @@ export interface components {
             } | {
                 [key: string]: unknown;
             } | null;
-            /** @default pdf */
+            /** @default pdf_form */
             format: components["schemas"]["SubmissionFormat"];
             /** Grading Scale */
             grading_scale?: {
@@ -1530,7 +1530,7 @@ export interface components {
             slug?: string | null;
             course_id: components["schemas"]["PydanticObjectId"];
             edition_id?: components["schemas"]["PydanticObjectId"] | null;
-            /** @default pdf */
+            /** @default pdf_form */
             format: components["schemas"]["SubmissionFormat"];
             /** Grading Scale */
             grading_scale?: {
@@ -1711,7 +1711,7 @@ export interface components {
          *     while doing that.
          * @enum {string}
          */
-        SubmissionFormat: "pdf" | "notebook" | "pdf_generic";
+        SubmissionFormat: "pdf_form" | "notebook" | "generic_document";
         /**
          * SubmissionStatus
          * @enum {string}

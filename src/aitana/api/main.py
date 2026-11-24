@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..db import init_db
+from ..documents.rubric import migrate_legacy_formats
 from ..storage import ensure_bucket
 from .routers import batches, courses, editions, grading_traces, llm, rubrics, students, submissions
 
@@ -14,6 +15,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(na
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await migrate_legacy_formats()
     await llm.seed_llm_models_from_env()
     ensure_bucket()
     yield

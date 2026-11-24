@@ -1,7 +1,7 @@
 """Extracts student answers from a filled-in PDF form.
 
 One of the pluggable extractors dispatched by `extraction/__init__.py`'s
-`extract_answers(format, path)` for `SubmissionFormat.PDF` rubrics. Assumes
+`extract_answers(format, path)` for `SubmissionFormat.PDF_FORM` rubrics. Assumes
 the lab answer sheet is a PDF with AcroForm text fields named answer1,
 answer2, etc. -- one per `\\question` in the lab guide -- matching
 `Question.answer_key` (`grading/models.py`).

@@ -29,7 +29,7 @@ export default function UploadSubmissionPage() {
 
   // The rubric dictates the expected file format (see Rubric.format), not
   // the uploader -- falls back to the PDF picker before a rubric is chosen.
-  const fileInfo = FORMAT_FILE_INFO[selectedRubric?.format ?? 'pdf']
+  const fileInfo = FORMAT_FILE_INFO[selectedRubric?.format ?? 'pdf_form']
   const segmented = Boolean(selectedRubric && SEGMENTED_FORMATS.includes(selectedRubric.format))
 
   const needsExplicitEdition = Boolean(selectedRubric) && !fixedEdition
@@ -151,7 +151,7 @@ export default function UploadSubmissionPage() {
         )}
 
         <div>
-          <label className="block text-xs font-medium text-slate-600">Answer sheet ({fileInfo.label})</label>
+          <label className="block text-xs font-medium text-slate-600">Answer sheet ({fileInfo.uploadLabel})</label>
           <input
             required
             type="file"

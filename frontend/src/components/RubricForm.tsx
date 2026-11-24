@@ -290,7 +290,7 @@ function UploadYamlForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => vo
   const [slug, setSlug] = useState(rubric?.slug ?? '')
   const [courseId, setCourseId] = useState(rubric?.course.id ?? '')
   const [editionId, setEditionId] = useState(rubric?.edition?.id ?? '')
-  const [format, setFormat] = useState<SubmissionFormat>(rubric?.format ?? 'pdf')
+  const [format, setFormat] = useState<SubmissionFormat>(rubric?.format ?? 'pdf_form')
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -313,7 +313,7 @@ function UploadYamlForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => vo
           setSlug('')
           setCourseId('')
           setEditionId('')
-          setFormat('pdf')
+          setFormat('pdf_form')
           onDone?.()
         },
       })
@@ -394,7 +394,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
   const [slug, setSlug] = useState(rubric?.slug ?? '')
   const [courseId, setCourseId] = useState(rubric?.course.id ?? '')
   const [editionId, setEditionId] = useState(rubric?.edition?.id ?? '')
-  const [format, setFormat] = useState<SubmissionFormat>(rubric?.format ?? 'pdf')
+  const [format, setFormat] = useState<SubmissionFormat>(rubric?.format ?? 'pdf_form')
   const [gradingScaleRows, setGradingScaleRows] = useState<GradingScaleRow[]>(
     presetToRows(rubric?.grading_scale ?? GRADING_SCALE_PRESETS[0].scale),
   )
@@ -429,7 +429,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
           setSlug('')
           setCourseId('')
           setEditionId('')
-          setFormat('pdf')
+          setFormat('pdf_form')
           setGradingScaleRows(presetToRows(GRADING_SCALE_PRESETS[0].scale))
           setRubricContext('')
           setQuestions([emptyQuestion()])
@@ -609,7 +609,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
             </label>
             <label
               className={`flex items-center gap-2 text-xs ${IMAGE_FORMATS.includes(format) ? 'text-slate-600' : 'text-slate-400'}`}
-              title="Send the figures found in the answer (notebook plot outputs, images in a free-form PDF) to the LLM as images. Needs a vision-capable model. Notebooks and free-form PDFs only."
+              title="Send the figures found in the answer (notebook plot outputs, images in a generic document) to the LLM as images. Needs a vision-capable model. Notebooks and generic documents only."
             >
               <input
                 type="checkbox"
@@ -617,7 +617,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
                 checked={IMAGE_FORMATS.includes(format) && q.includeImages}
                 onChange={(e) => updateQuestion(i, { includeImages: e.target.checked })}
               />
-              Send figures to the corrector as images (notebooks and free-form PDFs, needs a vision model)
+              Send figures to the corrector as images (notebooks and generic documents, needs a vision model)
             </label>
           </div>
         ))}

@@ -19,7 +19,7 @@ def _question(**overrides) -> Question:
 
 
 async def _make_rubric(
-    course_id: str, edition_id: str | None = None, fmt: SubmissionFormat = SubmissionFormat.PDF
+    course_id: str, edition_id: str | None = None, fmt: SubmissionFormat = SubmissionFormat.PDF_FORM
 ) -> str:
     course = await Course.get(course_id)
     edition = None
@@ -510,14 +510,14 @@ async def test_answer_image_not_found(client):
     assert resp.status_code == 404
 
 
-# --- Free-form PDF segmentation ---------------------------------------------
+# --- Generic-document segmentation ------------------------------------------
 
 
 async def _make_generic_submission(client, *, llm_segmentation: bool = True, converted: bool = True) -> str:
     student_id = await _make_student(client)
     course_id = await _make_course(client)
     edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.PDF_GENERIC)
+    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
     rubric = await Rubric.get(rubric_id)
     rubric.questions = [_question(id="q1"), _question(id="q2")]
     await rubric.save()
@@ -541,6 +541,58 @@ async def test_create_generic_pdf_submission_enqueues_conversion_not_grading(cli
     submission_id = await _make_generic_submission(client, converted=False)
     assert client.delayed_submission_ids == []
     assert client.delayed_prepares == [(submission_id, client.default_llm_model_id)]
+
+
+async def test_create_generic_submission_converts_docx_to_pdf(client, minimal_docx):
+    """A .docx against a generic-document rubric is converted to PDF at
+    upload, so only a PDF is ever stored (and everything downstream is
+    unchanged)."""
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
+
+    resp = await client.post(
+        "/submissions",
+        data={"student_id": student_id, "rubric_id": rubric_id},
+        files={"file": ("answers.docx", minimal_docx("My answer"), "application/octet-stream")},
+    )
+    assert resp.status_code == 202, resp.text
+    key = resp.json()["file_object_key"]
+    assert key.endswith(".pdf")
+    assert client.fake_objects[key].startswith(b"%PDF")
+    assert client.delayed_prepares == [(resp.json()["_id"], client.default_llm_model_id)]
+
+
+async def test_create_generic_submission_rejects_unreadable_docx(client):
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
+
+    resp = await client.post(
+        "/submissions",
+        data={"student_id": student_id, "rubric_id": rubric_id},
+        files={"file": ("answers.docx", b"not a docx", "application/octet-stream")},
+    )
+    assert resp.status_code == 422
+    assert "answers.docx" in resp.json()["detail"]
+    assert await Submission.find_all().count() == 0
+
+
+async def test_create_submission_rejects_docx_for_form_pdf_rubric(client, minimal_docx):
+    """Only generic-document rubrics convert; a form-PDF rubric still needs a PDF."""
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id)  # pdf
+
+    resp = await client.post(
+        "/submissions",
+        data={"student_id": student_id, "rubric_id": rubric_id},
+        files={"file": ("answers.docx", minimal_docx("x"), "application/octet-stream")},
+    )
+    assert resp.status_code == 422
 
 
 async def test_create_generic_pdf_submission_without_llm_segmentation(client):

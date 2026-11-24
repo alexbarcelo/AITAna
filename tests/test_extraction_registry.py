@@ -1,5 +1,5 @@
 """Covers the format -> extractor dispatch itself (grading/extraction/__init__.py),
-as opposed to tests/test_extraction_pdf.py and tests/test_extraction_notebook.py,
+as opposed to tests/test_extraction_pdf_form.py and tests/test_extraction_notebook.py,
 which cover each individual extractor's parsing logic."""
 
 import json

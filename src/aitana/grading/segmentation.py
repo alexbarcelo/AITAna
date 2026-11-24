@@ -1,6 +1,6 @@
-"""LLM-assisted segmentation of a free-form PDF submission.
+"""LLM-assisted segmentation of a generic document submission.
 
-Given the Markdown a PDF was converted to (`extraction/pdf_generic.py`) and
+Given the Markdown a PDF was converted to (`extraction/generic_document.py`) and
 a rubric's questions, ask an LLM on which line each answer starts. The
 result is only a suggestion: the submission still waits for a professor to
 review it in the segmentation editor before anything is graded.
@@ -22,7 +22,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, create_model
 
-from .extraction.pdf_generic import number_lines
+from .extraction.generic_document import number_lines
 from .models import AnswerSegment, Question
 
 logger = logging.getLogger(__name__)

@@ -29,7 +29,7 @@ async def test_list_rubrics(client):
     assert len(body) == 1
     assert body[0]["slug"] == "containers"
     assert len(body[0]["questions"]) == 1
-    assert body[0]["format"] == "pdf"  # default, unchanged for existing PDF-based rubrics
+    assert body[0]["format"] == "pdf_form"  # default, unchanged for existing PDF-based rubrics
     assert body[0]["grading_scale"] == DEFAULT_GRADING_SCALE
 
 
@@ -338,7 +338,7 @@ async def test_upload_rubric_yaml_defaults_to_pdf_format(client):
         files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC, "application/x-yaml")},
     )
     assert resp.status_code == 201
-    assert resp.json()["format"] == "pdf"
+    assert resp.json()["format"] == "pdf_form"
 
 
 async def test_upload_rubric_yaml_with_format_form_field(client):
@@ -369,11 +369,11 @@ async def test_upload_rubric_yaml_form_field_overrides_format_key(client):
     yaml_with_format = YAML_RUBRIC + b"format: notebook\n"
     resp = await client.post(
         "/rubrics/upload",
-        data={"course_id": course_id, "format": "pdf"},
+        data={"course_id": course_id, "format": "pdf_form"},
         files={"yaml_file": ("containers_questions.yaml", yaml_with_format, "application/x-yaml")},
     )
     assert resp.status_code == 201
-    assert resp.json()["format"] == "pdf"
+    assert resp.json()["format"] == "pdf_form"
 
 
 async def test_upload_rubric_yaml_invalid_format_key_422(client):
@@ -875,3 +875,36 @@ async def test_create_rubric_rejects_output_and_image_toggles_for_pdf(client):
     )
     assert resp.status_code == 201, resp.text
     assert resp.json()["questions"][0]["include_outputs"] is True
+
+
+async def test_legacy_format_values_still_accepted(client):
+    """Pre-rename values (`pdf`, `pdf_generic`) are read as their current
+    names wherever a format is parsed -- old YAML files, API callers."""
+    assert SubmissionFormat("pdf") is SubmissionFormat.PDF_FORM
+    assert SubmissionFormat("pdf_generic") is SubmissionFormat.GENERIC_DOCUMENT
+    course_id = await _make_course(client)
+    resp = await client.post(
+        "/rubrics/upload",
+        data={"course_id": course_id},
+        files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC + b"format: pdf_generic\n", "application/x-yaml")},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["format"] == "generic_document"
+
+
+async def test_migrate_legacy_formats_rewrites_stored_rubrics(client):
+    from aitana.documents.rubric import migrate_legacy_formats
+
+    course_id = await _make_course(client)
+    course = await Course.get(course_id)
+    for slug, fmt in [("a", SubmissionFormat.PDF_FORM), ("b", SubmissionFormat.GENERIC_DOCUMENT)]:
+        await Rubric(slug=slug, title=slug, course=course, format=fmt, questions=[]).insert()
+    collection = Rubric.get_pymongo_collection()
+    # Simulate rubrics stored before the rename.
+    await collection.update_one({"slug": "a"}, {"$set": {"format": "pdf"}})
+    await collection.update_one({"slug": "b"}, {"$set": {"format": "pdf_generic"}})
+
+    await migrate_legacy_formats()
+
+    stored = {doc["slug"]: doc["format"] async for doc in collection.find({})}
+    assert stored == {"a": "pdf_form", "b": "generic_document"}

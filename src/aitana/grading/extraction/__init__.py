@@ -15,15 +15,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..models import ExtractionResult, SubmissionFormat
-from . import notebook, pdf
+from . import notebook, pdf_form
 
-# `pdf_generic` is deliberately absent from `_EXTRACTORS`: its answers come
+# `generic_document` is deliberately absent from `_EXTRACTORS`: its answers come
 # from the Markdown converted once at upload plus the professor's segments
-# (both stored), not from re-reading the raw file -- see pdf_generic.py and
+# (both stored), not from re-reading the raw file -- see generic_document.py and
 # worker/tasks.py's `extract_submission_file`.
 
 _EXTRACTORS: dict[SubmissionFormat, Callable[[Path], ExtractionResult]] = {
-    SubmissionFormat.PDF: pdf.extract_answers,
+    SubmissionFormat.PDF_FORM: pdf_form.extract_answers,
     SubmissionFormat.NOTEBOOK: notebook.extract_answers,
 }
 
@@ -31,21 +31,34 @@ _EXTRACTORS: dict[SubmissionFormat, Callable[[Path], ExtractionResult]] = {
 # shared by storage.object_key() (upload) and the download endpoint
 # (Content-Type + filename) so both stay in lockstep with the extractors above.
 FORMAT_FILE_INFO: dict[SubmissionFormat, tuple[str, str]] = {
-    SubmissionFormat.PDF: (".pdf", "application/pdf"),
+    SubmissionFormat.PDF_FORM: (".pdf", "application/pdf"),
     SubmissionFormat.NOTEBOOK: (".ipynb", "application/x-ipynb+json"),
-    SubmissionFormat.PDF_GENERIC: (".pdf", "application/pdf"),
+    SubmissionFormat.GENERIC_DOCUMENT: (".pdf", "application/pdf"),
 }
 
+# Other extensions a format accepts at upload, converted to its
+# FORMAT_FILE_INFO extension before storing (generic_document.document_to_pdf) --
+# so storage, extraction and download only ever see the stored format.
+UPLOAD_CONVERSIONS: dict[SubmissionFormat, frozenset[str]] = {
+    SubmissionFormat.GENERIC_DOCUMENT: frozenset({".docx"}),
+}
+
+
+def accepted_upload_extensions(fmt: SubmissionFormat) -> list[str]:
+    """Every extension an upload against a `fmt` rubric may have."""
+    return [FORMAT_FILE_INFO[fmt][0], *sorted(UPLOAD_CONVERSIONS.get(fmt, ()))]
+
+
 # Formats that need converting + segmenting before they can be graded (see
-# pdf_generic.py) -- their submissions go through `awaiting_segmentation`.
-SEGMENTED_FORMATS: frozenset[SubmissionFormat] = frozenset({SubmissionFormat.PDF_GENERIC})
+# generic_document.py) -- their submissions go through `awaiting_segmentation`.
+SEGMENTED_FORMATS: frozenset[SubmissionFormat] = frozenset({SubmissionFormat.GENERIC_DOCUMENT})
 
 # Formats whose extractor fills `ExtractionResult.answers_with_outputs` /
 # `.images` -- i.e. where `Question.include_outputs` / `.include_images` mean
 # something (enforced by Rubric's validator). Supporting images for another
 # format = fill `images` in its extractor and add it here.
 OUTPUT_FORMATS: frozenset[SubmissionFormat] = frozenset({SubmissionFormat.NOTEBOOK})
-IMAGE_FORMATS: frozenset[SubmissionFormat] = frozenset({SubmissionFormat.NOTEBOOK, SubmissionFormat.PDF_GENERIC})
+IMAGE_FORMATS: frozenset[SubmissionFormat] = frozenset({SubmissionFormat.NOTEBOOK, SubmissionFormat.GENERIC_DOCUMENT})
 
 
 def extract_answers(fmt: SubmissionFormat, file_path: Path) -> ExtractionResult:

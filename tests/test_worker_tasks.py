@@ -291,7 +291,7 @@ async def test_grade_answers_forwards_images_only_for_include_images(mongo_db, m
 
 
 async def test_extract_segmented_submission_reads_stored_markdown_and_images(mongo_db, monkeypatch):
-    """Free-form PDFs are sliced from the stored Markdown + segments, and only
+    """Generic documents are sliced from the stored Markdown + segments, and only
     images of `include_images` questions get downloaded."""
     import base64
 
@@ -317,7 +317,7 @@ async def test_extract_segmented_submission_reads_stored_markdown_and_images(mon
         slug="free",
         title="Free",
         course=course,
-        format=SubmissionFormat.PDF_GENERIC,
+        format=SubmissionFormat.GENERIC_DOCUMENT,
         questions=[
             Question(id="q1", title="Q1", question="?", rubric="R", include_images=True),
             Question(id="q2", title="Q2", question="?", rubric="R"),
@@ -362,7 +362,7 @@ async def test_prepare_converts_pdf_and_waits_for_segmentation(mongo_db, monkeyp
 
     course = Course(name="BDM", slug="bdm")
     await course.insert()
-    rubric = Rubric(slug="free", title="Free", course=course, format=SubmissionFormat.PDF_GENERIC, questions=[])
+    rubric = Rubric(slug="free", title="Free", course=course, format=SubmissionFormat.GENERIC_DOCUMENT, questions=[])
     await rubric.insert()
     edition = Edition(name="2026/27", slug="2026_27")
     await edition.insert()

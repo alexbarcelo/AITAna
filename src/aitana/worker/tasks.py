@@ -26,7 +26,7 @@ from ..documents import (
     resolve_llm_model,
 )
 from ..grading.extraction import FORMAT_FILE_INFO, SEGMENTED_FORMATS, extract_answers
-from ..grading.extraction.pdf_generic import (
+from ..grading.extraction.generic_document import (
     MARKDOWN_NAME,
     convert_pdf,
     extract_segmented,
@@ -119,7 +119,7 @@ async def _grade_submission(
 
 @celery_app.task(name="aitana.prepare_submission")
 def prepare_submission(submission_id: str, segment_model_id: str | None = None) -> None:
-    """Free-form PDFs: convert to Markdown (+ images), then, with
+    """Generic documents: convert to Markdown (+ images), then, with
     `segment_model_id`, ask that model for a segmentation suggestion. Always
     ends in `awaiting_segmentation` (or `failed` if conversion failed) --
     grading only starts once a professor confirms the segments."""
@@ -233,7 +233,7 @@ def extract_submission_file(submission: Submission) -> ExtractionResult:
     images back (they're never stored, see AGENTS.md "Cell outputs and image
     inputs").
 
-    Free-form PDFs (`SEGMENTED_FORMATS`) are sliced from their stored
+    Generic documents (`SEGMENTED_FORMATS`) are sliced from their stored
     Markdown + segments instead; only the images of `include_images`
     questions are downloaded."""
     if submission.rubric.format in SEGMENTED_FORMATS:

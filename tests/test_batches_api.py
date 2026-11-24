@@ -16,7 +16,7 @@ def _question(**overrides) -> Question:
 
 
 async def _make_rubric(
-    course_id: str, edition_id: str | None = None, fmt: SubmissionFormat = SubmissionFormat.PDF
+    course_id: str, edition_id: str | None = None, fmt: SubmissionFormat = SubmissionFormat.PDF_FORM
 ) -> str:
     course = await Course.get(course_id)
     edition = None
@@ -236,6 +236,51 @@ async def test_create_batch_rejects_file_extension_mismatching_rubric_format(cli
     )
     assert resp.status_code == 422
     assert await Batch.find_all().count() == 0
+
+
+async def test_create_generic_batch_converts_docx_items(client, minimal_docx):
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
+
+    mixed_zip = _zip_bytes(
+        {
+            "Lovelace Ada_1001_assignsubmission_file": [("answers.docx", minimal_docx("Ada"))],
+            "Turing Alan_1002_assignsubmission_file": [("answers.pdf", b"%PDF-1.4 alan")],
+        }
+    )
+    resp = await client.post(
+        "/batches",
+        data={"rubric_id": rubric_id, "type": "atenea"},
+        files={"file": ("submissions.zip", mixed_zip, "application/zip")},
+    )
+    assert resp.status_code == 202, resp.text
+    stored = [client.fake_objects[s["file_object_key"]] for s in resp.json()["submissions"]]
+    assert all(s["file_object_key"].endswith(".pdf") for s in resp.json()["submissions"])
+    assert all(data.startswith(b"%PDF") for data in stored)
+    assert b"%PDF-1.4 alan" in stored  # PDFs stored untouched
+
+
+async def test_create_generic_batch_unreadable_docx_writes_nothing(client, minimal_docx):
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
+
+    bad_zip = _zip_bytes(
+        {
+            "Lovelace Ada_1001_assignsubmission_file": [("answers.docx", minimal_docx("Ada"))],
+            "Turing Alan_1002_assignsubmission_file": [("answers.docx", b"corrupt")],
+        }
+    )
+    resp = await client.post(
+        "/batches",
+        data={"rubric_id": rubric_id, "type": "atenea"},
+        files={"file": ("submissions.zip", bad_zip, "application/zip")},
+    )
+    assert resp.status_code == 422
+    assert "Turing Alan_1002_assignsubmission_file/answers.docx" in resp.json()["detail"]
+    assert await Batch.find_all().count() == 0
+    assert await Submission.find_all().count() == 0
 
 
 async def test_create_batch_rejects_non_zip_file(client):

@@ -7,8 +7,9 @@ import { IN_PROGRESS_STATUSES, submissionName } from '../api/types'
 import StatusBadge from '../components/StatusBadge'
 
 /**
- * Side-by-side editor for a free-form PDF's segmentation (AGENTS.md "Free-form
- * PDF submissions"): the PDF on the left, the Markdown it was converted to on
+ * Side-by-side editor for a generic document's segmentation (AGENTS.md
+ * "Generic-document submissions"): the PDF (a .docx upload was already
+ * converted to one) on the left, the Markdown it was converted to on
  * the right -- numbered lines, exactly what the grading LLM will see. Pick a
  * question, click the line where its answer starts (shift-click: where it
  * ends, to leave out dead lines). Segments are line numbers into that

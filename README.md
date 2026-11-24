@@ -8,8 +8,8 @@ review it and later analyze results across students/rubrics.
 
 The submission format is pluggable per rubric (`Rubric.format`): a filled-in
 PDF form with named AcroForm text fields, a Jupyter notebook with answer
-cells tagged `aitana:answer`, or a free-form PDF split into answers by the
-professor (optionally LLM-assisted) -- see "Submission formats" below.
+cells tagged `aitana:answer`, or a generic document (any PDF, or a Word
+`.docx`) split into answers by the professor (optionally LLM-assisted) -- see "Submission formats" below.
 
 **Status: WIP.** A FastAPI + MongoDB + MinIO + Celery service with a React
 frontend. See [`AGENTS.md`](AGENTS.md) for implementation details, known
@@ -39,7 +39,7 @@ React (Vite) --> FastAPI --> MongoDB (students, courses, editions, rubrics, subm
   something reused across years (a lab whose task doesn't change); set it
   for something unique to one term (an exam). `created_at`/`updated_at` are
   how you recognize an updated version of a reused rubric. Fixes which
-  **format** (`pdf`, `notebook` or `pdf_generic`) its submissions must be uploaded as --
+  **format** (`pdf_form`, `notebook` or `generic_document`) its submissions must be uploaded as --
   see "Submission formats" below. Created either by uploading a YAML file
   or by filling in a form (see below).
 - **submissions** -- one per student x rubric: the extracted answers, and,
@@ -58,15 +58,15 @@ Grading is asynchronous: uploading a submission returns immediately
 (using whichever extractor the rubric's format selects) and grades each
 question in the background, updating the same document as it goes
 (`extracting` -> `grading` -> `graded`, or `failed` with an error).
-Free-form PDFs (`pdf_generic`) first go `converting` -> (`segmenting`) ->
+Generic documents (`generic_document`) first go `converting` -> (`segmenting`) ->
 `awaiting_segmentation`, and only get graded once a professor confirms
 where each answer is.
 
 ## Submission formats
 
-A rubric fixes one `format` at creation time (default `pdf`):
+A rubric fixes one `format` at creation time (default `pdf_form`):
 
-- **`pdf`** -- a filled-in PDF with AcroForm text fields named `answer1`,
+- **`pdf_form`** -- a filled-in PDF with AcroForm text fields named `answer1`,
   `answer2`, etc. (one per `\question` in the lab guide), read via `pypdf`.
 - **`notebook`** -- a `.ipynb` file where the cell(s) holding a question's
   answer carry a Jupyter cell tag `aitana:answer` and further metadata
@@ -84,7 +84,11 @@ A rubric fixes one `format` at creation time (default `pdf`):
   `nbformat` dependency -- see `src/aitana/grading/extraction/notebook.py`'s
   module docstring for why).
 
-- **`pdf_generic`** -- any PDF, no form fields needed. Right after upload
+- **`generic_document`** ("Generic document" in the UI) -- any PDF, no form
+  fields needed, or a Word `.docx`, which is converted to PDF on upload
+  (PyMuPDF's `Document.convert_to_pdf`) so only a PDF is ever stored. MuPDF
+  lays out the `.docx` itself, so tables and complex formatting can come out
+  rougher than in a PDF exported from Word. Right after upload
   it's converted to Markdown with PyMuPDF (`Document.to_markdown`, backed
   by `pymupdf4llm`), images included. Then each answer has to be located
   -- **segmentation**: in the segmentation editor (PDF and numbered
@@ -103,7 +107,10 @@ A rubric fixes one `format` at creation time (default `pdf`):
 
 A question's `field` (defaults to `id`) is the answer-slot name under
 whichever format the rubric uses -- the PDF field name or the notebook tag
-suffix (or, for `pdf_generic`, the segmentation hint above). Adding another format means writing one extractor function in
+suffix (or, for `generic_document`, the segmentation hint above). Rubrics created before the format rename stored `pdf`/`pdf_generic`; those
+values are still accepted everywhere (YAML, API) and stored rubrics are
+rewritten to `pdf_form`/`generic_document` on API startup.
+Adding another format means writing one extractor function in
 `src/aitana/grading/extraction/` and registering it there; see
 `AGENTS.md`'s "Pluggable submission formats" section for the full shape.
 
@@ -158,8 +165,8 @@ src/aitana/
   storage.py     MinIO wrapper (upload/download bytes)
   slugify.py     shared slug-from-text helper (rubrics, courses, editions)
   documents/     Beanie documents: Student, Course, Edition, Rubric, Submission
-  grading/       extraction/ (pluggable per-format answer extraction: pdf,
-                 notebook), prompt building, LLM provider factory --
+  grading/       extraction/ (pluggable per-format answer extraction: pdf_form,
+                 notebook, generic_document), prompt building, LLM provider factory --
                  mostly carried over from the original CLI PoC as-is
   api/           FastAPI app + routers (students, courses, editions, rubrics,
                  submissions)
@@ -204,7 +211,7 @@ curl -X POST http://localhost:8000/rubrics -H 'Content-Type: application/json' -
 ```yaml
 title: Containers lab    # optional; falls back to a title-cased slug
 course_slug: containers  # optional alternative to the course_id form field
-format: pdf              # optional, defaults to pdf; also notebook, pdf_generic
+format: pdf_form         # optional, defaults to pdf_form; also notebook, generic_document
 grading_scale:           # optional; {level_id: description}, worst -> best; defaults to the 4-level scale below
   not_attempted: Blank, off-topic, or shows no understanding of the question.
   some_effort: On-topic but misses most key points or has major misconceptions.
@@ -236,7 +243,7 @@ a top-level `course_slug:` key in the YAML -- matching an existing course's
 slug (`GET /courses` to look one up); uploading without either is a `422`.
 Its edition (optional) works the same way via `edition_id`/`edition_slug:`
 (quote the slug if it looks like a number, e.g. `"2026_27"`).
-Its format (optional, defaults to `pdf`) works the same way via a `format`
+Its format (optional, defaults to `pdf_form`) works the same way via a `format`
 form field or a top-level `format:` key. Its grading scale (optional,
 defaults to the 4-level scale above) has no form-field equivalent -- only
 the top-level `grading_scale:` key, or the frontend's "Build manually" form

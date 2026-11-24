@@ -4,7 +4,7 @@ export type Student = components['schemas']['Student']
 export type Question = components['schemas']['Question']
 export type Grade = components['schemas']['Grade']
 export type AnsweredQuestion = components['schemas']['AnsweredQuestion']
-/** Free-form PDFs: where one question's answer lives, as 1-based inclusive
+/** Generic documents: where one question's answer lives, as 1-based inclusive
  * Markdown line numbers (`grading/models.py`'s `AnswerSegment`).
  * `start_line: null` = not answered; `end_line: null` = until the next
  * segment starts (or the end of the document). */
@@ -51,20 +51,39 @@ export type GradingScale = Record<string, string>
  * Per-format file-picker metadata, kept next to the backend's own
  * `FORMAT_FILE_INFO` (`grading/extraction/__init__.py`) so the two don't
  * drift -- update both together if a format's extension/label ever changes.
+ * `label` names the format (rubric form), `uploadLabel` what the upload
+ * accepts (the backend's `accepted_upload_extensions`: a generic document
+ * may also be a .docx, converted to PDF on upload), `fileLabel` what's
+ * stored and downloaded (always the format's own extension).
  */
-export const FORMAT_FILE_INFO: Record<SubmissionFormat, { extension: string; accept: string; label: string }> = {
-  pdf: { extension: '.pdf', accept: 'application/pdf', label: 'PDF' },
-  notebook: { extension: '.ipynb', accept: '.ipynb,application/x-ipynb+json', label: 'Jupyter notebook (.ipynb)' },
-  pdf_generic: { extension: '.pdf', accept: 'application/pdf', label: 'PDF (free-form)' },
+export const FORMAT_FILE_INFO: Record<
+  SubmissionFormat,
+  { extension: string; accept: string; label: string; uploadLabel: string; fileLabel: string }
+> = {
+  pdf_form: { extension: '.pdf', accept: 'application/pdf', label: 'PDF form', uploadLabel: 'PDF', fileLabel: 'PDF' },
+  notebook: {
+    extension: '.ipynb',
+    accept: '.ipynb,application/x-ipynb+json',
+    label: 'Jupyter notebook (.ipynb)',
+    uploadLabel: 'Jupyter notebook (.ipynb)',
+    fileLabel: 'notebook',
+  },
+  generic_document: {
+    extension: '.pdf',
+    accept: '.pdf,application/pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    label: 'Generic document',
+    uploadLabel: 'PDF or Word .docx',
+    fileLabel: 'PDF',
+  },
 }
 
 /** Mirrors the backend's `SEGMENTED_FORMATS` (`grading/extraction/__init__.py`):
  * formats converted to Markdown and split into answers by a professor
  * before grading. */
-export const SEGMENTED_FORMATS: SubmissionFormat[] = ['pdf_generic']
+export const SEGMENTED_FORMATS: SubmissionFormat[] = ['generic_document']
 /** Mirrors the backend's `IMAGE_FORMATS` / `OUTPUT_FORMATS`: which formats
  * `Question.include_images` / `.include_outputs` are allowed for. */
-export const IMAGE_FORMATS: SubmissionFormat[] = ['notebook', 'pdf_generic']
+export const IMAGE_FORMATS: SubmissionFormat[] = ['notebook', 'generic_document']
 export const OUTPUT_FORMATS: SubmissionFormat[] = ['notebook']
 
 /**
@@ -185,7 +204,7 @@ export interface Submission {
   status: SubmissionStatus
   answers: AnsweredQuestion[]
   error?: string | null
-  /** Free-form PDFs only (see `SEGMENTED_FORMATS`). */
+  /** Generic documents only (see `SEGMENTED_FORMATS`). */
   document?: ConvertedDocument | null
   segments?: AnswerSegment[] | null
   segmentation_source?: 'llm' | 'manual' | null

@@ -129,13 +129,31 @@ class SubmissionFormat(str, Enum):
     while doing that.
     """
 
-    PDF = "pdf"
+    # A PDF form: answers are its named AcroForm text fields.
+    PDF_FORM = "pdf_form"
     NOTEBOOK = "notebook"
-    # A free-form PDF (no AcroForm fields): converted to Markdown once, then
-    # split into per-question answers ("segmentation", see
-    # extraction/pdf_generic.py) by a professor, optionally helped by an LLM
-    # suggestion (grading/segmentation.py). Graded only after that.
-    PDF_GENERIC = "pdf_generic"
+    # Any PDF with no AcroForm fields, or a .docx converted to PDF on upload
+    # (`UPLOAD_CONVERSIONS`). Converted to Markdown once, then split into
+    # per-question answers ("segmentation", see
+    # extraction/generic_document.py) by a professor, optionally helped by an
+    # LLM suggestion (grading/segmentation.py). Graded only after that.
+    GENERIC_DOCUMENT = "generic_document"
+
+    @classmethod
+    def _missing_(cls, value: object) -> "SubmissionFormat | None":
+        """Accept the pre-rename values (`LEGACY_FORMAT_VALUES`) wherever a
+        format is parsed -- stored rubrics not migrated yet, old rubric YAML
+        files, API callers -- so the rename breaks nothing. They never come
+        back out: the canonical value is what's serialized (and the only one
+        the OpenAPI schema lists)."""
+        canonical = LEGACY_FORMAT_VALUES.get(value) if isinstance(value, str) else None
+        return cls(canonical) if canonical is not None else None
+
+
+# Format values before the rename to `pdf_form`/`generic_document`. Also
+# used by the startup migration rewriting stored rubrics
+# (documents/rubric.py's `migrate_legacy_formats`).
+LEGACY_FORMAT_VALUES: dict[str, str] = {"pdf": "pdf_form", "pdf_generic": "generic_document"}
 
 
 class ExtractedImage(BaseModel):
@@ -173,7 +191,7 @@ class ExtractionResult(BaseModel):
 
 
 class DocumentImage(BaseModel):
-    """One image extracted while converting a free-form PDF to Markdown,
+    """One image extracted while converting a generic document to Markdown,
     stored in MinIO. `line` is the 1-based Markdown line holding its
     `![](name)` reference -- which segment that line falls into decides
     which answer the image belongs to."""
@@ -186,8 +204,8 @@ class DocumentImage(BaseModel):
 
 
 class ConvertedDocument(BaseModel):
-    """Result of converting a free-form PDF submission to Markdown (see
-    extraction/pdf_generic.py). The Markdown itself and the images live in
+    """Result of converting a generic document submission to Markdown (see
+    extraction/generic_document.py). The Markdown itself and the images live in
     MinIO, only this metadata is stored on the `Submission`.
 
     The stored Markdown is the coordinate system every `AnswerSegment` is
@@ -202,7 +220,7 @@ class ConvertedDocument(BaseModel):
 
 
 class AnswerSegment(BaseModel):
-    """Where one question's answer lives in a converted free-form PDF, as
+    """Where one question's answer lives in a converted generic document, as
     1-based inclusive Markdown line numbers.
 
     `start_line=None` means "the student did not answer this question"
@@ -228,9 +246,9 @@ class Question(BaseModel):
     id: str
     # Identifies where in the submitted file this question's answer lives --
     # meaning depends on the owning Rubric's `format` (see SubmissionFormat):
-    # a PDF AcroForm text-field name for `pdf` (e.g. "answer1"), or the
+    # a PDF AcroForm text-field name for `pdf_form` (e.g. "answer1"), or the
     # value content of an `aitana/id` cell's metadata for `notebook`. For
-    # `pdf_generic` it's an optional hint for LLM-assisted segmentation: the
+    # `generic_document` it's an optional hint for LLM-assisted segmentation: the
     # label the question has in the student's document (e.g. "Exercise 3").
     # Defaults to `id` since both conventions typically name these answer1,
     # answer2, etc., lining up 1:1 with `id`.

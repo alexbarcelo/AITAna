@@ -448,7 +448,7 @@ export function useCreateSubmission() {
       label?: string
       rubricId: string
       editionId?: string
-      /** Free-form PDF rubrics only: ask the LLM for a segmentation suggestion. */
+      /** Generic-document rubrics only: ask the LLM for a segmentation suggestion. */
       llmSegmentation?: boolean
     }) => {
       const formData = new FormData()
@@ -559,7 +559,7 @@ export function useRegradeSubmissions() {
   })
 }
 
-// ---- Free-form PDF segmentation ----
+// ---- Generic-document segmentation ----
 
 export function useSubmissionDocument(id: string | undefined, enabled = true) {
   return useQuery({

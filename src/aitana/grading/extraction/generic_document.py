@@ -1,8 +1,11 @@
-"""Free-form PDF submissions: Markdown conversion and segmentation.
+"""Generic-document submissions (`generic_document`): Markdown conversion and
+segmentation.
 
-Unlike `pdf.py` (AcroForm fields name each answer) a free-form PDF has no
+Unlike `pdf_form.py` (AcroForm fields name each answer) a generic document has no
 structure telling which part answers which question. The flow is:
 
+0. A `.docx` upload is converted to PDF right away (`document_to_pdf`), so
+   only a PDF is ever stored and everything below works on a PDF.
 1. `convert_pdf` turns the PDF into one Markdown document (pymupdf4llm)
    plus the images found in it, once, right after upload. Image references
    are rewritten to stable names (`![](img-0003.png)`), so each image sits
@@ -104,6 +107,29 @@ def _to_markdown_chunks(path: Path, image_dir: Path) -> list:
         leftover.unlink()
     with pymupdf.open(path) as doc:
         return doc.to_markdown(use_ocr=False, **kwargs)
+
+
+class DocumentConversionError(ValueError):
+    """An uploaded non-PDF document PyMuPDF couldn't turn into a PDF."""
+
+
+def document_to_pdf(data: bytes, extension: str) -> bytes:
+    """Convert an uploaded Office document (e.g. `.docx`, see
+    `extraction.UPLOAD_CONVERSIONS`) to PDF bytes, with PyMuPDF's own Office
+    support (`Document.convert_to_pdf`). Runs at upload time so only a PDF is
+    ever stored: the Markdown conversion, the segmentation editor's viewer and
+    the download all keep working on a PDF unchanged."""
+    import pymupdf  # heavy import, only needed where conversion actually runs
+
+    try:
+        with pymupdf.open(stream=data, filetype=extension.lstrip(".")) as doc:
+            if doc.page_count == 0:
+                raise DocumentConversionError("the document has no pages")
+            return doc.convert_to_pdf()
+    except DocumentConversionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- pymupdf raises library-specific error types
+        raise DocumentConversionError(f"could not convert the {extension} file to PDF: {exc}") from exc
 
 
 def convert_pdf(path: Path) -> ConversionOutput:

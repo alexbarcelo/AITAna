@@ -39,7 +39,7 @@ this section before touching any of `Course`, `Edition`, `Rubric.course`/
   editions, left unset and reused as-is across years; an exam is typically
   unique to one edition, set it). `created_at`/`updated_at` (not a version
   field) are how a TA recognizes "this is an updated version" of a reused
-  rubric across years. `format: SubmissionFormat` (default `pdf`) fixes
+  rubric across years. `format: SubmissionFormat` (default `pdf_form`) fixes
   which file format this rubric's submissions must be uploaded as -- see
   "Pluggable submission formats" below for why this lives on the rubric, not
   the submission. `grading_scale: dict[str, str]` (default the original
@@ -106,12 +106,12 @@ field name" specifically, see "Pluggable submission formats" below.
 ## Pluggable submission formats
 
 Multiple document format are accepted (at the moment: AcroForm PDF documents,
-Jupyter Notebook .ipynb files, and free-form PDFs -- the latter has its own
-section below, "Free-form PDF submissions"). The format of the document
+Jupyter Notebook .ipynb files, and generic documents -- PDF or `.docx`; the
+latter has its own section below, "Generic-document submissions"). The format of the document
 conditions the extraction step.
 
 - **`SubmissionFormat`** (`grading/models.py`) is the enum of supported
-  formats -- currently `pdf`, `notebook` and `pdf_generic`. It lives in `grading/models.py`
+  formats -- currently `pdf_form`, `notebook` and `generic_document`. It lives in `grading/models.py`
   next to `Question`/`Grade`, not in `documents/`, for the same
   DB-agnostic-reuse reason those do (see above).
 - **Format lives on the `Rubric`, not the `Submission`.** A rubric's
@@ -123,7 +123,7 @@ conditions the extraction step.
   rubric-creation time (`POST /rubrics`'s JSON body, or `POST
   /rubrics/upload`'s `format` form field / top-level `format:` YAML key,
   same precedence order as `course_slug`/`edition_slug`), and defaults to
-  `pdf` so every rubric created before this existed keeps working
+  `pdf_form` so every rubric created before this existed keeps working
   unchanged. Editable via the edit endpoints (see
   "Editing rubrics" below), but changing `format` on a rubric that already
   has submissions against it is rejected with `409` (`_guard_format_change`)
@@ -132,7 +132,7 @@ conditions the extraction step.
   stored answers permanently unre-explainable.
 - **Extraction is pluggable** (`grading/extraction/`): `__init__.py`
   exposes `extract_answers(fmt, path) -> ExtractionResult`, dispatching
-  to `pdf.py` or `notebook.py` via a `_EXTRACTORS` dict, plus
+  to `pdf_form.py` or `notebook.py` via a `_EXTRACTORS` dict, plus
   `FORMAT_FILE_INFO: dict[SubmissionFormat, (extension, content_type)]` used
   by both the upload path (`storage.object_key`, extension-mismatch
   validation in `create_submission`) and the download path (`Content-Type`
@@ -140,7 +140,7 @@ conditions the extraction step.
   means writing one `(path) -> ExtractionResult` function in a new sibling
   module and registering it in both dicts -- nothing in `worker/tasks.py` or
   the API routers needs to change.
-- **`pdf.py`** is the `pypdf`-based AcroForm-field reader (never reports
+- **`pdf_form.py`** is the `pypdf`-based AcroForm-field reader (never reports
   untagged cells).
 - **`notebook.py`** parses a `.ipynb` submission by loading it as plain JSON
   (stdlib `json.load`, no `nbformat` dependency) and scanning `cells` for the
@@ -184,23 +184,48 @@ conditions the extraction step.
   submission_id, extension)` both take the format-derived bits as plain
   parameters (from `FORMAT_FILE_INFO`) rather than assuming PDF.
 - `create_submission` (`api/routers/submissions.py`) does one cheap
-  extension check (`file.filename` against `FORMAT_FILE_INFO[rubric.format]`)
-  and 422s on an obvious mismatch (e.g. uploading a `.ipynb` against a
-  `pdf`-format rubric) -- this is a courtesy check on the *filename*, not a
+  extension check (`file.filename` against `FORMAT_FILE_INFO[rubric.format]`,
+  plus any `UPLOAD_CONVERSIONS` extension -- see "Generic-document
+  submissions") and 422s on an obvious mismatch (e.g. uploading a `.ipynb` against a
+  `pdf_form`-format rubric) -- this is a courtesy check on the *filename*, not a
   content sniff, so a mislabeled file can still slip through to a confusing
   extraction failure at grading time; it just catches the common "wrong
   file picked in the form" case early.
 
-## Free-form PDF submissions (`pdf_generic`, "segmentation")
+## Generic-document submissions (`generic_document`, "segmentation")
 
-A PDF with no form fields: nothing in the file says which part answers
+"Generic document" in the UI (it used to be "free-form PDF", value
+`pdf_generic`; `pdf_form` used to be plain `pdf`). **Format rename**: the old
+values live on only as aliases -- `SubmissionFormat._missing_` maps
+`LEGACY_FORMAT_VALUES` (`grading/models.py`) to the current members, so
+unmigrated rubrics, old YAML files and API callers keep working, while
+serialization and the OpenAPI schema only ever show the new values.
+`migrate_legacy_formats` (`documents/rubric.py`, run in the API's
+`lifespan`) rewrites stored rubrics once. The worker doesn't run it but
+doesn't need to: it reads legacy values through the alias.
+
+A PDF with no form fields (or a `.docx`, see below): nothing in the file says which part answers
 which question, so a professor has to say it -- **segmentation** (each
-answer's span is a **segment**). Code: `grading/extraction/pdf_generic.py`
+answer's span is a **segment**). Code: `grading/extraction/generic_document.py`
 (pure: conversion, segment validation/slicing), `grading/segmentation.py`
 (LLM suggestion), `worker/tasks.py` (`prepare_submission`,
 `suggest_segments_task`, the `SEGMENTED_FORMATS` branches),
 `api/routers/submissions.py` (bottom section), `pages/SegmentationEditorPage.tsx`.
 
+- **`.docx` is converted to PDF at upload, in the API request**
+  (`generic_document.document_to_pdf`, PyMuPDF's `Document.convert_to_pdf`; no
+  LibreOffice). Which extra extensions a format accepts is
+  `extraction.UPLOAD_CONVERSIONS`; `submissions.py`'s `upload_extension` /
+  `to_stored_format` do the check and conversion for both `POST
+  /submissions` and `POST /batches` (a batch converts every item before
+  writing anything, so one unreadable file is a `422` naming it and nothing
+  is created). Only the PDF is stored -- the original `.docx` is not kept --
+  so `FORMAT_FILE_INFO` stays `.pdf` and the editor's iframe, the download and
+  the Markdown conversion need no `.docx` awareness at all. Conversion runs in
+  `run_in_threadpool` (CPU-bound). MuPDF lays out the `.docx` itself, so
+  tables come out rougher than in a Word-exported PDF (cells end up one per
+  Markdown line); that's the accepted trade-off of not depending on
+  LibreOffice.
 - **One coordinate system: Markdown line numbers.** The PDF is converted
   once, right after upload, with `pymupdf.Document.to_markdown`
   (`page_chunks=True`, `write_images=True`). Use the `Document` method, not
@@ -228,7 +253,7 @@ answer's span is a **segment**). Code: `grading/extraction/pdf_generic.py`
   names (`![](img-0003.png)`); `DocumentImage.line` is the line holding the
   ref, and an image belongs to whichever segment contains that line. Only
   `include_images` questions' images are downloaded at extraction time.
-  `pdf_generic` is in `IMAGE_FORMATS`, not in `OUTPUT_FORMATS`.
+  `generic_document` is in `IMAGE_FORMATS`, not in `OUTPUT_FORMATS`.
 - **Storage split**: Markdown + images in MinIO; only metadata
   (`Submission.document: ConvertedDocument`, `segments`,
   `segmentation_source`, `segmented_at`) in Mongo -- `Submission` is
@@ -249,7 +274,7 @@ answer's span is a **segment**). Code: `grading/extraction/pdf_generic.py`
   `awaiting_segmentation` even if it was graded (its grades are now stale).
 - **Model use**: LLM-assisted segmentation (`llm_segmentation` form field
   on `POST /submissions`/`POST /batches`, default `true`) uses the active
-  model; with it off, an upload against a `pdf_generic` rubric needs no
+  model; with it off, an upload against a `generic_document` rubric needs no
   model at all (`_upload_model`). The suggestion sanitizes the LLM output
   (out-of-range or duplicate lines become `None`) so it always validates.
 - **OCR fallback**: PyMuPDF OCRs pages that look scanned when it finds
@@ -780,7 +805,7 @@ Two creation paths, both creation-only (no update/edit endpoint; a duplicate
 
 - **`POST /rubrics`** -- JSON body (`RubricCreate`: `title`, optional
   `slug`, `course_id` **required**, optional `edition_id`, optional
-  `format`/`grading_scale` (default `pdf`/the 4-level scale, see
+  `format`/`grading_scale` (default `pdf_form`/the 4-level scale, see
   "Pluggable submission formats"/"Pluggable grading scales" below),
   `questions: list[Question]`). This is the frontend's "Build manually" form
   (`frontend/src/components/NewRubricForm.tsx`).
@@ -1206,8 +1231,8 @@ pending -> extracting (raw file -> {answer_key: text}, via whichever
    or -> failed (error message captured on the document)
 ```
 
-Free-form PDFs (`pdf_generic`) have extra states before `pending` ->
-`extracting`: see "Free-form PDF submissions" above.
+Generic documents (`generic_document`) have extra states before `pending` ->
+`extracting`: see "Generic-document submissions" above.
 
 If you change this flow, preserve the "persist extracted answers before the
 LLM step" ordering -- it was deliberately reordered during development after

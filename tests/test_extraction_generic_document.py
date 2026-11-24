@@ -1,11 +1,13 @@
-"""Free-form PDF conversion + segment slicing (grading/extraction/pdf_generic.py)."""
+"""Generic-document conversion + segment slicing (grading/extraction/generic_document.py)."""
 
 import pymupdf
 import pytest
 
-from aitana.grading.extraction.pdf_generic import (
+from aitana.grading.extraction.generic_document import (
+    DocumentConversionError,
     SegmentationError,
     convert_pdf,
+    document_to_pdf,
     extract_segmented,
     missing_questions,
     number_lines,
@@ -127,3 +129,15 @@ def test_extract_segmented_slices_lines_and_assigns_images():
 def test_number_lines_hides_images_and_truncates():
     numbered = number_lines("a\n![](img-0001.png)\n" + "x" * 50, max_line_length=10)
     assert numbered.split("\n") == ["1| a", "2| [image]", "3| " + "x" * 10 + " [...]"]
+
+
+def test_document_to_pdf_converts_docx(minimal_docx):
+    pdf = document_to_pdf(minimal_docx("Hello answer"), ".docx")
+    assert pdf.startswith(b"%PDF")
+    with pymupdf.open(stream=pdf, filetype="pdf") as doc:
+        assert "Hello answer" in doc[0].get_text()
+
+
+def test_document_to_pdf_rejects_unreadable_file():
+    with pytest.raises(DocumentConversionError, match="could not convert the .docx file"):
+        document_to_pdf(b"not a docx", ".docx")

@@ -16,9 +16,9 @@ from .student import Student
 
 class SubmissionStatus(str, Enum):
     PENDING = "pending"
-    # Free-form PDFs only (`SEGMENTED_FORMATS`): PDF -> Markdown conversion,
+    # Generic documents only (`SEGMENTED_FORMATS`): PDF -> Markdown conversion,
     # then an optional LLM segmentation suggestion, then waiting for a
-    # professor to confirm the segments -- see AGENTS.md "Free-form PDF
+    # professor to confirm the segments -- see AGENTS.md "Generic-document
     # submissions".
     CONVERTING = "converting"
     SEGMENTING = "segmenting"
@@ -119,7 +119,7 @@ class Submission(Document):
     # this is where it reads that id from.
     batch: Link[Batch] | None = None
     batch_internal_id: str | None = None
-    # Free-form PDFs only (rubric.format in `SEGMENTED_FORMATS`). `document`
+    # Generic documents only (rubric.format in `SEGMENTED_FORMATS`). `document`
     # is the conversion metadata (the Markdown and images themselves are in
     # MinIO -- this document is re-serialized on every grading save, so it
     # stays small). `segments` says where each answer lives, as line numbers

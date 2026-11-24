@@ -64,7 +64,7 @@ export default function SubmissionDetailPage() {
             href={`${API_URL}/submissions/${submission._id}/file`}
             className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
           >
-            Download {fileInfo.label}
+            Download {fileInfo.fileLabel}
           </a>
           <a
             href={`${API_URL}/submissions/${submission._id}/feedback.html`}

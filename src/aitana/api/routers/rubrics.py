@@ -31,9 +31,9 @@ class RubricCreate(BaseModel):
     edition_id: PydanticObjectId | None = None
     # Which file format this rubric's submissions will be uploaded as --
     # fixed at creation time (see Rubric.format's docstring). Defaults to
-    # `pdf`, this project's original/only format, so existing callers that
+    # `pdf_form`, this project's original format, so existing callers that
     # don't send this field keep working unchanged.
-    format: SubmissionFormat = SubmissionFormat.PDF
+    format: SubmissionFormat = SubmissionFormat.PDF_FORM
     # {level_identifier: description}, worst -> best (see
     # Rubric.grading_scale's docstring). Defaults to the original 4-level
     # scale.
@@ -345,7 +345,7 @@ async def _parse_rubric_yaml(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"Invalid format {raw['format']!r}: {exc}") from exc
     else:
-        resolved_format = SubmissionFormat.PDF
+        resolved_format = SubmissionFormat.PDF_FORM
 
     # No form-field equivalent (a dict doesn't fit a multipart field
     # cleanly) -- just the YAML key, else the default. Shape/emptiness

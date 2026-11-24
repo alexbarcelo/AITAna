@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from aitana.grading.extraction.pdf import extract_answers
+from aitana.grading.extraction.pdf_form import extract_answers
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

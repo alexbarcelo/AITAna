@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 
 from beanie import Document, Link
@@ -5,7 +6,7 @@ from pydantic import Field, field_validator, model_validator
 from pymongo import IndexModel
 
 from ..grading.extraction import IMAGE_FORMATS, OUTPUT_FORMATS
-from ..grading.models import DEFAULT_GRADING_SCALE, Question, SubmissionFormat
+from ..grading.models import DEFAULT_GRADING_SCALE, LEGACY_FORMAT_VALUES, Question, SubmissionFormat
 from .course import Course
 from .edition import Edition
 
@@ -27,11 +28,11 @@ class Rubric(Document):
     # (see `_guard_format_change` in api/routers/rubrics.py) -- a submission
     # never records its own format, only `rubric.format` at grading time, so
     # flipping it after the fact would make existing submissions
-    # unre-explainable. Defaults to `pdf` since that's this project's
-    # original/only format. A rubric's `questions[].field` values only make
+    # unre-explainable. Defaults to `pdf_form` since that's this project's
+    # original format. A rubric's `questions[].field` values only make
     # sense under this one format (see SubmissionFormat's docstring) -- don't
     # let a submission upload pick a different one per-file.
-    format: SubmissionFormat = SubmissionFormat.PDF
+    format: SubmissionFormat = SubmissionFormat.PDF_FORM
     # {level_identifier: description shown to the LLM}, e.g. {"solid": "..."}.
     # Rendered as the prompt's "# Grading" section (see
     # grading/grading.py's build_grading_section) and used to build a
@@ -81,3 +82,18 @@ class Rubric(Document):
     class Settings:
         name = "rubrics"
         indexes = [IndexModel("slug", unique=True)]
+
+
+async def migrate_legacy_formats() -> None:
+    """Rewrite rubrics still storing a pre-rename format value (`pdf`,
+    `pdf_generic`, see `LEGACY_FORMAT_VALUES`) to the current one. Run on
+    API startup; idempotent, and a no-op once every rubric is migrated.
+    Not strictly needed (`SubmissionFormat._missing_` reads the old values
+    fine) but keeps the database consistent with the code."""
+    collection = Rubric.get_pymongo_collection()
+    for legacy, canonical in LEGACY_FORMAT_VALUES.items():
+        result = await collection.update_many({"format": legacy}, {"$set": {"format": canonical}})
+        if result.modified_count:
+            logging.getLogger(__name__).info(
+                "Migrated %d rubric(s) from format %r to %r", result.modified_count, legacy, canonical
+            )

@@ -66,7 +66,7 @@ export default function BatchesPage() {
   )
 }
 
-/** Free-form PDF batches: LLM segmentation suggestion for every submission
+/** Generic-document batches: LLM segmentation suggestion for every submission
  * not segmented yet (e.g. uploaded without LLM-assisted segmentation). */
 function SuggestSegmentsButton({ batch }: { batch: Batch }) {
   const suggest = useSuggestBatchSegments()

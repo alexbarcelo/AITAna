@@ -33,6 +33,9 @@ from .submissions import (
     enqueue_initial_processing,
     enqueue_regrade,
     enqueue_segment_suggestion,
+    expected_extensions_text,
+    to_stored_format,
+    upload_extension,
 )
 
 router = APIRouter(prefix="/batches", tags=["batches"])
@@ -165,7 +168,7 @@ async def create_batch(
     match_students: bool = Form(True),
     model_id: PydanticObjectId | None = MODEL_ID_QUERY,
 ) -> BatchUploadResult:
-    """`llm_segmentation`: see `create_submission` (free-form PDFs only).
+    """`llm_segmentation`: see `create_submission` (generic documents only).
 
     `match_students=false` makes every item a labelled submission (e.g.
     group projects): no roster auto-match, and `Submission.label` is the
@@ -190,13 +193,20 @@ async def create_batch(
     # Same early-and-obvious check create_submission does for a single file
     # -- catches an obviously wrong zip before grading starts on every item.
     extension, content_type = FORMAT_FILE_INFO[rubric.format]
-    mismatched = sorted(item.folder_name for item in items if not item.filename.lower().endswith(extension))
+    item_extensions = [upload_extension(rubric.format, item.filename) for item in items]
+    mismatched = sorted(item.folder_name for item, ext in zip(items, item_extensions, strict=True) if ext is None)
     if mismatched:
         raise HTTPException(
             status_code=422,
-            detail=f"This rubric expects {extension} files ({rubric.format.value}) -- mismatched folder(s): "
-            + ", ".join(mismatched),
+            detail=f"This rubric expects {expected_extensions_text(rubric.format)} files ({rubric.format.value}) "
+            "-- mismatched folder(s): " + ", ".join(mismatched),
         )
+    # Convert every non-native file (e.g. .docx -> PDF) before writing
+    # anything, so one unreadable file fails the whole upload cleanly.
+    stored_data = [
+        await to_stored_format(rubric.format, ext, item.data, f"{item.folder_name}/{item.filename}")
+        for item, ext in zip(items, item_extensions, strict=True)
+    ]
 
     batch = Batch(rubric=rubric, edition=edition, type=type, original_filename=file.filename, item_count=len(items))
     await batch.insert()
@@ -207,7 +217,7 @@ async def create_batch(
     students = await Student.find_all().to_list() if match_students else []
 
     submissions: list[Submission] = []
-    for item in items:
+    for item, data in zip(items, stored_data, strict=True):
         submission = Submission(
             rubric=rubric,
             edition=edition,
@@ -220,7 +230,7 @@ async def create_batch(
         await submission.insert()
 
         key = storage.batch_object_key(rubric.slug, str(submission.id), extension)
-        storage.upload_file(key, item.data, content_type)
+        storage.upload_file(key, data, content_type)
         submission.file_object_key = key
         await submission.save()
 
@@ -323,7 +333,7 @@ class BatchSegmentSuggestResult(BaseModel):
 async def suggest_batch_segments(
     batch_id: PydanticObjectId, model_id: PydanticObjectId | None = MODEL_ID_QUERY
 ) -> BatchSegmentSuggestResult:
-    """LLM segmentation suggestion for every free-form PDF in this batch
+    """LLM segmentation suggestion for every generic document in this batch
     that is converted, waiting for segmentation, and has no segments yet --
     e.g. a batch uploaded without LLM-assisted segmentation. Never touches
     a submission someone already segmented."""

@@ -4,12 +4,20 @@ from datetime import UTC, datetime
 from beanie import Link, PydanticObjectId
 from beanie.operators import In
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from ... import storage
 from ...documents import Edition, Rubric, SegmentationSource, Student, Submission, SubmissionStatus
-from ...grading.extraction import FORMAT_FILE_INFO, SEGMENTED_FORMATS
-from ...grading.extraction.pdf_generic import SegmentationError, missing_questions, validate_segments
+from ...grading.extraction import FORMAT_FILE_INFO, SEGMENTED_FORMATS, accepted_upload_extensions
+from ...grading.extraction.generic_document import (
+    DocumentConversionError,
+    SegmentationError,
+    document_to_pdf,
+    missing_questions,
+    validate_segments,
+)
+from ...grading.models import SubmissionFormat
 from ...grading.models import AnswerSegment, Grade
 from ...worker.tasks import extract_submission_file, grade_submission, prepare_submission, suggest_segments_task
 from ..feedback_export import course_name, feedback_filename, load_answer_images, render_feedback_html
@@ -48,7 +56,7 @@ async def enqueue_regrade(submission: Submission, model_id: PydanticObjectId, qu
 def enqueue_initial_processing(
     submission: Submission, rubric: Rubric, model_id: PydanticObjectId | None, llm_segmentation: bool
 ) -> None:
-    """What happens right after upload: grading, or -- for a free-form PDF
+    """What happens right after upload: grading, or -- for a generic document
     rubric (`SEGMENTED_FORMATS`) -- conversion plus, if asked, an LLM
     segmentation suggestion. Grading those waits for a professor."""
     if rubric.format in SEGMENTED_FORMATS:
@@ -69,6 +77,32 @@ async def _upload_model(
     if rubric.format in SEGMENTED_FORMATS and not llm_segmentation:
         return None
     return (await require_llm_model(model_id)).id
+
+
+def upload_extension(fmt: SubmissionFormat, filename: str) -> str | None:
+    """Which of the rubric format's accepted upload extensions (its stored
+    one, plus any in `UPLOAD_CONVERSIONS`) `filename` has, or `None`. Only a
+    courtesy check on the name, not a content sniff (see AGENTS.md
+    "Pluggable submission formats")."""
+    name = filename.lower()
+    return next((ext for ext in accepted_upload_extensions(fmt) if name.endswith(ext)), None)
+
+
+def expected_extensions_text(fmt: SubmissionFormat) -> str:
+    return " or ".join(accepted_upload_extensions(fmt))
+
+
+async def to_stored_format(fmt: SubmissionFormat, extension: str, data: bytes, filename: str) -> bytes:
+    """The bytes to store for an upload: as-is when already in the format's
+    stored extension, else converted (e.g. `.docx` -> PDF for a generic
+    document rubric). Conversion is CPU-bound, so it runs off the event
+    loop; a file PyMuPDF can't read is a `422` naming it."""
+    if extension == FORMAT_FILE_INFO[fmt][0]:
+        return data
+    try:
+        return await run_in_threadpool(document_to_pdf, data, extension)
+    except DocumentConversionError as exc:
+        raise HTTPException(status_code=422, detail=f"{filename!r}: {exc}") from exc
 
 
 async def _resolve_edition(rubric: Rubric, edition_id: PydanticObjectId | None) -> Edition:
@@ -110,7 +144,7 @@ async def create_submission(
     required; giving both is a `422` too, since a submission is one or the
     other.
 
-    `llm_segmentation` only matters for free-form PDF rubrics: whether to
+    `llm_segmentation` only matters for generic-document rubrics: whether to
     ask the LLM for a segmentation suggestion right after conversion."""
     label = (label or "").strip() or None
     if (student_id is None) == (label is None):
@@ -133,13 +167,18 @@ async def create_submission(
     # in (see Rubric.format's docstring) -- this only catches an obvious
     # mismatch (wrong file picked in the form) early, as a 422 rather than a
     # confusing extraction failure once grading starts.
+    # Other accepted extensions (e.g. .docx for a generic document) are
+    # converted to the stored one before anything is written.
     extension, content_type = FORMAT_FILE_INFO[rubric.format]
     filename = file.filename or ""
-    if filename and not filename.lower().endswith(extension):
+    uploaded_extension = upload_extension(rubric.format, filename) if filename else extension
+    if uploaded_extension is None:
         raise HTTPException(
             status_code=422,
-            detail=f"This rubric expects a {extension} file ({rubric.format.value}), got {filename!r}",
+            detail=f"This rubric expects a {expected_extensions_text(rubric.format)} file "
+            f"({rubric.format.value}), got {filename!r}",
         )
+    data = await to_stored_format(rubric.format, uploaded_extension, await file.read(), filename)
 
     submission = Submission(student=student, label=label, rubric=rubric, edition=edition, file_object_key="")
     await submission.insert()
@@ -148,7 +187,7 @@ async def create_submission(
         key = storage.object_key(rubric.slug, student.student_id, str(submission.id), extension)
     else:
         key = storage.labelled_object_key(rubric.slug, str(submission.id), extension)
-    storage.upload_file(key, await file.read(), content_type)
+    storage.upload_file(key, data, content_type)
     submission.file_object_key = key
     await submission.save()
 
@@ -425,7 +464,7 @@ async def regrade_submission(
     return submission
 
 
-# --- Free-form PDF segmentation (AGENTS.md "Free-form PDF submissions") ---
+# --- Generic-document segmentation (AGENTS.md "Generic-document submissions") ---
 
 
 class DocumentImageView(BaseModel):
@@ -436,7 +475,7 @@ class DocumentImageView(BaseModel):
 
 
 class DocumentView(BaseModel):
-    """A converted free-form PDF, for the segmentation editor."""
+    """A converted generic document, for the segmentation editor."""
 
     markdown: str
     line_count: int
@@ -503,7 +542,7 @@ async def set_submission_segments(
 ) -> Submission:
     """Save a professor's segmentation. Without `grade`, the submission is
     left `awaiting_segmentation` (any existing grades are now stale); with
-    it, grading is enqueued -- the only way a free-form PDF gets graded.
+    it, grading is enqueued -- the only way a generic document gets graded.
     `422` on invalid segments, or on `grade` with a question still missing
     its segment."""
     submission = await _get_segmentable(submission_id)
