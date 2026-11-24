@@ -19,6 +19,7 @@ from ...grading.extraction.generic_document import (
 )
 from ...grading.models import SubmissionFormat
 from ...grading.models import AnswerSegment, Grade
+from ...settings import get_settings
 from ...worker.tasks import extract_submission_file, grade_submission, prepare_submission, suggest_segments_task
 from ..feedback_export import course_name, feedback_filename, load_answer_images, render_feedback_html
 from .llm import MODEL_ID_QUERY, require_llm_model
@@ -96,11 +97,18 @@ async def to_stored_format(fmt: SubmissionFormat, extension: str, data: bytes, f
     """The bytes to store for an upload: as-is when already in the format's
     stored extension, else converted (e.g. `.docx` -> PDF for a generic
     document rubric). Conversion is CPU-bound, so it runs off the event
-    loop; a file PyMuPDF can't read is a `422` naming it."""
+    loop; a file that can't be converted is a `422` naming it."""
     if extension == FORMAT_FILE_INFO[fmt][0]:
         return data
+    settings = get_settings()
     try:
-        return await run_in_threadpool(document_to_pdf, data, extension)
+        return await run_in_threadpool(
+            document_to_pdf,
+            data,
+            extension,
+            gotenberg_url=settings.gotenberg_url,
+            timeout=settings.gotenberg_timeout,
+        )
     except DocumentConversionError as exc:
         raise HTTPException(status_code=422, detail=f"{filename!r}: {exc}") from exc
 

@@ -9,6 +9,7 @@ created them.
 """
 
 import io
+import os
 import zipfile
 from pathlib import Path
 
@@ -19,7 +20,12 @@ from beanie import init_beanie
 from httpx import ASGITransport, AsyncClient
 from mongomock_motor import AsyncMongoMockClient
 
-from aitana.api.main import app
+# A developer's real .env may point GOTENBERG_URL at a live converter; the
+# suite must never call it (environment beats .env in pydantic-settings, and
+# this runs before anything calls the cached get_settings()).
+os.environ["GOTENBERG_URL"] = ""
+
+from aitana.api.main import app  # noqa: E402
 from aitana.documents import DOCUMENT_MODELS, LlmModel
 
 # mongomock-motor 0.0.36 lags current pymongo/motor in two ways Beanie relies

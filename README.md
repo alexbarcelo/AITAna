@@ -136,8 +136,11 @@ model" section for the full history.
 ```bash
 uv sync --group dev
 cp .env.example .env   # fill in the LLM provider key(s) you'll use
-docker compose up -d mongo minio redis
+docker compose up -d mongo minio redis gotenberg
 ```
+
+(`gotenberg` converts `.docx` uploads to PDF with LibreOffice. Leaving
+`GOTENBERG_URL` blank falls back to PyMuPDF's much rougher built-in conversion.)
 
 Run the API and worker (either via Docker or locally):
 

@@ -213,8 +213,7 @@ answer's span is a **segment**). Code: `grading/extraction/generic_document.py`
 `api/routers/submissions.py` (bottom section), `pages/SegmentationEditorPage.tsx`.
 
 - **`.docx` is converted to PDF at upload, in the API request**
-  (`generic_document.document_to_pdf`, PyMuPDF's `Document.convert_to_pdf`; no
-  LibreOffice). Which extra extensions a format accepts is
+  (`generic_document.document_to_pdf`). Which extra extensions a format accepts is
   `extraction.UPLOAD_CONVERSIONS`; `submissions.py`'s `upload_extension` /
   `to_stored_format` do the check and conversion for both `POST
   /submissions` and `POST /batches` (a batch converts every item before
@@ -222,10 +221,26 @@ answer's span is a **segment**). Code: `grading/extraction/generic_document.py`
   is created). Only the PDF is stored -- the original `.docx` is not kept --
   so `FORMAT_FILE_INFO` stays `.pdf` and the editor's iframe, the download and
   the Markdown conversion need no `.docx` awareness at all. Conversion runs in
-  `run_in_threadpool` (CPU-bound). MuPDF lays out the `.docx` itself, so
-  tables come out rougher than in a Word-exported PDF (cells end up one per
-  Markdown line); that's the accepted trade-off of not depending on
-  LibreOffice.
+  `run_in_threadpool`.
+- **LibreOffice does the `.docx` layout, via a Gotenberg sidecar**
+  (`gotenberg` compose service, `POST /forms/libreoffice/convert`;
+  `GOTENBERG_URL`/`GOTENBERG_TIMEOUT` settings, read by the router and passed
+  in, so `generic_document.py` stays config-free). This replaced PyMuPDF's
+  own `Document.convert_to_pdf`, measured on a real exam `.docx`: MuPDF's
+  layout made pymupdf4llm emit every table cell on its own line with stray
+  `#` headings and lose bold/lists (314 lines); the LibreOffice PDF gave real
+  Markdown tables, headings and numbered questions (100 lines). The weak link
+  was MuPDF's Office layout, not pymupdf4llm. A sidecar rather than
+  LibreOffice in the api image keeps that image ~300 MB lighter; the
+  Gotenberg image also ships Carlito/Caladea (Calibri/Cambria metric
+  clones), without which word spacing collapses in places. Apache Tika was
+  considered and rejected: flat text for PDFs, and its direct `.docx`
+  parsing yields no PDF for the editor/download. **`GOTENBERG_URL` unset or
+  blank** = fall back to MuPDF (warned once in the log) -- fine for tests
+  and quick host runs. **Set but failing** (unreachable, non-200, not a PDF)
+  = `DocumentConversionError` -> `422`, deliberately never a silent fallback
+  to the poor output. `tests/conftest.py` blanks `GOTENBERG_URL` so a real
+  `.env` never makes the suite call a live converter.
 - **One coordinate system: Markdown line numbers.** The PDF is converted
   once, right after upload, with `pymupdf.Document.to_markdown`
   (`page_chunks=True`, `write_images=True`). Use the `Document` method, not
@@ -1538,13 +1553,14 @@ conventionally uses `UPPER_SNAKE_CASE` while `Settings` fields are
 service names, correct for the `api`/`worker` containers but wrong if you
 run `uvicorn`/`celery` directly on the host -- override
 `MONGO_URI`/`MINIO_ENDPOINT`/`REDIS_URL` to `localhost:<published-port>` in
-that case, e.g. with `docker compose up -d mongo minio redis` (which
-publishes 27017/9000/6379 on localhost):
+that case, e.g. with `docker compose up -d mongo minio redis gotenberg` (which
+publishes 27017/9000/6379/3000 on localhost):
 
 ```bash
 export MONGO_URI=mongodb://localhost:27017
 export MINIO_ENDPOINT=localhost:9000
 export REDIS_URL=redis://localhost:6379/0
+export GOTENBERG_URL=http://localhost:3000   # or blank: MuPDF fallback
 uv run uvicorn aitana.api.main:app --reload
 ```
 

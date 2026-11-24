@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # Celery / Redis
     redis_url: str = "redis://localhost:6379/0"
 
+    # Office document (.docx) -> PDF conversion via a Gotenberg service
+    # (LibreOffice). Unset/blank falls back to PyMuPDF's own, much rougher
+    # conversion -- see generic_document.document_to_pdf.
+    gotenberg_url: str | None = None
+    gotenberg_timeout: float = 60.0
+
     # LLM provider credentials (OPENAI_API_KEY, ANTHROPIC_API_KEY,
     # OPENROUTER_API_KEY, OLLAMA_BASE_URL) are read directly from the
     # environment by grading/llm.py, same as before -- see .env.example.

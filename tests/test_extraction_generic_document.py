@@ -1,5 +1,6 @@
 """Generic-document conversion + segment slicing (grading/extraction/generic_document.py)."""
 
+import httpx
 import pymupdf
 import pytest
 
@@ -141,3 +142,47 @@ def test_document_to_pdf_converts_docx(minimal_docx):
 def test_document_to_pdf_rejects_unreadable_file():
     with pytest.raises(DocumentConversionError, match="could not convert the .docx file"):
         document_to_pdf(b"not a docx", ".docx")
+
+
+def _blank_pdf() -> bytes:
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "converted by LibreOffice")
+    return doc.tobytes()
+
+
+def test_document_to_pdf_uses_gotenberg_when_configured(monkeypatch):
+    calls = []
+
+    def fake_post(url, *, files, timeout):
+        calls.append((url, files, timeout))
+        return httpx.Response(200, content=_blank_pdf())
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    pdf = document_to_pdf(b"docx bytes", ".docx", gotenberg_url="http://gotenberg:3000/", timeout=5)
+    with pymupdf.open(stream=pdf, filetype="pdf") as doc:
+        assert "converted by LibreOffice" in doc[0].get_text()
+    [(url, files, timeout)] = calls
+    assert url == "http://gotenberg:3000/forms/libreoffice/convert"
+    assert files == {"files": ("document.docx", b"docx bytes")}
+    assert timeout == 5
+
+
+def test_document_to_pdf_gotenberg_error_is_not_a_silent_fallback(monkeypatch, minimal_docx):
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: httpx.Response(500, text="LibreOffice crashed"))
+    with pytest.raises(DocumentConversionError, match="converter answered 500: LibreOffice crashed"):
+        document_to_pdf(minimal_docx("x"), ".docx", gotenberg_url="http://gotenberg:3000")
+
+
+def test_document_to_pdf_gotenberg_unreachable(monkeypatch, minimal_docx):
+    def fail(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "post", fail)
+    with pytest.raises(DocumentConversionError, match="could not reach the document converter"):
+        document_to_pdf(minimal_docx("x"), ".docx", gotenberg_url="http://gotenberg:3000")
+
+
+def test_document_to_pdf_gotenberg_garbage_response(monkeypatch):
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: httpx.Response(200, content=b"not a pdf"))
+    with pytest.raises(DocumentConversionError, match="unreadable PDF"):
+        document_to_pdf(b"docx", ".docx", gotenberg_url="http://gotenberg:3000")

@@ -55,6 +55,14 @@ services:
       - mongo
       - minio
       - redis
+      - gotenberg
+
+  # .docx -> PDF conversion (LibreOffice behind an HTTP API), only called by
+  # the API at upload time. Port published for a host-run API, like the others.
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    ports:
+      - "3000:3000"
 
   worker:
     build: .

@@ -5,7 +5,9 @@ Unlike `pdf_form.py` (AcroForm fields name each answer) a generic document has n
 structure telling which part answers which question. The flow is:
 
 0. A `.docx` upload is converted to PDF right away (`document_to_pdf`), so
-   only a PDF is ever stored and everything below works on a PDF.
+   only a PDF is ever stored and everything below works on a PDF. The
+   conversion goes through LibreOffice (a Gotenberg sidecar) when one is
+   configured, else PyMuPDF's own, much rougher Office support.
 1. `convert_pdf` turns the PDF into one Markdown document (pymupdf4llm)
    plus the images found in it, once, right after upload. Image references
    are rewritten to stable names (`![](img-0003.png)`), so each image sits
@@ -113,23 +115,82 @@ class DocumentConversionError(ValueError):
     """An uploaded non-PDF document PyMuPDF couldn't turn into a PDF."""
 
 
-def document_to_pdf(data: bytes, extension: str) -> bytes:
+def document_to_pdf(
+    data: bytes,
+    extension: str,
+    *,
+    gotenberg_url: str | None = None,
+    timeout: float = 60.0,
+) -> bytes:
     """Convert an uploaded Office document (e.g. `.docx`, see
-    `extraction.UPLOAD_CONVERSIONS`) to PDF bytes, with PyMuPDF's own Office
-    support (`Document.convert_to_pdf`). Runs at upload time so only a PDF is
-    ever stored: the Markdown conversion, the segmentation editor's viewer and
-    the download all keep working on a PDF unchanged."""
+    `extraction.UPLOAD_CONVERSIONS`) to PDF bytes. Runs at upload time so only
+    a PDF is ever stored: the Markdown conversion, the segmentation editor's
+    viewer and the download all keep working on a PDF unchanged.
+
+    With `gotenberg_url` set, LibreOffice does the layout (via a Gotenberg
+    container's `/forms/libreoffice/convert`). Otherwise PyMuPDF's own Office
+    support (`Document.convert_to_pdf`) is used -- it works, but lays tables
+    out so poorly that pymupdf4llm then emits one cell per Markdown line. A
+    configured-but-failing Gotenberg is an error, never a silent fallback:
+    that would quietly bring the poor output back."""
+    if gotenberg_url:
+        pdf = _gotenberg_to_pdf(data, extension, gotenberg_url, timeout)
+    else:
+        _warn_mupdf_fallback()
+        pdf = _mupdf_to_pdf(data, extension)
+    _check_has_pages(pdf, extension)
+    return pdf
+
+
+def _gotenberg_to_pdf(data: bytes, extension: str, url: str, timeout: float) -> bytes:
+    import httpx
+
+    endpoint = url.rstrip("/") + "/forms/libreoffice/convert"
+    try:
+        response = httpx.post(endpoint, files={"files": (f"document{extension}", data)}, timeout=timeout)
+    except httpx.HTTPError as exc:
+        raise DocumentConversionError(f"could not reach the document converter ({endpoint}): {exc}") from exc
+    if response.status_code != 200:
+        detail = response.text.strip()[:300]
+        raise DocumentConversionError(
+            f"could not convert the {extension} file to PDF (converter answered {response.status_code}: {detail})"
+        )
+    return response.content
+
+
+_mupdf_fallback_warned = False
+
+
+def _warn_mupdf_fallback() -> None:
+    global _mupdf_fallback_warned
+    if not _mupdf_fallback_warned:
+        _mupdf_fallback_warned = True
+        logger.warning(
+            "GOTENBERG_URL is not set: converting Office documents with PyMuPDF, "
+            "which mangles tables. Set it to a Gotenberg service for LibreOffice-quality conversion."
+        )
+
+
+def _mupdf_to_pdf(data: bytes, extension: str) -> bytes:
     import pymupdf  # heavy import, only needed where conversion actually runs
 
     try:
         with pymupdf.open(stream=data, filetype=extension.lstrip(".")) as doc:
-            if doc.page_count == 0:
-                raise DocumentConversionError("the document has no pages")
             return doc.convert_to_pdf()
-    except DocumentConversionError:
-        raise
     except Exception as exc:  # noqa: BLE001 -- pymupdf raises library-specific error types
         raise DocumentConversionError(f"could not convert the {extension} file to PDF: {exc}") from exc
+
+
+def _check_has_pages(pdf: bytes, extension: str) -> None:
+    import pymupdf
+
+    try:
+        with pymupdf.open(stream=pdf, filetype="pdf") as doc:
+            pages = doc.page_count
+    except Exception as exc:  # noqa: BLE001
+        raise DocumentConversionError(f"converting the {extension} file produced an unreadable PDF: {exc}") from exc
+    if pages == 0:
+        raise DocumentConversionError("the document has no pages")
 
 
 def convert_pdf(path: Path) -> ConversionOutput:
