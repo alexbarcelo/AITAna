@@ -22,11 +22,18 @@ from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 from ... import storage
-from ...documents import Batch, BatchType, Rubric, Student, Submission
+from ...documents import Batch, BatchType, Rubric, Student, Submission, SubmissionStatus
 from ...grading.extraction import FORMAT_FILE_INFO
 from ..feedback_export import course_name, load_answer_images, render_feedback_html
 from .llm import MODEL_ID_QUERY, require_llm_model
-from .submissions import _SHALLOW_LINKS, _resolve_edition, enqueue_grading, enqueue_regrade
+from .submissions import (
+    _SHALLOW_LINKS,
+    _resolve_edition,
+    _upload_model,
+    enqueue_initial_processing,
+    enqueue_regrade,
+    enqueue_segment_suggestion,
+)
 
 router = APIRouter(prefix="/batches", tags=["batches"])
 
@@ -148,12 +155,14 @@ async def create_batch(
     rubric_id: PydanticObjectId = Form(...),
     edition_id: PydanticObjectId | None = Form(None),
     type: BatchType = Form(...),
+    llm_segmentation: bool = Form(True),
     model_id: PydanticObjectId | None = MODEL_ID_QUERY,
 ) -> BatchUploadResult:
-    llm_model = await require_llm_model(model_id)
+    """`llm_segmentation`: see `create_submission` (free-form PDFs only)."""
     rubric = await Rubric.get(rubric_id)
     if rubric is None:
         raise HTTPException(status_code=404, detail="Rubric not found")
+    resolved_model_id = await _upload_model(rubric, model_id, llm_segmentation)
     edition = await _resolve_edition(rubric, edition_id)
 
     raw = await file.read()
@@ -201,7 +210,7 @@ async def create_batch(
         submission.file_object_key = key
         await submission.save()
 
-        enqueue_grading(submission, llm_model.id)
+        enqueue_initial_processing(submission, rubric, resolved_model_id, llm_segmentation)
         submissions.append(submission)
 
     return BatchUploadResult(batch=batch, created=len(submissions), submissions=submissions)
@@ -290,3 +299,28 @@ async def regrade_batch(
         await enqueue_regrade(submission, llm_model.id, question_id)
 
     return BatchRegradeResult(regraded=len(submissions))
+
+
+class BatchSegmentSuggestResult(BaseModel):
+    suggested: int
+
+
+@router.post("/{batch_id}/segments/suggest", response_model=BatchSegmentSuggestResult, status_code=202)
+async def suggest_batch_segments(
+    batch_id: PydanticObjectId, model_id: PydanticObjectId | None = MODEL_ID_QUERY
+) -> BatchSegmentSuggestResult:
+    """LLM segmentation suggestion for every free-form PDF in this batch
+    that is converted, waiting for segmentation, and has no segments yet --
+    e.g. a batch uploaded without LLM-assisted segmentation. Never touches
+    a submission someone already segmented."""
+    llm_model = await require_llm_model(model_id)
+    batch = await Batch.get(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    submissions = await Submission.find(
+        Submission.batch.id == batch_id, Submission.status == SubmissionStatus.AWAITING_SEGMENTATION
+    ).to_list()
+    pending = [s for s in submissions if s.document is not None and s.segments is None]
+    for submission in pending:
+        await enqueue_segment_suggestion(submission, llm_model.id)
+    return BatchSegmentSuggestResult(suggested=len(pending))

@@ -2,6 +2,9 @@ import type { SubmissionStatus } from '../api/types'
 
 const STYLES: Record<SubmissionStatus, string> = {
   pending: 'bg-slate-100 text-slate-700',
+  converting: 'bg-amber-100 text-amber-800',
+  segmenting: 'bg-amber-100 text-amber-800',
+  awaiting_segmentation: 'bg-violet-100 text-violet-800',
   extracting: 'bg-amber-100 text-amber-800',
   grading: 'bg-amber-100 text-amber-800',
   graded: 'bg-emerald-100 text-emerald-800',
@@ -10,6 +13,8 @@ const STYLES: Record<SubmissionStatus, string> = {
 
 export default function StatusBadge({ status }: { status: SubmissionStatus }) {
   return (
-    <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${STYLES[status]}`}>{status}</span>
+    <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${STYLES[status]}`}>
+      {status.replaceAll('_', ' ')}
+    </span>
   )
 }

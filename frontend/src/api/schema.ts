@@ -310,7 +310,11 @@ export interface paths {
         /** List Submissions */
         get: operations["list_submissions_submissions_get"];
         put?: never;
-        /** Create Submission */
+        /**
+         * Create Submission
+         * @description `llm_segmentation` only matters for free-form PDF rubrics: whether to
+         *     ask the LLM for a segmentation suggestion right after conversion.
+         */
         post: operations["create_submission_submissions_post"];
         delete?: never;
         options?: never;
@@ -392,7 +396,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Download Submission File */
+        /**
+         * Download Submission File
+         * @description `inline=true` lets the browser display it (the segmentation editor
+         *     shows the PDF in an iframe) instead of downloading it.
+         */
         get: operations["download_submission_file_submissions__submission_id__file_get"];
         put?: never;
         post?: never;
@@ -497,6 +505,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/submissions/{submission_id}/document": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Submission Document */
+        get: operations["get_submission_document_submissions__submission_id__document_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/submissions/{submission_id}/document/images/{index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Submission Document Image */
+        get: operations["get_submission_document_image_submissions__submission_id__document_images__index__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/submissions/{submission_id}/segments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Submission Segments
+         * @description Save a professor's segmentation. Without `grade`, the submission is
+         *     left `awaiting_segmentation` (any existing grades are now stale); with
+         *     it, grading is enqueued -- the only way a free-form PDF gets graded.
+         *     `422` on invalid segments, or on `grade` with a question still missing
+         *     its segment.
+         */
+        put: operations["set_submission_segments_submissions__submission_id__segments_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/submissions/{submission_id}/segments/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suggest Submission Segments
+         * @description Ask the LLM for a segmentation suggestion (replaces the current
+         *     segments once it's done). Async: the submission goes `segmenting`, then
+         *     back to `awaiting_segmentation`.
+         */
+        post: operations["suggest_submission_segments_submissions__submission_id__segments_suggest_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/batches": {
         parameters: {
             query?: never;
@@ -507,7 +595,10 @@ export interface paths {
         /** List Batches */
         get: operations["list_batches_batches_get"];
         put?: never;
-        /** Create Batch */
+        /**
+         * Create Batch
+         * @description `llm_segmentation`: see `create_submission` (free-form PDFs only).
+         */
         post: operations["create_batch_batches_post"];
         delete?: never;
         options?: never;
@@ -580,6 +671,29 @@ export interface paths {
          *     submission); every other answer keeps its current grade.
          */
         post: operations["regrade_batch_batches__batch_id__regrade_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/batches/{batch_id}/segments/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suggest Batch Segments
+         * @description LLM segmentation suggestion for every free-form PDF in this batch
+         *     that is converted, waiting for segmentation, and has no segments yet --
+         *     e.g. a batch uploaded without LLM-assisted segmentation. Never touches
+         *     a submission someone already segmented.
+         */
+        post: operations["suggest_batch_segments_batches__batch_id__segments_suggest_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -673,8 +787,7 @@ export interface paths {
         /**
          * Create Model
          * @description Register a model. `422` if the provider isn't usable here, `409` if
-         *     the same provider/model/reasoning-effort combination already exists (the
-         *     same model at a different effort is a separate entry). The first model ever added
+         *     the same provider/model pair already exists. The first model ever added
          *     becomes the default regardless of `is_default`, so grading always has
          *     something to fall back to.
          */
@@ -711,7 +824,7 @@ export interface paths {
          * @description Change a model's reasoning effort (provider/identifier are its
          *     identity -- register a new model instead). Takes effect for grading
          *     enqueued from now on; already-queued jobs re-read the model when they
-         *     run, so they pick it up too. `409` if it would duplicate another entry.
+         *     run, so they pick it up too.
          */
         patch: operations["update_model_llm_models__model_id__patch"];
         trace?: never;
@@ -772,6 +885,26 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AnswerSegment
+         * @description Where one question's answer lives in a converted free-form PDF, as
+         *     1-based inclusive Markdown line numbers.
+         *
+         *     `start_line=None` means "the student did not answer this question"
+         *     (graded as a blank answer). `end_line=None` means "until the line before
+         *     the next segment starts, or the end of the document" -- an explicit
+         *     `end_line` lets a professor leave out dead lines between answers.
+         *     A rubric question with no `AnswerSegment` at all is "not decided yet",
+         *     which blocks grading.
+         */
+        AnswerSegment: {
+            /** Question Id */
+            question_id: string;
+            /** Start Line */
+            start_line?: number | null;
+            /** End Line */
+            end_line?: number | null;
+        };
         /** AnsweredQuestion */
         AnsweredQuestion: {
             /** Question Id */
@@ -847,6 +980,11 @@ export interface components {
             /** Regraded */
             regraded: number;
         };
+        /** BatchSegmentSuggestResult */
+        BatchSegmentSuggestResult: {
+            /** Suggested */
+            suggested: number;
+        };
         /**
          * BatchType
          * @description Which zip layout a batch upload follows -- only one today (Atenea,
@@ -872,6 +1010,11 @@ export interface components {
             rubric_id: components["schemas"]["PydanticObjectId"];
             edition_id?: components["schemas"]["PydanticObjectId"] | null;
             type: components["schemas"]["BatchType"];
+            /**
+             * Llm Segmentation
+             * @default true
+             */
+            llm_segmentation: boolean;
         };
         /** Body_create_submission_submissions_post */
         Body_create_submission_submissions_post: {
@@ -880,6 +1023,11 @@ export interface components {
             student_id: components["schemas"]["PydanticObjectId"];
             rubric_id: components["schemas"]["PydanticObjectId"];
             edition_id?: components["schemas"]["PydanticObjectId"] | null;
+            /**
+             * Llm Segmentation
+             * @default true
+             */
+            llm_segmentation: boolean;
         };
         /** Body_import_students_students_import_post */
         Body_import_students_students_import_post: {
@@ -920,6 +1068,26 @@ export interface components {
             regraded: number;
         };
         /**
+         * ConvertedDocument
+         * @description Result of converting a free-form PDF submission to Markdown (see
+         *     extraction/pdf_generic.py). The Markdown itself and the images live in
+         *     MinIO, only this metadata is stored on the `Submission`.
+         *
+         *     The stored Markdown is the coordinate system every `AnswerSegment` is
+         *     expressed in -- it's generated once and never silently regenerated,
+         *     since a different converter version could shift every line number.
+         */
+        ConvertedDocument: {
+            /** Markdown Object Key */
+            markdown_object_key: string;
+            /** Line Count */
+            line_count: number;
+            /** Page Start Lines */
+            page_start_lines?: number[];
+            /** Images */
+            images?: components["schemas"]["DocumentImage"][];
+        };
+        /**
          * Course
          * @description A subject, e.g. "BDM" -- reused across years. See Edition for a
          *     specific term instance of a course (e.g. "2026/27").
@@ -943,6 +1111,50 @@ export interface components {
             name: string;
             /** Slug */
             slug?: string | null;
+        };
+        /**
+         * DocumentImage
+         * @description One image extracted while converting a free-form PDF to Markdown,
+         *     stored in MinIO. `line` is the 1-based Markdown line holding its
+         *     `![](name)` reference -- which segment that line falls into decides
+         *     which answer the image belongs to.
+         */
+        DocumentImage: {
+            /** Name */
+            name: string;
+            /** Object Key */
+            object_key: string;
+            /** Line */
+            line: number;
+            /** Page */
+            page: number;
+            /** Mime Type */
+            mime_type: string;
+        };
+        /** DocumentImageView */
+        DocumentImageView: {
+            /** Index */
+            index: number;
+            /** Name */
+            name: string;
+            /** Line */
+            line: number;
+            /** Page */
+            page: number;
+        };
+        /**
+         * DocumentView
+         * @description A converted free-form PDF, for the segmentation editor.
+         */
+        DocumentView: {
+            /** Markdown */
+            markdown: string;
+            /** Line Count */
+            line_count: number;
+            /** Page Start Lines */
+            page_start_lines: number[];
+            /** Images */
+            images: components["schemas"]["DocumentImageView"][];
         };
         /**
          * Edition
@@ -1284,6 +1496,21 @@ export interface components {
             /** Questions */
             questions: components["schemas"]["Question"][];
         };
+        /**
+         * SegmentationSource
+         * @enum {string}
+         */
+        SegmentationSource: "llm" | "manual";
+        /** SegmentsUpdate */
+        SegmentsUpdate: {
+            /** Segments */
+            segments: components["schemas"]["AnswerSegment"][];
+            /**
+             * Grade
+             * @default false
+             */
+            grade: boolean;
+        };
         /** SetSubmissionStudent */
         SetSubmissionStudent: {
             student_id: components["schemas"]["PydanticObjectId"];
@@ -1396,6 +1623,12 @@ export interface components {
             } | null;
             /** Batch Internal Id */
             batch_internal_id?: string | null;
+            document?: components["schemas"]["ConvertedDocument"] | null;
+            /** Segments */
+            segments?: components["schemas"]["AnswerSegment"][] | null;
+            segmentation_source?: components["schemas"]["SegmentationSource"] | null;
+            /** Segmented At */
+            segmented_at?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -1420,12 +1653,12 @@ export interface components {
          *     while doing that.
          * @enum {string}
          */
-        SubmissionFormat: "pdf" | "notebook";
+        SubmissionFormat: "pdf" | "notebook" | "pdf_generic";
         /**
          * SubmissionStatus
          * @enum {string}
          */
-        SubmissionStatus: "pending" | "extracting" | "grading" | "graded" | "failed";
+        SubmissionStatus: "pending" | "converting" | "segmenting" | "awaiting_segmentation" | "extracting" | "grading" | "graded" | "failed";
         /** TestAnswerRequest */
         TestAnswerRequest: {
             /** Question Id */
@@ -2236,7 +2469,9 @@ export interface operations {
     };
     download_submission_file_submissions__submission_id__file_get: {
         parameters: {
-            query?: never;
+            query?: {
+                inline?: boolean;
+            };
             header?: never;
             path: {
                 submission_id: components["schemas"]["PydanticObjectId"];
@@ -2366,6 +2601,141 @@ export interface operations {
         };
     };
     regrade_submission_submissions__submission_id__regrade_post: {
+        parameters: {
+            query?: {
+                /** @description LLM model to grade with; defaults to the default model */
+                model_id?: components["schemas"]["PydanticObjectId"] | null;
+            };
+            header?: never;
+            path: {
+                submission_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Submission"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_submission_document_submissions__submission_id__document_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_submission_document_image_submissions__submission_id__document_images__index__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: components["schemas"]["PydanticObjectId"];
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_submission_segments_submissions__submission_id__segments_put: {
+        parameters: {
+            query?: {
+                /** @description LLM model to grade with; defaults to the default model */
+                model_id?: components["schemas"]["PydanticObjectId"] | null;
+            };
+            header?: never;
+            path: {
+                submission_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SegmentsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Submission"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    suggest_submission_segments_submissions__submission_id__segments_suggest_post: {
         parameters: {
             query?: {
                 /** @description LLM model to grade with; defaults to the default model */
@@ -2551,6 +2921,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BatchRegradeResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    suggest_batch_segments_batches__batch_id__segments_suggest_post: {
+        parameters: {
+            query?: {
+                /** @description LLM model to grade with; defaults to the default model */
+                model_id?: components["schemas"]["PydanticObjectId"] | null;
+            };
+            header?: never;
+            path: {
+                batch_id: components["schemas"]["PydanticObjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchSegmentSuggestResult"];
                 };
             };
             /** @description Validation Error */

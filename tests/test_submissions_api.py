@@ -1,6 +1,6 @@
 from aitana.documents import Course, Edition, Rubric, Submission, SubmissionStatus
 from aitana.documents.submission import AnsweredQuestion
-from aitana.grading.models import Grade, Question, SubmissionFormat
+from aitana.grading.models import ConvertedDocument, Grade, Question, SubmissionFormat
 
 
 async def _make_student(client) -> str:
@@ -448,3 +448,121 @@ async def test_answer_image_not_found(client):
     # Positive path needs `submission.rubric` resolved via fetch_links (AGENTS.md sharp edge #5).
     resp = await client.get("/submissions/000000000000000000000000/answers/answer1/images/0")
     assert resp.status_code == 404
+
+
+# --- Free-form PDF segmentation ---------------------------------------------
+
+
+async def _make_generic_submission(client, *, llm_segmentation: bool = True, converted: bool = True) -> str:
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.PDF_GENERIC)
+    rubric = await Rubric.get(rubric_id)
+    rubric.questions = [_question(id="q1"), _question(id="q2")]
+    await rubric.save()
+    resp = await client.post(
+        "/submissions",
+        data={"student_id": student_id, "rubric_id": rubric_id, "llm_segmentation": str(llm_segmentation).lower()},
+        files={"file": ("answers.pdf", b"data", "application/pdf")},
+    )
+    assert resp.status_code == 202, resp.text
+    submission_id = resp.json()["_id"]
+    if converted:
+        client.fake_objects["md-key"] = "# Ex 1\nfoo\n# Ex 2\nbar".encode()
+        submission = await Submission.get(submission_id)
+        submission.document = ConvertedDocument(markdown_object_key="md-key", line_count=4, page_start_lines=[1])
+        submission.status = SubmissionStatus.AWAITING_SEGMENTATION
+        await submission.save()
+    return submission_id
+
+
+async def test_create_generic_pdf_submission_enqueues_conversion_not_grading(client):
+    submission_id = await _make_generic_submission(client, converted=False)
+    assert client.delayed_submission_ids == []
+    assert client.delayed_prepares == [(submission_id, client.default_llm_model_id)]
+
+
+async def test_create_generic_pdf_submission_without_llm_segmentation(client):
+    submission_id = await _make_generic_submission(client, llm_segmentation=False, converted=False)
+    assert client.delayed_prepares == [(submission_id, None)]
+
+
+async def test_get_submission_document(client):
+    submission_id = await _make_generic_submission(client)
+    resp = await client.get(f"/submissions/{submission_id}/document")
+    assert resp.status_code == 200
+    assert resp.json() == {"markdown": "# Ex 1\nfoo\n# Ex 2\nbar", "line_count": 4, "page_start_lines": [1], "images": []}
+
+
+async def test_get_submission_document_not_converted_yet(client):
+    submission_id = await _make_generic_submission(client, converted=False)
+    assert (await client.get(f"/submissions/{submission_id}/document")).status_code == 409
+
+
+async def test_set_segments_without_grading(client):
+    submission_id = await _make_generic_submission(client)
+    resp = await client.put(
+        f"/submissions/{submission_id}/segments", json={"segments": [{"question_id": "q1", "start_line": 1}]}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "awaiting_segmentation"
+    assert body["segmentation_source"] == "manual"
+    assert body["segments"] == [{"question_id": "q1", "start_line": 1, "end_line": None}]
+    assert client.delayed_submission_ids == []
+
+
+async def test_set_segments_and_grade(client):
+    submission_id = await _make_generic_submission(client)
+    resp = await client.put(
+        f"/submissions/{submission_id}/segments",
+        json={
+            "segments": [{"question_id": "q1", "start_line": 1, "end_line": 2}, {"question_id": "q2", "start_line": None}],
+            "grade": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "pending"
+    assert client.delayed_submission_ids == [submission_id]
+
+
+async def test_set_segments_grade_requires_every_question(client):
+    submission_id = await _make_generic_submission(client)
+    resp = await client.put(
+        f"/submissions/{submission_id}/segments",
+        json={"segments": [{"question_id": "q1", "start_line": 1}], "grade": True},
+    )
+    assert resp.status_code == 422
+    assert "q2" in resp.json()["detail"]
+
+
+async def test_set_segments_rejects_invalid_lines(client):
+    submission_id = await _make_generic_submission(client)
+    resp = await client.put(
+        f"/submissions/{submission_id}/segments", json={"segments": [{"question_id": "q1", "start_line": 9}]}
+    )
+    assert resp.status_code == 422
+
+
+async def test_set_segments_rejected_while_converting(client):
+    submission_id = await _make_generic_submission(client)
+    submission = await Submission.get(submission_id)
+    submission.status = SubmissionStatus.CONVERTING
+    await submission.save()
+    resp = await client.put(f"/submissions/{submission_id}/segments", json={"segments": []})
+    assert resp.status_code == 409
+
+
+async def test_set_segments_rejected_for_acroform_rubric(client):
+    submission_id = await _make_graded_submission(client)
+    resp = await client.put(f"/submissions/{submission_id}/segments", json={"segments": []})
+    assert resp.status_code == 422
+
+
+async def test_suggest_segments_enqueues(client):
+    submission_id = await _make_generic_submission(client)
+    resp = await client.post(f"/submissions/{submission_id}/segments/suggest")
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "segmenting"
+    assert client.delayed_suggestions == [(submission_id, client.default_llm_model_id)]

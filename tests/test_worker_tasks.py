@@ -288,3 +288,92 @@ async def test_grade_answers_forwards_images_only_for_include_images(mongo_db, m
     assert seen[1][1] == {"type": "image", "base64": "AAAA", "mime_type": "image/png"}
     traces = await GradingTrace.find_all().to_list()
     assert sorted(t.trace.image_count for t in traces) == [0, 1]
+
+
+async def test_extract_segmented_submission_reads_stored_markdown_and_images(mongo_db, monkeypatch):
+    """Free-form PDFs are sliced from the stored Markdown + segments, and only
+    images of `include_images` questions get downloaded."""
+    import base64
+
+    from aitana.grading.models import AnswerSegment, ConvertedDocument, DocumentImage, SubmissionFormat
+    from aitana.worker.tasks import _extract_segmented_submission
+
+    objects = {
+        "doc.md": b"# Ex 1\n![](img-0001.png)\n# Ex 2\n![](img-0002.png)",
+        "img1": b"png-1",
+        "img2": b"png-2",
+    }
+    downloaded: list[str] = []
+
+    def fake_download(key: str) -> bytes:
+        downloaded.append(key)
+        return objects[key]
+
+    monkeypatch.setattr("aitana.storage.download_bytes", fake_download)
+
+    course = Course(name="BDM", slug="bdm")
+    await course.insert()
+    rubric = Rubric(
+        slug="free",
+        title="Free",
+        course=course,
+        format=SubmissionFormat.PDF_GENERIC,
+        questions=[
+            Question(id="q1", title="Q1", question="?", rubric="R", include_images=True),
+            Question(id="q2", title="Q2", question="?", rubric="R"),
+        ],
+    )
+    submission = Submission(
+        rubric=rubric,
+        edition=Edition(name="2026/27", slug="2026_27"),
+        file_object_key="k.pdf",
+        document=ConvertedDocument(
+            markdown_object_key="doc.md",
+            line_count=4,
+            images=[
+                DocumentImage(name="img-0001.png", object_key="img1", line=2, page=1, mime_type="image/png"),
+                DocumentImage(name="img-0002.png", object_key="img2", line=4, page=1, mime_type="image/png"),
+            ],
+        ),
+        segments=[AnswerSegment(question_id="q1", start_line=1), AnswerSegment(question_id="q2", start_line=3)],
+    )
+
+    result = _extract_segmented_submission(submission)
+
+    assert result.answers == {"q1": "# Ex 1\n![](img-0001.png)", "q2": "# Ex 2\n![](img-0002.png)"}
+    assert [img.data for img in result.images["q1"]] == [base64.b64encode(b"png-1").decode()]
+    assert "q2" not in result.images
+    assert downloaded == ["doc.md", "img1"]
+
+
+async def test_prepare_converts_pdf_and_waits_for_segmentation(mongo_db, monkeypatch):
+    import pymupdf
+
+    from aitana.documents import SubmissionStatus
+    from aitana.grading.models import SubmissionFormat
+    from aitana.worker.tasks import _prepare
+
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "Exercise 1: my answer")
+    pdf_bytes = doc.tobytes()
+    stored: dict[str, bytes] = {"r/s/1.pdf": pdf_bytes}
+    monkeypatch.setattr("aitana.storage.download_to_path", lambda key, dest: dest.write_bytes(stored[key]))
+    monkeypatch.setattr("aitana.storage.upload_file", lambda key, data, content_type: stored.__setitem__(key, data))
+
+    course = Course(name="BDM", slug="bdm")
+    await course.insert()
+    rubric = Rubric(slug="free", title="Free", course=course, format=SubmissionFormat.PDF_GENERIC, questions=[])
+    await rubric.insert()
+    edition = Edition(name="2026/27", slug="2026_27")
+    await edition.insert()
+    submission = Submission(rubric=rubric, edition=edition, file_object_key="r/s/1.pdf")
+    await submission.insert()
+
+    await _prepare(submission, None)
+
+    saved = await Submission.get(submission.id)
+    assert saved.status == SubmissionStatus.AWAITING_SEGMENTATION
+    assert saved.document.markdown_object_key == "r/s/1/document.md"
+    assert "Exercise 1: my answer" in stored["r/s/1/document.md"].decode()
+    assert saved.document.page_start_lines == [1]
+    assert saved.segments is None

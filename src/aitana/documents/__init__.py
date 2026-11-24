@@ -5,7 +5,7 @@ from .grading_trace import GradingTrace
 from .llm_model import LlmModel, LlmModelNotFound, resolve_llm_model
 from .rubric import Rubric
 from .student import Student
-from .submission import AnsweredQuestion, Submission, SubmissionStatus
+from .submission import AnsweredQuestion, SegmentationSource, Submission, SubmissionStatus
 from .user_settings import UserSettings, get_user_settings
 
 DOCUMENT_MODELS = [Student, Course, Edition, Rubric, Batch, Submission, GradingTrace, LlmModel, UserSettings]
@@ -21,6 +21,7 @@ __all__ = [
     "LlmModel",
     "LlmModelNotFound",
     "Rubric",
+    "SegmentationSource",
     "Student",
     "Submission",
     "SubmissionStatus",

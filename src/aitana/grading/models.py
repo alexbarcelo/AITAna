@@ -131,6 +131,11 @@ class SubmissionFormat(str, Enum):
 
     PDF = "pdf"
     NOTEBOOK = "notebook"
+    # A free-form PDF (no AcroForm fields): converted to Markdown once, then
+    # split into per-question answers ("segmentation", see
+    # extraction/pdf_generic.py) by a professor, optionally helped by an LLM
+    # suggestion (grading/segmentation.py). Graded only after that.
+    PDF_GENERIC = "pdf_generic"
 
 
 class ExtractedImage(BaseModel):
@@ -167,6 +172,51 @@ class ExtractionResult(BaseModel):
     images: dict[str, list[ExtractedImage]] = Field(default_factory=dict)
 
 
+class DocumentImage(BaseModel):
+    """One image extracted while converting a free-form PDF to Markdown,
+    stored in MinIO. `line` is the 1-based Markdown line holding its
+    `![](name)` reference -- which segment that line falls into decides
+    which answer the image belongs to."""
+
+    name: str
+    object_key: str
+    line: int
+    page: int
+    mime_type: str
+
+
+class ConvertedDocument(BaseModel):
+    """Result of converting a free-form PDF submission to Markdown (see
+    extraction/pdf_generic.py). The Markdown itself and the images live in
+    MinIO, only this metadata is stored on the `Submission`.
+
+    The stored Markdown is the coordinate system every `AnswerSegment` is
+    expressed in -- it's generated once and never silently regenerated,
+    since a different converter version could shift every line number."""
+
+    markdown_object_key: str
+    line_count: int
+    # 1-based first Markdown line of each PDF page (index 0 = page 1).
+    page_start_lines: list[int] = Field(default_factory=list)
+    images: list[DocumentImage] = Field(default_factory=list)
+
+
+class AnswerSegment(BaseModel):
+    """Where one question's answer lives in a converted free-form PDF, as
+    1-based inclusive Markdown line numbers.
+
+    `start_line=None` means "the student did not answer this question"
+    (graded as a blank answer). `end_line=None` means "until the line before
+    the next segment starts, or the end of the document" -- an explicit
+    `end_line` lets a professor leave out dead lines between answers.
+    A rubric question with no `AnswerSegment` at all is "not decided yet",
+    which blocks grading."""
+
+    question_id: str
+    start_line: int | None = None
+    end_line: int | None = None
+
+
 class Question(BaseModel):
     """One gradable question: where to read the student's answer from the
     submitted file, plus grading instructions.
@@ -179,7 +229,9 @@ class Question(BaseModel):
     # Identifies where in the submitted file this question's answer lives --
     # meaning depends on the owning Rubric's `format` (see SubmissionFormat):
     # a PDF AcroForm text-field name for `pdf` (e.g. "answer1"), or the
-    # value content of an `aitana/id` cell's metadata for `notebook`.
+    # value content of an `aitana/id` cell's metadata for `notebook`. For
+    # `pdf_generic` it's an optional hint for LLM-assisted segmentation: the
+    # label the question has in the student's document (e.g. "Exercise 3").
     # Defaults to `id` since both conventions typically name these answer1,
     # answer2, etc., lining up 1:1 with `id`.
     field: str | None = None

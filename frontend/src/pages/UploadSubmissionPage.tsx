@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useCreateSubmission, useEditions, useRubrics, useStudents } from '../api/hooks'
-import { FORMAT_FILE_INFO } from '../api/types'
+import { FORMAT_FILE_INFO, SEGMENTED_FORMATS } from '../api/types'
+import LlmSegmentationCheckbox from '../components/LlmSegmentationCheckbox'
 
 export default function UploadSubmissionPage() {
   const { data: students } = useStudents()
@@ -13,6 +14,7 @@ export default function UploadSubmissionPage() {
   const [rubricId, setRubricId] = useState('')
   const [editionId, setEditionId] = useState('')
   const [file, setFile] = useState<File | null>(null)
+  const [llmSegmentation, setLlmSegmentation] = useState(true)
 
   const selectedRubric = rubrics?.find((r) => r._id === rubricId)
   // A rubric with a fixed edition (e.g. an exam) determines the edition
@@ -25,6 +27,7 @@ export default function UploadSubmissionPage() {
   // The rubric dictates the expected file format (see Rubric.format), not
   // the uploader -- falls back to the PDF picker before a rubric is chosen.
   const fileInfo = FORMAT_FILE_INFO[selectedRubric?.format ?? 'pdf']
+  const segmented = Boolean(selectedRubric && SEGMENTED_FORMATS.includes(selectedRubric.format))
 
   const needsExplicitEdition = Boolean(selectedRubric) && !fixedEdition
   const canSubmit = Boolean(file && studentId && rubricId && (fixedEdition || editionId))
@@ -39,7 +42,7 @@ export default function UploadSubmissionPage() {
     e.preventDefault()
     if (!canSubmit || !file) return
     createSubmission.mutate(
-      { file, studentId, rubricId, editionId: needsExplicitEdition ? editionId : undefined },
+      { file, studentId, rubricId, editionId: needsExplicitEdition ? editionId : undefined, llmSegmentation },
       {
         onSuccess: (submission) => navigate(`/submissions/${submission._id}`),
       },
@@ -132,12 +135,14 @@ export default function UploadSubmissionPage() {
           />
         </div>
 
+        {segmented && <LlmSegmentationCheckbox checked={llmSegmentation} onChange={setLlmSegmentation} />}
+
         <button
           type="submit"
           disabled={!canSubmit || createSubmission.isPending}
           className="w-full rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
-          {createSubmission.isPending ? 'Uploading...' : 'Grade this submission'}
+          {createSubmission.isPending ? 'Uploading...' : segmented ? 'Upload and convert' : 'Grade this submission'}
         </button>
 
         {createSubmission.isError && (

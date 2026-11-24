@@ -21,6 +21,8 @@ dependencies = [
     "celery>=5.4.0",
     "redis>=5.2.0",
     "minio>=7.2.12",
+    "pymupdf>=2.1",
+    "pymupdf4llm>=2.1",
 ]
 
 # Every LLM provider backend (grading/llm.py) is pluggable 

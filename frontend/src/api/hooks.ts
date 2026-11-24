@@ -3,6 +3,7 @@ import { useActiveModelId } from '../lib/activeModel'
 import { client } from './client'
 import { IN_PROGRESS_STATUSES } from './types'
 import type {
+  AnswerSegment,
   Batch,
   RegradeResult,
   BatchType,
@@ -18,6 +19,7 @@ import type {
   StudentImportFormat,
   StudentImportResult,
   Submission,
+  SubmissionDocument,
   SubmissionFormat,
   SubmissionStatus,
 } from './types'
@@ -418,17 +420,21 @@ export function useCreateSubmission() {
       studentId,
       rubricId,
       editionId,
+      llmSegmentation = true,
     }: {
       file: File
       studentId: string
       rubricId: string
       editionId?: string
+      /** Free-form PDF rubrics only: ask the LLM for a segmentation suggestion. */
+      llmSegmentation?: boolean
     }) => {
       const formData = new FormData()
       formData.append('file', file)
       formData.append('student_id', studentId)
       formData.append('rubric_id', rubricId)
       if (editionId) formData.append('edition_id', editionId)
+      formData.append('llm_segmentation', String(llmSegmentation))
       // openapi-fetch types `body` from the JSON-ish multipart schema; the
       // actual wire format is a FormData instance (see defaultBodySerializer
       // in openapi-fetch, which passes FormData through untouched).
@@ -478,17 +484,20 @@ export function useCreateBatch() {
       rubricId,
       editionId,
       type,
+      llmSegmentation = true,
     }: {
       file: File
       rubricId: string
       editionId?: string
       type: BatchType
+      llmSegmentation?: boolean
     }) => {
       const formData = new FormData()
       formData.append('file', file)
       formData.append('rubric_id', rubricId)
       if (editionId) formData.append('edition_id', editionId)
       formData.append('type', type)
+      formData.append('llm_segmentation', String(llmSegmentation))
       // See useCreateSubmission for why `body` is cast here: openapi-fetch
       // types multipart bodies from the JSON-ish schema, but the actual
       // wire format is a FormData instance, which it passes through
@@ -519,6 +528,70 @@ export function useRegradeSubmissions() {
           body: { submission_ids: submissionIds, question_id: questionId ?? null },
         }),
       ) as unknown as Promise<RegradeResult>,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['submissions'] }),
+  })
+}
+
+// ---- Free-form PDF segmentation ----
+
+export function useSubmissionDocument(id: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['submissions', id, 'document'],
+    queryFn: () =>
+      unwrap(
+        client.GET('/submissions/{submission_id}/document', { params: { path: { submission_id: id! } } }),
+      ) as Promise<SubmissionDocument>,
+    enabled: Boolean(id) && enabled,
+    // The converted document never changes once it exists.
+    staleTime: Infinity,
+  })
+}
+
+export function useSaveSegments() {
+  const queryClient = useQueryClient()
+  const modelId = useActiveModelId()
+  return useMutation({
+    mutationFn: ({ submissionId, segments, grade }: { submissionId: string; segments: AnswerSegment[]; grade: boolean }) =>
+      unwrap(
+        client.PUT('/submissions/{submission_id}/segments', {
+          params: { path: { submission_id: submissionId }, query: { model_id: modelId } },
+          body: { segments, grade },
+        }),
+      ) as unknown as Promise<Submission>,
+    onSuccess: (submission) => {
+      queryClient.setQueryData(['submissions', submission._id], submission)
+      queryClient.invalidateQueries({ queryKey: ['submissions'] })
+    },
+  })
+}
+
+export function useSuggestSegments() {
+  const queryClient = useQueryClient()
+  const modelId = useActiveModelId()
+  return useMutation({
+    mutationFn: (submissionId: string) =>
+      unwrap(
+        client.POST('/submissions/{submission_id}/segments/suggest', {
+          params: { path: { submission_id: submissionId }, query: { model_id: modelId } },
+        }),
+      ) as unknown as Promise<Submission>,
+    onSuccess: (submission) => {
+      queryClient.setQueryData(['submissions', submission._id], submission)
+      queryClient.invalidateQueries({ queryKey: ['submissions'] })
+    },
+  })
+}
+
+export function useSuggestBatchSegments() {
+  const queryClient = useQueryClient()
+  const modelId = useActiveModelId()
+  return useMutation({
+    mutationFn: (batchId: string) =>
+      unwrap(
+        client.POST('/batches/{batch_id}/segments/suggest', {
+          params: { path: { batch_id: batchId }, query: { model_id: modelId } },
+        }),
+      ),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['submissions'] }),
   })
 }

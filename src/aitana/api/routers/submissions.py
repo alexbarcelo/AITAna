@@ -7,10 +7,11 @@ from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 from ... import storage
-from ...documents import Edition, Rubric, Student, Submission, SubmissionStatus
-from ...grading.extraction import FORMAT_FILE_INFO
-from ...grading.models import Grade
-from ...worker.tasks import extract_submission_file, grade_submission
+from ...documents import Edition, Rubric, SegmentationSource, Student, Submission, SubmissionStatus
+from ...grading.extraction import FORMAT_FILE_INFO, SEGMENTED_FORMATS
+from ...grading.extraction.pdf_generic import SegmentationError, missing_questions, validate_segments
+from ...grading.models import AnswerSegment, Grade
+from ...worker.tasks import extract_submission_file, grade_submission, prepare_submission, suggest_segments_task
 from ..feedback_export import course_name, feedback_filename, load_answer_images, render_feedback_html
 from .llm import MODEL_ID_QUERY, require_llm_model
 
@@ -44,6 +45,32 @@ async def enqueue_regrade(submission: Submission, model_id: PydanticObjectId, qu
     enqueue_grading(submission, model_id, question_id)
 
 
+def enqueue_initial_processing(
+    submission: Submission, rubric: Rubric, model_id: PydanticObjectId | None, llm_segmentation: bool
+) -> None:
+    """What happens right after upload: grading, or -- for a free-form PDF
+    rubric (`SEGMENTED_FORMATS`) -- conversion plus, if asked, an LLM
+    segmentation suggestion. Grading those waits for a professor."""
+    if rubric.format in SEGMENTED_FORMATS:
+        prepare_submission.delay(
+            str(submission.id), segment_model_id=str(model_id) if llm_segmentation and model_id else None
+        )
+    else:
+        assert model_id is not None
+        enqueue_grading(submission, model_id)
+
+
+async def _upload_model(
+    rubric: Rubric, model_id: PydanticObjectId | None, llm_segmentation: bool
+) -> PydanticObjectId | None:
+    """The model an upload needs resolved up front: always for formats
+    graded right away, only with LLM-assisted segmentation for free-form
+    PDFs (manual segmentation needs no LLM until grading)."""
+    if rubric.format in SEGMENTED_FORMATS and not llm_segmentation:
+        return None
+    return (await require_llm_model(model_id)).id
+
+
 async def _resolve_edition(rubric: Rubric, edition_id: PydanticObjectId | None) -> Edition:
     """A submission always has a definite edition, even for a rubric that
     doesn't fix one (e.g. a lab reused across years): use the rubric's own
@@ -74,15 +101,18 @@ async def create_submission(
     student_id: PydanticObjectId = Form(...),
     rubric_id: PydanticObjectId = Form(...),
     edition_id: PydanticObjectId | None = Form(None),
+    llm_segmentation: bool = Form(True),
     model_id: PydanticObjectId | None = MODEL_ID_QUERY,
 ) -> Submission:
-    llm_model = await require_llm_model(model_id)
+    """`llm_segmentation` only matters for free-form PDF rubrics: whether to
+    ask the LLM for a segmentation suggestion right after conversion."""
     student = await Student.get(student_id)
     if student is None:
         raise HTTPException(status_code=404, detail="Student not found")
     rubric = await Rubric.get(rubric_id)
     if rubric is None:
         raise HTTPException(status_code=404, detail="Rubric not found")
+    resolved_model_id = await _upload_model(rubric, model_id, llm_segmentation)
     edition = await _resolve_edition(rubric, edition_id)
 
     # The rubric, not the uploader, decides what format its submissions are
@@ -105,7 +135,7 @@ async def create_submission(
     submission.file_object_key = key
     await submission.save()
 
-    enqueue_grading(submission, llm_model.id)
+    enqueue_initial_processing(submission, rubric, resolved_model_id, llm_segmentation)
     return submission
 
 
@@ -175,7 +205,24 @@ async def set_submission_student(submission_id: PydanticObjectId, payload: SetSu
     return submission
 
 
-_IN_PROGRESS_STATUSES = {SubmissionStatus.PENDING, SubmissionStatus.EXTRACTING, SubmissionStatus.GRADING}
+_IN_PROGRESS_STATUSES = {
+    SubmissionStatus.PENDING,
+    SubmissionStatus.CONVERTING,
+    SubmissionStatus.SEGMENTING,
+    SubmissionStatus.EXTRACTING,
+    SubmissionStatus.GRADING,
+}
+
+
+async def _get_with_rubric(submission_id: PydanticObjectId) -> Submission:
+    submission = await Submission.get(submission_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if isinstance(submission.rubric, Link):
+        # Only reachable under mongomock, which can't resolve fetch_links
+        # (AGENTS.md sharp edge #5) -- fetch_link is a plain get-by-id.
+        await submission.fetch_link(Submission.rubric)
+    return submission
 
 
 async def _get_editable_answer(submission_id: PydanticObjectId, question_id: str) -> tuple[Submission, int]:
@@ -183,18 +230,12 @@ async def _get_editable_answer(submission_id: PydanticObjectId, question_id: str
     submission plus the *index* of the answer -- never a reference into
     `submission.answers`, which goes stale across `save()` (AGENTS.md sharp
     edge #1)."""
-    submission = await Submission.get(submission_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS)
-    if submission is None:
-        raise HTTPException(status_code=404, detail="Submission not found")
+    submission = await _get_with_rubric(submission_id)
     if submission.status in _IN_PROGRESS_STATUSES:
         # The worker holds its own in-memory copy of the submission and saves
         # the whole document after every question -- an edit made now would
         # just be overwritten by its next save().
         raise HTTPException(status_code=409, detail="Submission is still being graded -- wait for it to finish")
-    if isinstance(submission.rubric, Link):
-        # Only reachable under mongomock, which can't resolve fetch_links
-        # (AGENTS.md sharp edge #5) -- fetch_link is a plain get-by-id.
-        await submission.fetch_link(Submission.rubric)
     for i, answer in enumerate(submission.answers):
         if answer.question_id == question_id:
             return submission, i
@@ -234,7 +275,9 @@ async def clear_manual_grade(submission_id: PydanticObjectId, question_id: str) 
 
 
 @router.get("/{submission_id}/file")
-async def download_submission_file(submission_id: PydanticObjectId) -> Response:
+async def download_submission_file(submission_id: PydanticObjectId, inline: bool = False) -> Response:
+    """`inline=true` lets the browser display it (the segmentation editor
+    shows the PDF in an iframe) instead of downloading it."""
     submission = await Submission.get(submission_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS)
     if submission is None:
         raise HTTPException(status_code=404, detail="Submission not found")
@@ -249,7 +292,7 @@ async def download_submission_file(submission_id: PydanticObjectId) -> Response:
     return Response(
         content=file_bytes,
         media_type=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'{"inline" if inline else "attachment"}; filename="{filename}"'},
     )
 
 
@@ -343,3 +386,127 @@ async def regrade_submission(
 
     await enqueue_regrade(submission, llm_model.id)
     return submission
+
+
+# --- Free-form PDF segmentation (AGENTS.md "Free-form PDF submissions") ---
+
+
+class DocumentImageView(BaseModel):
+    index: int
+    name: str
+    line: int
+    page: int
+
+
+class DocumentView(BaseModel):
+    """A converted free-form PDF, for the segmentation editor."""
+
+    markdown: str
+    line_count: int
+    page_start_lines: list[int]
+    images: list[DocumentImageView]
+
+
+def _require_document(submission: Submission):
+    if submission.document is None:
+        raise HTTPException(status_code=409, detail="This submission has no converted document (yet)")
+    return submission.document
+
+
+@router.get("/{submission_id}/document", response_model=DocumentView)
+async def get_submission_document(submission_id: PydanticObjectId) -> DocumentView:
+    submission = await Submission.get(submission_id)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    document = _require_document(submission)
+    return DocumentView(
+        markdown=storage.download_bytes(document.markdown_object_key).decode("utf-8"),
+        line_count=document.line_count,
+        page_start_lines=document.page_start_lines,
+        images=[
+            DocumentImageView(index=i, name=img.name, line=img.line, page=img.page)
+            for i, img in enumerate(document.images)
+        ],
+    )
+
+
+@router.get("/{submission_id}/document/images/{index}")
+async def get_submission_document_image(submission_id: PydanticObjectId, index: int) -> Response:
+    submission = await Submission.get(submission_id)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    images = _require_document(submission).images
+    if not 0 <= index < len(images):
+        raise HTTPException(status_code=404, detail="Image not found")
+    image = images[index]
+    return Response(content=storage.download_bytes(image.object_key), media_type=image.mime_type)
+
+
+class SegmentsUpdate(BaseModel):
+    segments: list[AnswerSegment]
+    # Also enqueue grading (every rubric question must have a segment).
+    grade: bool = False
+
+
+async def _get_segmentable(submission_id: PydanticObjectId) -> Submission:
+    submission = await _get_with_rubric(submission_id)
+    if submission.rubric.format not in SEGMENTED_FORMATS:
+        raise HTTPException(
+            status_code=422, detail=f"Rubric format {submission.rubric.format.value!r} does not use segmentation"
+        )
+    if submission.status in _IN_PROGRESS_STATUSES:
+        raise HTTPException(status_code=409, detail="Submission is still being processed -- wait for it to finish")
+    _require_document(submission)
+    return submission
+
+
+@router.put("/{submission_id}/segments", response_model=Submission)
+async def set_submission_segments(
+    submission_id: PydanticObjectId, body: SegmentsUpdate, model_id: PydanticObjectId | None = MODEL_ID_QUERY
+) -> Submission:
+    """Save a professor's segmentation. Without `grade`, the submission is
+    left `awaiting_segmentation` (any existing grades are now stale); with
+    it, grading is enqueued -- the only way a free-form PDF gets graded.
+    `422` on invalid segments, or on `grade` with a question still missing
+    its segment."""
+    submission = await _get_segmentable(submission_id)
+    questions = submission.rubric.questions
+    try:
+        validate_segments(body.segments, submission.document.line_count, [q.id for q in questions])
+    except SegmentationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if body.grade and (missing := missing_questions(body.segments, [q.id for q in questions])):
+        raise HTTPException(status_code=422, detail="No segment decided yet for question(s): " + ", ".join(missing))
+    llm_model = await require_llm_model(model_id) if body.grade else None
+
+    now = datetime.now(UTC)
+    submission.segments = body.segments
+    submission.segmentation_source = SegmentationSource.MANUAL
+    submission.segmented_at = now
+    submission.status = SubmissionStatus.AWAITING_SEGMENTATION
+    submission.error = None
+    submission.updated_at = now
+    await submission.save()
+    if llm_model is not None:
+        await enqueue_regrade(submission, llm_model.id)
+    return submission
+
+
+@router.post("/{submission_id}/segments/suggest", response_model=Submission, status_code=202)
+async def suggest_submission_segments(
+    submission_id: PydanticObjectId, model_id: PydanticObjectId | None = MODEL_ID_QUERY
+) -> Submission:
+    """Ask the LLM for a segmentation suggestion (replaces the current
+    segments once it's done). Async: the submission goes `segmenting`, then
+    back to `awaiting_segmentation`."""
+    llm_model = await require_llm_model(model_id)
+    submission = await _get_segmentable(submission_id)
+    await enqueue_segment_suggestion(submission, llm_model.id)
+    return submission
+
+
+async def enqueue_segment_suggestion(submission: Submission, model_id: PydanticObjectId) -> None:
+    submission.status = SubmissionStatus.SEGMENTING
+    submission.error = None
+    await submission.save()
+    suggest_segments_task.delay(str(submission.id), model_id=str(model_id))

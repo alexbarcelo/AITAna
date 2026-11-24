@@ -6,7 +6,7 @@ from beanie import Document, Link
 from pydantic import BaseModel, Field
 from pymongo import IndexModel
 
-from ..grading.models import Grade
+from ..grading.models import AnswerSegment, ConvertedDocument, Grade
 from .batch import Batch
 from .edition import Edition
 from .rubric import Rubric
@@ -15,10 +15,22 @@ from .student import Student
 
 class SubmissionStatus(str, Enum):
     PENDING = "pending"
+    # Free-form PDFs only (`SEGMENTED_FORMATS`): PDF -> Markdown conversion,
+    # then an optional LLM segmentation suggestion, then waiting for a
+    # professor to confirm the segments -- see AGENTS.md "Free-form PDF
+    # submissions".
+    CONVERTING = "converting"
+    SEGMENTING = "segmenting"
+    AWAITING_SEGMENTATION = "awaiting_segmentation"
     EXTRACTING = "extracting"
     GRADING = "grading"
     GRADED = "graded"
     FAILED = "failed"
+
+
+class SegmentationSource(str, Enum):
+    LLM = "llm"
+    MANUAL = "manual"
 
 
 class AnsweredQuestion(BaseModel):
@@ -95,6 +107,17 @@ class Submission(Document):
     # this is where it reads that id from.
     batch: Link[Batch] | None = None
     batch_internal_id: str | None = None
+    # Free-form PDFs only (rubric.format in `SEGMENTED_FORMATS`). `document`
+    # is the conversion metadata (the Markdown and images themselves are in
+    # MinIO -- this document is re-serialized on every grading save, so it
+    # stays small). `segments` says where each answer lives, as line numbers
+    # into that Markdown; `None` until someone (LLM or professor) proposes
+    # them. `segmentation_source` is who last wrote them -- `llm` means
+    # "suggested, not reviewed yet".
+    document: ConvertedDocument | None = None
+    segments: list[AnswerSegment] | None = None
+    segmentation_source: SegmentationSource | None = None
+    segmented_at: datetime | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

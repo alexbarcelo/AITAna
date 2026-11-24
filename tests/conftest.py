@@ -90,6 +90,7 @@ async def client(monkeypatch, mongo_db):
 
     monkeypatch.setattr("aitana.storage.upload_file", fake_upload_file)
     monkeypatch.setattr("aitana.storage.download_to_path", fake_download_to_path)
+    monkeypatch.setattr("aitana.storage.download_bytes", lambda key: fake_objects[key])
 
     delayed_submission_ids: list[str] = []
     delayed_question_ids: list[str | None] = []
@@ -101,6 +102,19 @@ async def client(monkeypatch, mongo_db):
         delayed_model_ids.append(model_id)
 
     monkeypatch.setattr("aitana.api.routers.submissions.grade_submission.delay", fake_delay)
+
+    # Free-form PDF tasks (worker/tasks.py's prepare_submission /
+    # suggest_segments_task): (submission_id, model_id) per call.
+    delayed_prepares: list[tuple[str, str | None]] = []
+    delayed_suggestions: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        "aitana.api.routers.submissions.prepare_submission.delay",
+        lambda submission_id, segment_model_id=None: delayed_prepares.append((submission_id, segment_model_id)),
+    )
+    monkeypatch.setattr(
+        "aitana.api.routers.submissions.suggest_segments_task.delay",
+        lambda submission_id, model_id=None: delayed_suggestions.append((submission_id, model_id)),
+    )
 
     # Every grading-triggering endpoint needs a usable model to resolve
     # (api/routers/llm.py's require_llm_model): seed a default one whose
@@ -116,4 +130,6 @@ async def client(monkeypatch, mongo_db):
         ac.delayed_model_ids = delayed_model_ids  # type: ignore[attr-defined]
         ac.default_llm_model_id = str(default_llm_model.id)  # type: ignore[attr-defined]
         ac.fake_objects = fake_objects  # type: ignore[attr-defined]
+        ac.delayed_prepares = delayed_prepares  # type: ignore[attr-defined]
+        ac.delayed_suggestions = delayed_suggestions  # type: ignore[attr-defined]
         yield ac

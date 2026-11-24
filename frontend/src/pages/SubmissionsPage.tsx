@@ -339,7 +339,13 @@ export default function SubmissionsPage() {
                 {showRubricColumn && <td className="px-4 py-2">{s.rubric.title}</td>}
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-2">
-                    <StatusBadge status={s.status} />
+                    {s.status === 'awaiting_segmentation' ? (
+                      <Link to={`/submissions/${s._id}/segments`} title="Open the segmentation editor">
+                        <StatusBadge status={s.status} />
+                      </Link>
+                    ) : (
+                      <StatusBadge status={s.status} />
+                    )}
                     <UntaggedCellsBadge count={totalUntaggedCells(s.answers)} />
                   </div>
                 </td>

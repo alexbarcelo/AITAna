@@ -8,7 +8,7 @@ import { GradingInfoTooltip, SubmissionGradingInfoTooltip } from '../components/
 import MatchStudentDialog from '../components/MatchStudentDialog'
 import StatusBadge from '../components/StatusBadge'
 import { UntaggedCellsBadge, UntaggedCellsSummary } from '../components/UntaggedCells'
-import { effectiveGrade, FORMAT_FILE_INFO, IN_PROGRESS_STATUSES } from '../api/types'
+import { effectiveGrade, FORMAT_FILE_INFO, IN_PROGRESS_STATUSES, SEGMENTED_FORMATS } from '../api/types'
 
 export default function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -21,6 +21,7 @@ export default function SubmissionDetailPage() {
   const questionsById = new Map(submission.rubric.questions.map((q) => [q.id, q]))
   const inProgress = IN_PROGRESS_STATUSES.includes(submission.status)
   const fileInfo = FORMAT_FILE_INFO[submission.rubric.format]
+  const segmented = SEGMENTED_FORMATS.includes(submission.rubric.format)
 
   return (
     <div className="space-y-6">
@@ -62,6 +63,15 @@ export default function SubmissionDetailPage() {
           >
             Export feedback
           </a>
+          {segmented && submission.document && (
+            <Link
+              to={`/submissions/${submission._id}/segments`}
+              title="Review where each answer starts and ends in the PDF"
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
+            >
+              Edit segmentation
+            </Link>
+          )}
           <button
             onClick={() => {
               // Not a hard block -- see SubmissionsPage's regrade bar.
@@ -82,8 +92,29 @@ export default function SubmissionDetailPage() {
 
       {inProgress && (
         <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          Grading in progress -- this page refreshes automatically.
+          {submission.status === 'converting'
+            ? 'Converting the PDF to text'
+            : submission.status === 'segmenting'
+              ? 'The LLM is looking for where each answer starts'
+              : 'Grading in progress'}{' '}
+          -- this page refreshes automatically.
         </p>
+      )}
+      {submission.status === 'awaiting_segmentation' && (
+        <div className="flex items-center justify-between rounded-md bg-violet-50 px-3 py-2 text-sm text-violet-900">
+          <span>
+            {submission.segmentation_source === 'llm'
+              ? 'The LLM suggested where each answer is. Review it before grading.'
+              : 'Mark where each answer is in this PDF before grading.'}
+            {submission.error && <span className="block text-red-700">{submission.error}</span>}
+          </span>
+          <Link
+            to={`/submissions/${submission._id}/segments`}
+            className="rounded-md bg-violet-700 px-3 py-1.5 font-medium text-white"
+          >
+            Segment answers
+          </Link>
+        </div>
       )}
       {submission.status === 'failed' && (
         <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">{submission.error ?? 'Grading failed.'}</p>

@@ -52,6 +52,14 @@ def batch_object_key(rubric_slug: str, submission_id: str, extension: str) -> st
     return f"{rubric_slug}/_batch/{submission_id}{extension}"
 
 
+def derived_object_key(file_object_key: str, name: str) -> str:
+    """Key for a file derived from a stored submission file (a free-form
+    PDF's converted Markdown and images): stored next to it, under a folder
+    named after the original key minus its extension."""
+    stem = file_object_key.rsplit(".", 1)[0] if "." in file_object_key.rsplit("/", 1)[-1] else file_object_key
+    return f"{stem}/{name}"
+
+
 def upload_file(key: str, data: bytes, content_type: str) -> None:
     import io
 

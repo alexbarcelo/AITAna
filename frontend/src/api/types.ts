@@ -4,6 +4,15 @@ export type Student = components['schemas']['Student']
 export type Question = components['schemas']['Question']
 export type Grade = components['schemas']['Grade']
 export type AnsweredQuestion = components['schemas']['AnsweredQuestion']
+/** Free-form PDFs: where one question's answer lives, as 1-based inclusive
+ * Markdown line numbers (`grading/models.py`'s `AnswerSegment`).
+ * `start_line: null` = not answered; `end_line: null` = until the next
+ * segment starts (or the end of the document). */
+export type AnswerSegment = components['schemas']['AnswerSegment']
+export type ConvertedDocument = components['schemas']['ConvertedDocument']
+/** `GET /submissions/{id}/document` -- the converted Markdown, for the
+ * segmentation editor. */
+export type SubmissionDocument = components['schemas']['DocumentView']
 
 /**
  * What the student should see for an answer: the TA's manual override if
@@ -46,7 +55,17 @@ export type GradingScale = Record<string, string>
 export const FORMAT_FILE_INFO: Record<SubmissionFormat, { extension: string; accept: string; label: string }> = {
   pdf: { extension: '.pdf', accept: 'application/pdf', label: 'PDF' },
   notebook: { extension: '.ipynb', accept: '.ipynb,application/x-ipynb+json', label: 'Jupyter notebook (.ipynb)' },
+  pdf_generic: { extension: '.pdf', accept: 'application/pdf', label: 'PDF (free-form)' },
 }
+
+/** Mirrors the backend's `SEGMENTED_FORMATS` (`grading/extraction/__init__.py`):
+ * formats converted to Markdown and split into answers by a professor
+ * before grading. */
+export const SEGMENTED_FORMATS: SubmissionFormat[] = ['pdf_generic']
+/** Mirrors the backend's `IMAGE_FORMATS` / `OUTPUT_FORMATS`: which formats
+ * `Question.include_images` / `.include_outputs` are allowed for. */
+export const IMAGE_FORMATS: SubmissionFormat[] = ['notebook', 'pdf_generic']
+export const OUTPUT_FORMATS: SubmissionFormat[] = ['notebook']
 
 /**
  * Human labels for `StudentImportFormat`, kept next to the backend's own
@@ -161,6 +180,11 @@ export interface Submission {
   status: SubmissionStatus
   answers: AnsweredQuestion[]
   error?: string | null
+  /** Free-form PDFs only (see `SEGMENTED_FORMATS`). */
+  document?: ConvertedDocument | null
+  segments?: AnswerSegment[] | null
+  segmentation_source?: 'llm' | 'manual' | null
+  segmented_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -177,4 +201,4 @@ export interface RegradeResult {
   regraded: number
 }
 
-export const IN_PROGRESS_STATUSES: SubmissionStatus[] = ['pending', 'extracting', 'grading']
+export const IN_PROGRESS_STATUSES: SubmissionStatus[] = ['pending', 'converting', 'segmenting', 'extracting', 'grading']

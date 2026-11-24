@@ -104,12 +104,13 @@ field name" specifically, see "Pluggable submission formats" below.
 
 ## Pluggable submission formats
 
-Multiple document format are accepted (at the moment: AcroForm PDF documents
-and Jupyter Notebook .ipynb files). The format of the document conditions
-the extraction step.
+Multiple document format are accepted (at the moment: AcroForm PDF documents,
+Jupyter Notebook .ipynb files, and free-form PDFs -- the latter has its own
+section below, "Free-form PDF submissions"). The format of the document
+conditions the extraction step.
 
 - **`SubmissionFormat`** (`grading/models.py`) is the enum of supported
-  formats -- currently `pdf` and `notebook`. It lives in `grading/models.py`
+  formats -- currently `pdf`, `notebook` and `pdf_generic`. It lives in `grading/models.py`
   next to `Question`/`Grade`, not in `documents/`, for the same
   DB-agnostic-reuse reason those do (see above).
 - **Format lives on the `Rubric`, not the `Submission`.** A rubric's
@@ -188,6 +189,82 @@ the extraction step.
   content sniff, so a mislabeled file can still slip through to a confusing
   extraction failure at grading time; it just catches the common "wrong
   file picked in the form" case early.
+
+## Free-form PDF submissions (`pdf_generic`, "segmentation")
+
+A PDF with no form fields: nothing in the file says which part answers
+which question, so a professor has to say it -- **segmentation** (each
+answer's span is a **segment**). Code: `grading/extraction/pdf_generic.py`
+(pure: conversion, segment validation/slicing), `grading/segmentation.py`
+(LLM suggestion), `worker/tasks.py` (`prepare_submission`,
+`suggest_segments_task`, the `SEGMENTED_FORMATS` branches),
+`api/routers/submissions.py` (bottom section), `pages/SegmentationEditorPage.tsx`.
+
+- **One coordinate system: Markdown line numbers.** The PDF is converted
+  once, right after upload, with `pymupdf.Document.to_markdown`
+  (`page_chunks=True`, `write_images=True`). Use the `Document` method, not
+  `pymupdf4llm.to_markdown` directly -- pymupdf4llm's docs ask for that
+  since PyMuPDF 2.0 (it still needs `pymupdf4llm` installed; `Document`
+  delegates to it). The Markdown is normalized (trailing whitespace, blank
+  runs collapsed, one blank line between pages) and stored in MinIO
+  (`storage.derived_object_key`, next to the PDF). A segment
+  (`AnswerSegment`) is `{question_id, start_line, end_line}`, 1-based
+  inclusive, into *that stored text*. The LLM sees the same numbers
+  (`number_lines`), the editor shows them, grading slices by them -- no
+  fuzzy text matching anywhere. **Never regenerate the Markdown silently**:
+  a different PyMuPDF version could shift every line. Re-conversion
+  (`_prepare`) therefore always drops the segments.
+- **Segment semantics.** `start_line=None` = "not answered" (graded blank,
+  via `grade_answer`'s short-circuit). `end_line=None` (the default, and the
+  only thing the LLM produces) = up to the line before the next segment's
+  start, or EOF (`resolve_segments`). An explicit `end_line` lets the
+  professor drop dead lines between answers. A question with no segment at
+  all = "not decided yet": `PUT .../segments` with `grade=true` refuses it
+  (`422`), and the worker parks the submission back in
+  `awaiting_segmentation` if a regrade finds one (e.g. the rubric gained a
+  question) instead of grading it as blank.
+- **Images are segmented for free.** Image refs are rewritten to stable
+  names (`![](img-0003.png)`); `DocumentImage.line` is the line holding the
+  ref, and an image belongs to whichever segment contains that line. Only
+  `include_images` questions' images are downloaded at extraction time.
+  `pdf_generic` is in `IMAGE_FORMATS`, not in `OUTPUT_FORMATS`.
+- **Storage split**: Markdown + images in MinIO; only metadata
+  (`Submission.document: ConvertedDocument`, `segments`,
+  `segmentation_source`, `segmented_at`) in Mongo -- `Submission` is
+  re-serialized on every grading save (sharp edge #1), keep it small.
+- **Not in `_EXTRACTORS`**: those are `(raw file path) -> ExtractionResult`;
+  this format's answers come from stored Markdown + segments instead.
+  `extract_submission_file` branches on `SEGMENTED_FORMATS`
+  (`_extract_segmented_submission`), so everything downstream (grading,
+  answer thumbnails, feedback export) works unchanged.
+- **Status flow**: `pending -> converting -> [segmenting] ->
+  awaiting_segmentation` (the "dirty" state) `-> [professor: Save & grade]
+  -> pending -> extracting -> grading -> graded`. LLM segmentation is
+  **only ever a suggestion** (product decision): nothing auto-grades after
+  it. An LLM failure is non-fatal (`awaiting_segmentation` + `error`, the
+  professor segments by hand); a conversion failure is `failed`, and a
+  regrade of a never-converted submission re-runs conversion. Saving
+  segments *without* grading puts the submission back in
+  `awaiting_segmentation` even if it was graded (its grades are now stale).
+- **Model use**: LLM-assisted segmentation (`llm_segmentation` form field
+  on `POST /submissions`/`POST /batches`, default `true`) uses the active
+  model; with it off, an upload against a `pdf_generic` rubric needs no
+  model at all (`_upload_model`). The suggestion sanitizes the LLM output
+  (out-of-range or duplicate lines become `None`) so it always validates.
+- **OCR fallback**: PyMuPDF OCRs pages that look scanned when it finds
+  Tesseract. A half-installed Tesseract (binary, no language data) makes
+  conversion *raise*, so `_to_markdown_chunks` retries once with
+  `use_ocr=False`. The Docker image has no Tesseract (no OCR, no failure).
+- **Editor** (`/submissions/:id/segments`, full-width -- `App.tsx` drops
+  the `max-w-5xl` shell for that route): PDF in an iframe (`GET
+  .../file?inline=true#page=N`, remounted on page change since viewers only
+  honour `#page` on load -- no pdf.js dependency), Markdown lines tinted per
+  segment. Click = start of the active question (then moves on to the next
+  unplaced one), shift-click = end. "Save & grade, next" walks a batch's
+  `awaiting_segmentation` submissions.
+- **License**: PyMuPDF/pymupdf4llm are AGPL-3.0 (this project is GPL-3.0;
+  compatible, but network use triggers AGPL's source offer). Accepted as a
+  base dependency deliberately.
 
 ## Pluggable grading scales
 
@@ -1093,6 +1170,9 @@ pending -> extracting (raw file -> {answer_key: text}, via whichever
    or -> failed (error message captured on the document)
 ```
 
+Free-form PDFs (`pdf_generic`) have extra states before `pending` ->
+`extracting`: see "Free-form PDF submissions" above.
+
 If you change this flow, preserve the "persist extracted answers before the
 LLM step" ordering -- it was deliberately reordered during development after
 noticing a missing-API-key failure left `answers: []` even though extraction
@@ -1346,11 +1426,16 @@ way (`Student.student_id`, `Rubric.slug`) rather than `_id`/`id`.
   `undefined`. If a backend depth cap ever changes, update the matching
   type -- don't leave it lying about what's actually available.
 - `frontend/src/api/types.ts`'s `IN_PROGRESS_STATUSES` constant is a
-  hand-maintained subset of the backend's `SubmissionStatus` enum (used to
+  hand-maintained subset of the backend's `SubmissionStatus` enum
+  (it includes `converting`/`segmenting`, but *not*
+  `awaiting_segmentation`, which waits on a human, not a worker) (used to
   decide whether `useSubmission` should keep polling). It's small and
   unlikely to change, but it *is* a second place that knows what "still
   running" means -- if you add a new in-progress status server-side
-  (`documents/submission.py`'s `SubmissionStatus`), update this too.
+  (`documents/submission.py`'s `SubmissionStatus`), update this too --
+  and `_IN_PROGRESS_STATUSES` in `api/routers/submissions.py`. Same for
+  `SEGMENTED_FORMATS`/`IMAGE_FORMATS`/`OUTPUT_FORMATS`, mirrored by hand
+  in `types.ts`.
 
 ## Grading internals (`src/aitana/grading/`)
 

@@ -17,6 +17,11 @@ from pathlib import Path
 from ..models import ExtractionResult, SubmissionFormat
 from . import notebook, pdf
 
+# `pdf_generic` is deliberately absent from `_EXTRACTORS`: its answers come
+# from the Markdown converted once at upload plus the professor's segments
+# (both stored), not from re-reading the raw file -- see pdf_generic.py and
+# worker/tasks.py's `extract_submission_file`.
+
 _EXTRACTORS: dict[SubmissionFormat, Callable[[Path], ExtractionResult]] = {
     SubmissionFormat.PDF: pdf.extract_answers,
     SubmissionFormat.NOTEBOOK: notebook.extract_answers,
@@ -28,14 +33,19 @@ _EXTRACTORS: dict[SubmissionFormat, Callable[[Path], ExtractionResult]] = {
 FORMAT_FILE_INFO: dict[SubmissionFormat, tuple[str, str]] = {
     SubmissionFormat.PDF: (".pdf", "application/pdf"),
     SubmissionFormat.NOTEBOOK: (".ipynb", "application/x-ipynb+json"),
+    SubmissionFormat.PDF_GENERIC: (".pdf", "application/pdf"),
 }
+
+# Formats that need converting + segmenting before they can be graded (see
+# pdf_generic.py) -- their submissions go through `awaiting_segmentation`.
+SEGMENTED_FORMATS: frozenset[SubmissionFormat] = frozenset({SubmissionFormat.PDF_GENERIC})
 
 # Formats whose extractor fills `ExtractionResult.answers_with_outputs` /
 # `.images` -- i.e. where `Question.include_outputs` / `.include_images` mean
 # something (enforced by Rubric's validator). Supporting images for another
 # format = fill `images` in its extractor and add it here.
 OUTPUT_FORMATS: frozenset[SubmissionFormat] = frozenset({SubmissionFormat.NOTEBOOK})
-IMAGE_FORMATS: frozenset[SubmissionFormat] = frozenset({SubmissionFormat.NOTEBOOK})
+IMAGE_FORMATS: frozenset[SubmissionFormat] = frozenset({SubmissionFormat.NOTEBOOK, SubmissionFormat.PDF_GENERIC})
 
 
 def extract_answers(fmt: SubmissionFormat, file_path: Path) -> ExtractionResult:

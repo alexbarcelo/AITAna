@@ -7,8 +7,9 @@ student answer plus feedback -- as a **submission** document, so a TA can
 review it and later analyze results across students/rubrics.
 
 The submission format is pluggable per rubric (`Rubric.format`): a filled-in
-PDF form with named AcroForm text fields, or a Jupyter notebook with answer
-cells tagged `aitana:answer` -- see "Submission formats" below.
+PDF form with named AcroForm text fields, a Jupyter notebook with answer
+cells tagged `aitana:answer`, or a free-form PDF split into answers by the
+professor (optionally LLM-assisted) -- see "Submission formats" below.
 
 **Status: WIP.** A FastAPI + MongoDB + MinIO + Celery service with a React
 frontend. See [`AGENTS.md`](AGENTS.md) for implementation details, known
@@ -38,7 +39,7 @@ React (Vite) --> FastAPI --> MongoDB (students, courses, editions, rubrics, subm
   something reused across years (a lab whose task doesn't change); set it
   for something unique to one term (an exam). `created_at`/`updated_at` are
   how you recognize an updated version of a reused rubric. Fixes which
-  **format** (`pdf` or `notebook`) its submissions must be uploaded as --
+  **format** (`pdf`, `notebook` or `pdf_generic`) its submissions must be uploaded as --
   see "Submission formats" below. Created either by uploading a YAML file
   or by filling in a form (see below).
 - **submissions** -- one per student x rubric: the extracted answers, and,
@@ -52,6 +53,9 @@ Grading is asynchronous: uploading a submission returns immediately
 (using whichever extractor the rubric's format selects) and grades each
 question in the background, updating the same document as it goes
 (`extracting` -> `grading` -> `graded`, or `failed` with an error).
+Free-form PDFs (`pdf_generic`) first go `converting` -> (`segmenting`) ->
+`awaiting_segmentation`, and only get graded once a professor confirms
+where each answer is.
 
 ## Submission formats
 
@@ -75,9 +79,26 @@ A rubric fixes one `format` at creation time (default `pdf`):
   `nbformat` dependency -- see `src/aitana/grading/extraction/notebook.py`'s
   module docstring for why).
 
+- **`pdf_generic`** -- any PDF, no form fields needed. Right after upload
+  it's converted to Markdown with PyMuPDF (`Document.to_markdown`, backed
+  by `pymupdf4llm`), images included. Then each answer has to be located
+  -- **segmentation**: in the segmentation editor (PDF and numbered
+  Markdown lines side by side) the professor clicks the line where each
+  answer starts, and optionally where it ends to drop dead lines between
+  answers. With **LLM-assisted segmentation** (an upload/batch option, or
+  "Suggest with LLM" in the editor) the active model proposes the start
+  lines first; it's only a suggestion, nothing is graded until the
+  professor clicks "Save & grade". Each answer's Markdown (and, with
+  `include_images`, its images) is what the grading LLM receives. A
+  question's `field` is an optional hint for the LLM: the label the
+  question has in the student's document (e.g. `Exercise 3`).
+
+  PyMuPDF and pymupdf4llm are AGPL-3.0 licensed: running AITAna as a
+  network service means offering its source code to its users.
+
 A question's `field` (defaults to `id`) is the answer-slot name under
 whichever format the rubric uses -- the PDF field name or the notebook tag
-suffix. Adding a third format means writing one extractor function in
+suffix (or, for `pdf_generic`, the segmentation hint above). Adding another format means writing one extractor function in
 `src/aitana/grading/extraction/` and registering it there; see
 `AGENTS.md`'s "Pluggable submission formats" section for the full shape.
 
@@ -178,7 +199,7 @@ curl -X POST http://localhost:8000/rubrics -H 'Content-Type: application/json' -
 ```yaml
 title: Containers lab    # optional; falls back to a title-cased slug
 course_slug: containers  # optional alternative to the course_id form field
-format: pdf              # optional, defaults to pdf; notebook is the other value
+format: pdf              # optional, defaults to pdf; also notebook, pdf_generic
 grading_scale:           # optional; {level_id: description}, worst -> best; defaults to the 4-level scale below
   not_attempted: Blank, off-topic, or shows no understanding of the question.
   some_effort: On-topic but misses most key points or has major misconceptions.

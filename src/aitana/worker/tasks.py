@@ -6,8 +6,10 @@ own Motor client) -- fine for the one-shot, short-lived nature of this task.
 """
 
 import asyncio
+import base64
 import logging
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 from beanie import PydanticObjectId
@@ -15,11 +17,26 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from .. import storage
 from ..db import init_db
-from ..documents import AnsweredQuestion, GradingTrace, Submission, SubmissionStatus, resolve_llm_model
-from ..grading.extraction import FORMAT_FILE_INFO, extract_answers
+from ..documents import (
+    AnsweredQuestion,
+    GradingTrace,
+    SegmentationSource,
+    Submission,
+    SubmissionStatus,
+    resolve_llm_model,
+)
+from ..grading.extraction import FORMAT_FILE_INFO, SEGMENTED_FORMATS, extract_answers
+from ..grading.extraction.pdf_generic import (
+    MARKDOWN_NAME,
+    convert_pdf,
+    extract_segmented,
+    missing_questions,
+    resolve_segments,
+)
 from ..grading.grading import grade_answer
 from ..grading.llm import get_chat_model
-from ..grading.models import ExtractedImage, ExtractionResult, GradeTrace, Question
+from ..grading.models import ConvertedDocument, DocumentImage, ExtractedImage, ExtractionResult, GradeTrace, Question
+from ..grading.segmentation import suggest_segments
 from .celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -44,19 +61,30 @@ async def _grade_submission(
     `model_id` is the `LlmModel` to grade with (the API always resolves and
     passes one); `None` falls back to the current default, for tasks
     enqueued before model selection existed."""
-    await init_db()
-    submission = await Submission.get(
-        PydanticObjectId(submission_id), fetch_links=True, nesting_depths_per_field=_SHALLOW_RUBRIC_LINK
-    )
+    submission = await _load_submission(submission_id)
     if submission is None:
-        logger.error("Submission %s not found", submission_id)
         return
+
+    rubric = submission.rubric
+    if rubric.format in SEGMENTED_FORMATS:
+        if submission.document is None:
+            # Conversion never succeeded (or never ran): a re-grade retries
+            # it, and ends up waiting for segmentation like a fresh upload.
+            await _prepare(submission, model_id)
+            return
+        if missing := missing_questions(submission.segments, [q.id for q in rubric.questions]):
+            # E.g. the rubric gained a question since segmenting -- grading
+            # would silently treat it as blank, so ask a professor instead.
+            logger.info("Submission %s needs segmentation for %s before grading", submission_id, missing)
+            submission.status = SubmissionStatus.AWAITING_SEGMENTATION
+            submission.error = None
+            await submission.save()
+            return
 
     try:
         submission.status = SubmissionStatus.EXTRACTING
         await submission.save()
 
-        rubric = submission.rubric
         extracted = extract_submission_file(submission)
 
         submission.status = SubmissionStatus.GRADING
@@ -88,16 +116,152 @@ async def _grade_submission(
         await submission.save()
 
 
+@celery_app.task(name="aitana.prepare_submission")
+def prepare_submission(submission_id: str, segment_model_id: str | None = None) -> None:
+    """Free-form PDFs: convert to Markdown (+ images), then, with
+    `segment_model_id`, ask that model for a segmentation suggestion. Always
+    ends in `awaiting_segmentation` (or `failed` if conversion failed) --
+    grading only starts once a professor confirms the segments."""
+    asyncio.run(_prepare_submission(submission_id, segment_model_id))
+
+
+@celery_app.task(name="aitana.suggest_segments")
+def suggest_segments_task(submission_id: str, model_id: str | None = None) -> None:
+    asyncio.run(_suggest_segments_by_id(submission_id, model_id))
+
+
+async def _load_submission(submission_id: str) -> Submission | None:
+    await init_db()
+    submission = await Submission.get(
+        PydanticObjectId(submission_id), fetch_links=True, nesting_depths_per_field=_SHALLOW_RUBRIC_LINK
+    )
+    if submission is None:
+        logger.error("Submission %s not found", submission_id)
+    return submission
+
+
+async def _prepare_submission(submission_id: str, segment_model_id: str | None) -> None:
+    if (submission := await _load_submission(submission_id)) is not None:
+        await _prepare(submission, segment_model_id)
+
+
+async def _suggest_segments_by_id(submission_id: str, model_id: str | None) -> None:
+    if (submission := await _load_submission(submission_id)) is not None:
+        await _suggest(submission, model_id)
+
+
+async def _prepare(submission: Submission, segment_model_id: str | None) -> None:
+    try:
+        submission.status = SubmissionStatus.CONVERTING
+        submission.error = None
+        await submission.save()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf_path = Path(tmp) / "submission.pdf"
+            storage.download_to_path(submission.file_object_key, pdf_path)
+            converted = convert_pdf(pdf_path)
+
+        markdown_key = storage.derived_object_key(submission.file_object_key, MARKDOWN_NAME)
+        storage.upload_file(markdown_key, converted.markdown.encode("utf-8"), "text/markdown; charset=utf-8")
+        images = []
+        for img in converted.images:
+            key = storage.derived_object_key(submission.file_object_key, img.name)
+            storage.upload_file(key, img.data, img.mime_type)
+            images.append(
+                DocumentImage(name=img.name, object_key=key, line=img.line, page=img.page, mime_type=img.mime_type)
+            )
+        logger.info(
+            "Submission %s converted: %d line(s), %d page(s), %d image(s)",
+            submission.id,
+            converted.line_count,
+            len(converted.page_start_lines),
+            len(images),
+        )
+
+        # Old segments refer to the old Markdown's line numbers -- drop them.
+        submission.document = ConvertedDocument(
+            markdown_object_key=markdown_key,
+            line_count=converted.line_count,
+            page_start_lines=converted.page_start_lines,
+            images=images,
+        )
+        submission.segments = None
+        submission.segmentation_source = None
+        submission.segmented_at = None
+        submission.status = SubmissionStatus.AWAITING_SEGMENTATION
+        await submission.save()
+    except Exception as exc:  # noqa: BLE001 -- same policy as grading
+        logger.exception("Converting submission %s failed", submission.id)
+        submission.status = SubmissionStatus.FAILED
+        submission.error = f"PDF conversion failed: {exc}"
+        await submission.save()
+        return
+
+    if segment_model_id is not None:
+        await _suggest(submission, segment_model_id)
+
+
+async def _suggest(submission: Submission, model_id: str | None) -> None:
+    """LLM segmentation suggestion. A failure is not fatal: the submission
+    still ends up `awaiting_segmentation` (with `error` set) so a professor
+    can segment it by hand."""
+    if submission.document is None:
+        logger.error("Submission %s has no converted document to segment", submission.id)
+        return
+    submission.status = SubmissionStatus.SEGMENTING
+    submission.error = None
+    await submission.save()
+    try:
+        markdown = storage.download_bytes(submission.document.markdown_object_key).decode("utf-8")
+        llm_model = await resolve_llm_model(model_id)
+        chat_model = get_chat_model(llm_model.provider, llm_model.model, reasoning_effort=llm_model.reasoning_effort)
+        segments = await asyncio.to_thread(suggest_segments, chat_model, markdown, submission.rubric.questions)
+        submission.segments = segments
+        submission.segmentation_source = SegmentationSource.LLM
+        submission.segmented_at = datetime.now(UTC)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("LLM segmentation of submission %s failed", submission.id)
+        submission.error = f"LLM segmentation failed: {exc}"
+    submission.status = SubmissionStatus.AWAITING_SEGMENTATION
+    await submission.save()
+
+
 def extract_submission_file(submission: Submission) -> ExtractionResult:
     """Download the submission's stored file and run its rubric's extractor.
     `submission.rubric` must be resolved. Also used outside grading to get
     images back (they're never stored, see AGENTS.md "Cell outputs and image
-    inputs")."""
+    inputs").
+
+    Free-form PDFs (`SEGMENTED_FORMATS`) are sliced from their stored
+    Markdown + segments instead; only the images of `include_images`
+    questions are downloaded."""
+    if submission.rubric.format in SEGMENTED_FORMATS:
+        return _extract_segmented_submission(submission)
     extension, _content_type = FORMAT_FILE_INFO[submission.rubric.format]
     with tempfile.TemporaryDirectory() as tmp:
         file_path = Path(tmp) / f"submission{extension}"
         storage.download_to_path(submission.file_object_key, file_path)
         return extract_answers(submission.rubric.format, file_path)
+
+
+def _extract_segmented_submission(submission: Submission) -> ExtractionResult:
+    document = submission.document
+    if document is None:
+        raise RuntimeError("This PDF has not been converted yet")
+    markdown = storage.download_bytes(document.markdown_object_key).decode("utf-8")
+    questions = submission.rubric.questions
+    segments = submission.segments or []
+    spans = resolve_segments(segments, document.line_count)
+    wanted = [spans[q.id] for q in questions if q.include_images and q.id in spans]
+    images = [
+        (
+            img.line,
+            ExtractedImage(mime_type=img.mime_type, data=base64.b64encode(storage.download_bytes(img.object_key)).decode()),
+        )
+        for img in document.images
+        if any(start <= img.line <= end for start, end, _ in wanted)
+    ]
+    return extract_segmented(markdown, segments, questions, images)
 
 
 def _rebuild_answers(

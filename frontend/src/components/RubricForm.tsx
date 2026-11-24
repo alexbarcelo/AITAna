@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useCourses, useCreateRubric, useEditions, useUpdateRubric, useUpdateRubricYaml, useUploadRubricYaml } from '../api/hooks'
 import { GRADING_SCALE_PRESETS } from '../api/gradingScalePresets'
-import { FORMAT_FILE_INFO } from '../api/types'
+import { FORMAT_FILE_INFO, IMAGE_FORMATS, OUTPUT_FORMATS, SEGMENTED_FORMATS } from '../api/types'
 import type { Question, Rubric, SubmissionFormat } from '../api/types'
 
 const FORMAT_OPTIONS = Object.keys(FORMAT_FILE_INFO) as SubmissionFormat[]
@@ -210,8 +210,8 @@ function emptyQuestion(): DraftQuestion {
   }
 }
 
-// Outputs/images are only extracted from notebooks (the backend rejects
-// them for other formats), so they're dropped when the format isn't one.
+// Outputs/images are only extracted for some formats (the backend rejects
+// them for the others), so they're dropped when the format has none.
 function toQuestion(q: DraftQuestion, format: SubmissionFormat): Question {
   return {
     id: q.id,
@@ -226,8 +226,8 @@ function toQuestion(q: DraftQuestion, format: SubmissionFormat): Question {
       .map((line) => line.trim())
       .filter(Boolean),
     needs_python_sandbox: q.needsPythonSandbox,
-    include_outputs: format === 'notebook' && q.includeOutputs,
-    include_images: format === 'notebook' && q.includeImages,
+    include_outputs: OUTPUT_FORMATS.includes(format) && q.includeOutputs,
+    include_images: IMAGE_FORMATS.includes(format) && q.includeImages,
   }
 }
 
@@ -493,9 +493,15 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
                 />
               </div>
               <div className="flex-1">
-                <label className="block text-xs font-medium text-slate-600">Answer slot (optional)</label>
+                <label className="block text-xs font-medium text-slate-600">
+                  {SEGMENTED_FORMATS.includes(format) ? 'Label in the document (optional)' : 'Answer slot (optional)'}
+                </label>
                 <input
-                  placeholder="PDF field / notebook tag; defaults to ID"
+                  placeholder={
+                    SEGMENTED_FORMATS.includes(format)
+                      ? 'e.g. "Exercise 3" -- helps the LLM find the answer'
+                      : 'PDF field / notebook tag; defaults to ID'
+                  }
                   value={q.field}
                   onChange={(e) => updateQuestion(i, { field: e.target.value })}
                   className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
@@ -576,28 +582,28 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
               Corrector needs Python sandbox access to grade this question
             </label>
             <label
-              className={`flex items-center gap-2 text-xs ${format === 'notebook' ? 'text-slate-600' : 'text-slate-400'}`}
+              className={`flex items-center gap-2 text-xs ${OUTPUT_FORMATS.includes(format) ? 'text-slate-600' : 'text-slate-400'}`}
               title="Append the text outputs of the student's code cells (prints, results, errors) to the answer. Notebooks only."
             >
               <input
                 type="checkbox"
-                disabled={format !== 'notebook'}
-                checked={format === 'notebook' && q.includeOutputs}
+                disabled={!OUTPUT_FORMATS.includes(format)}
+                checked={OUTPUT_FORMATS.includes(format) && q.includeOutputs}
                 onChange={(e) => updateQuestion(i, { includeOutputs: e.target.checked })}
               />
               Include cell outputs in the answer (notebooks only)
             </label>
             <label
-              className={`flex items-center gap-2 text-xs ${format === 'notebook' ? 'text-slate-600' : 'text-slate-400'}`}
-              title="Send the figures found in the answer's outputs (e.g. matplotlib plots) to the LLM as images. Needs a vision-capable model. Notebooks only."
+              className={`flex items-center gap-2 text-xs ${IMAGE_FORMATS.includes(format) ? 'text-slate-600' : 'text-slate-400'}`}
+              title="Send the figures found in the answer (notebook plot outputs, images in a free-form PDF) to the LLM as images. Needs a vision-capable model. Notebooks and free-form PDFs only."
             >
               <input
                 type="checkbox"
-                disabled={format !== 'notebook'}
-                checked={format === 'notebook' && q.includeImages}
+                disabled={!IMAGE_FORMATS.includes(format)}
+                checked={IMAGE_FORMATS.includes(format) && q.includeImages}
                 onChange={(e) => updateQuestion(i, { includeImages: e.target.checked })}
               />
-              Send figures to the corrector as images (notebooks only, needs a vision model)
+              Send figures to the corrector as images (notebooks and free-form PDFs, needs a vision model)
             </label>
           </div>
         ))}

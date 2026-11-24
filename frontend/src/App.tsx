@@ -1,4 +1,4 @@
-import { NavLink, Route, Routes } from 'react-router-dom'
+import { NavLink, Route, Routes, useLocation } from 'react-router-dom'
 import ActiveModelProvider from './components/ActiveModelProvider'
 import ModelSelector from './components/ModelSelector'
 import BatchesPage from './pages/BatchesPage'
@@ -7,6 +7,7 @@ import EditionsPage from './pages/EditionsPage'
 import ModelsPage from './pages/ModelsPage'
 import RubricDetailPage from './pages/RubricDetailPage'
 import RubricsPage from './pages/RubricsPage'
+import SegmentationEditorPage from './pages/SegmentationEditorPage'
 import StudentsPage from './pages/StudentsPage'
 import SubmissionDetailPage from './pages/SubmissionDetailPage'
 import SubmissionsPage from './pages/SubmissionsPage'
@@ -18,6 +19,9 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   }`
 
 export default function App() {
+  // The segmentation editor shows the PDF and its text side by side -- it
+  // needs the whole screen width, not the article-width shell.
+  const fullWidth = /^\/submissions\/[^/]+\/segments$/.test(useLocation().pathname)
   return (
     <ActiveModelProvider>
       <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -55,7 +59,7 @@ export default function App() {
           </div>
         </header>
 
-        <main className="mx-auto max-w-5xl px-4 py-8">
+        <main className={fullWidth ? 'px-4 py-4' : 'mx-auto max-w-5xl px-4 py-8'}>
           <Routes>
             <Route path="/" element={<SubmissionsPage />} />
             <Route path="/students" element={<StudentsPage />} />
@@ -66,6 +70,7 @@ export default function App() {
             <Route path="/upload" element={<UploadSubmissionPage />} />
             <Route path="/batches" element={<BatchesPage />} />
             <Route path="/submissions/:id" element={<SubmissionDetailPage />} />
+            <Route path="/submissions/:id/segments" element={<SegmentationEditorPage />} />
             <Route path="/models" element={<ModelsPage />} />
           </Routes>
         </main>
