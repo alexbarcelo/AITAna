@@ -39,11 +39,11 @@ services:
     build: .
     env_file: .env
     ports:
-      - "8000:8000"
+      - "8080:8080"
     volumes:
       - ./src:/app/src
       - ./configs:/app/configs
-    command: ["uvicorn", "aitana.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    command: ["uvicorn", "aitana.api.main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
     depends_on:
       - mongo
       - minio
@@ -75,7 +75,7 @@ services:
       - ./frontend/src:/app/src
       - ./frontend/index.html:/app/index.html
     environment:
-      VITE_API_URL: http://localhost:8000
+      VITE_API_URL: http://localhost:8080
     depends_on:
       - api
 

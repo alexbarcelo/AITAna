@@ -45,6 +45,6 @@ RUN deno run --allow-env --allow-read=node_modules --allow-write=node_modules \
     --allow-net=cdn.jsdelivr.net --node-modules-dir=auto \
     jsr:@langchain/pyodide-sandbox@0.0.4 -c "1" || true
 
-EXPOSE 8000
+EXPOSE 8080
 
-CMD ["uvicorn", "aitana.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "aitana.api.main:app", "--host", "0.0.0.0", "--port", "8080"]

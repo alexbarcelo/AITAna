@@ -1593,7 +1593,7 @@ export MONGO_URI=mongodb://localhost:27017
 export MINIO_ENDPOINT=localhost:9000
 export REDIS_URL=redis://localhost:6379/0
 export GOTENBERG_URL=http://localhost:3000   # or blank: MuPDF fallback
-uv run uvicorn aitana.api.main:app --reload
+uv run uvicorn aitana.api.main:app --reload --port 8080
 ```
 
 Running `uvicorn`/`celery` directly on the host also means you're

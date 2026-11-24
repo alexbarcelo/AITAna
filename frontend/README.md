@@ -13,7 +13,7 @@ React + TypeScript + Vite, talking to the FastAPI backend in `../src/aitana`.
 
 ```bash
 npm install
-cp .env.example .env   # VITE_API_URL, defaults to http://localhost:8000
+cp .env.example .env   # VITE_API_URL, defaults to http://localhost:8080
 npm run dev
 ```
 

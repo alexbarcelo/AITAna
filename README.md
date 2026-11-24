@@ -147,7 +147,7 @@ Run the API and worker (either via Docker or locally):
 ```bash
 docker compose up api worker
 # or, locally:
-uv run uvicorn aitana.api.main:app --reload
+uv run uvicorn aitana.api.main:app --reload --port 8080
 uv run celery -A aitana.worker.celery_app.celery_app worker --loglevel=info
 ```
 
@@ -183,9 +183,9 @@ tests/           pytest suite (API routers + grading logic)
 First start the API (either with `uv run` or `docker compose up`, see
 [Setup](#Setup)).
 
-Then the documentation will be available at http://localhost:8000/docs
+Then the documentation will be available at http://localhost:8080/docs
 
-Note that the OpenAPI json file is available at http://localhost:8000/openapi.json
+Note that the OpenAPI json file is available at http://localhost:8080/openapi.json
 
 ## Creating a rubric
 
@@ -195,11 +195,11 @@ directly:
 
 ```bash
 # from a YAML file
-curl -X POST http://localhost:8000/rubrics/upload \
+curl -X POST http://localhost:8080/rubrics/upload \
   -F "course_id=<course id>" -F "yaml_file=@containers_questions.yaml"
 
 # field-by-field
-curl -X POST http://localhost:8000/rubrics -H 'Content-Type: application/json' -d '{
+curl -X POST http://localhost:8080/rubrics -H 'Content-Type: application/json' -d '{
   "title": "Containers lab",
   "course_id": "<course id>",
   "questions": [
