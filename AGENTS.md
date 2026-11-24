@@ -241,10 +241,12 @@ answer's span is a **segment**). Code: `grading/extraction/generic_document.py`
   a different PyMuPDF version could shift every line. Re-conversion
   (`_prepare`) therefore always drops the segments.
 - **Segment semantics.** `start_line=None` = "not answered" (graded blank,
-  via `grade_answer`'s short-circuit). `end_line=None` (the default, and the
-  only thing the LLM produces) = up to the line before the next segment's
-  start, or EOF (`resolve_segments`). An explicit `end_line` lets the
-  professor drop dead lines between answers. A question with no segment at
+  via `grade_answer`'s short-circuit). `end_line=None` (the default, and what
+  the LLM is told to produce unless there are dead lines to skip) = up to
+  the line before the next segment's start, or EOF (`resolve_segments`). An
+  explicit `end_line` drops dead lines between answers; the LLM may suggest
+  one, `suggest_segments` discards it if it's before the start, past EOF or
+  reaches into the next answer. A question with no segment at
   all = "not decided yet": `PUT .../segments` with `grade=true` refuses it
   (`422`), and the worker parks the submission back in
   `awaiting_segmentation` if a regrade finds one (e.g. the rubric gained a

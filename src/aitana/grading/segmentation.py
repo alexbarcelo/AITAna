@@ -7,8 +7,9 @@ review it in the segmentation editor before anything is graded.
 
 The document is sent with every line numbered (`number_lines`) -- the same
 1-based line numbers segments are stored in, so the answer needs no fuzzy
-text matching to map back. The LLM only picks start lines; end lines (to
-skip dead lines between answers) are a professor-only refinement.
+text matching to map back. The LLM picks start lines and, only when it
+sees dead lines between answers worth leaving out, an end line; otherwise
+the end is implicit (`resolve_segments`). The professor can refine either.
 """
 
 from __future__ import annotations
@@ -40,6 +41,13 @@ line. If the student did not answer a question at all, use null. Answers
 usually appear in order, but not always. Never give the same line to two
 questions.
 
+An answer normally runs until the line before the next answer starts (or
+the end of the document), so leave the end line null. Only give an end
+line (the last line of the answer, inclusive) when there is content
+between this answer and the next one that belongs to no answer -- e.g.
+unrelated notes, a cover/annex section, or the rest of the document after
+the last answer. When in doubt, leave it null.
+
 # Questions
 {questions}
 """
@@ -65,6 +73,13 @@ def segmentation_schema(questions: list[Question]) -> type[BaseModel]:
         "AnswerStart",
         question_id=(Literal[ids], Field(description="One of the question ids.")),
         start_line=(int | None, Field(description="Line where the answer starts, or null if not answered.")),
+        end_line=(
+            int | None,
+            Field(
+                default=None,
+                description="Last line of the answer (inclusive). Null (the usual case) = up to the next answer.",
+            ),
+        ),
     )
     return create_model(
         "Segmentation",
@@ -73,10 +88,12 @@ def segmentation_schema(questions: list[Question]) -> type[BaseModel]:
 
 
 def suggest_segments(chat_model: BaseChatModel, markdown: str, questions: list[Question]) -> list[AnswerSegment]:
-    """Ask the LLM where each answer starts. Sanitizes the result instead of
-    trusting it: out-of-range lines and a line claimed twice become `None`
-    for the later question, and every question gets exactly one segment --
-    so the suggestion always passes `validate_segments`."""
+    """Ask the LLM where each answer starts (and, optionally, ends).
+    Sanitizes the result instead of trusting it: out-of-range lines and a
+    line claimed twice become `None` for the later question, an end line
+    before its start, past the document or reaching into the next answer is
+    dropped (implicit end instead), and every question gets exactly one
+    segment -- so the suggestion always passes `validate_segments`."""
     line_count = len(markdown.split("\n"))
     agent = create_agent(model=chat_model, tools=[], response_format=segmentation_schema(questions))
     start = time.perf_counter()
@@ -86,18 +103,31 @@ def suggest_segments(chat_model: BaseChatModel, markdown: str, questions: list[Q
     raw = result["structured_response"]
     logger.info("Segmentation suggested in %.2fs", time.perf_counter() - start)
 
-    by_id: dict[str, int | None] = {}
+    by_id: dict[str, tuple[int | None, int | None]] = {}
     for answer in raw.answers:
-        by_id.setdefault(answer.question_id, answer.start_line)
+        by_id.setdefault(answer.question_id, (answer.start_line, getattr(answer, "end_line", None)))
 
     used: set[int] = set()
-    segments: list[AnswerSegment] = []
+    starts: dict[str, int | None] = {}
     for q in questions:
-        line = by_id.get(q.id)
+        line = by_id.get(q.id, (None, None))[0]
         if line is not None and (not 1 <= line <= line_count or line in used):
             logger.info("Segmentation: discarding line %s suggested for %s", line, q.id)
             line = None
         if line is not None:
             used.add(line)
-        segments.append(AnswerSegment(question_id=q.id, start_line=line))
+        starts[q.id] = line
+
+    placed = sorted(line for line in starts.values() if line is not None)
+    segments: list[AnswerSegment] = []
+    for q in questions:
+        start_line = starts[q.id]
+        end_line = by_id.get(q.id, (None, None))[1] if start_line is not None else None
+        if end_line is not None:
+            assert start_line is not None
+            next_start = next((s for s in placed if s > start_line), line_count + 1)
+            if not start_line <= end_line < next_start:
+                logger.info("Segmentation: discarding end line %s suggested for %s", end_line, q.id)
+                end_line = None
+        segments.append(AnswerSegment(question_id=q.id, start_line=start_line, end_line=end_line))
     return segments
