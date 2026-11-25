@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Resource names are fixed (no namePrefix): the frontend's nginx
+# (API_UPSTREAM) and config.env (REDIS_URL, GOTENBERG_URL) refer to them.
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: aitana
+    includeSelectors: false
+
+resources:
+  - api.yaml
+  - worker.yaml
+  - frontend.yaml
+  - redis.yaml
+  - gotenberg.yaml
+
+configMapGenerator:
+  - name: aitana-config
+    envs:
+      - config.env
+
+images:
+  - name: aitana-api
+    newName: ghcr.io/alexbarcelo/aitana-api
+    newTag: main
+  - name: aitana-frontend
+    newName: ghcr.io/alexbarcelo/aitana-frontend
+    newTag: main

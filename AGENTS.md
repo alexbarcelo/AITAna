@@ -1675,6 +1675,56 @@ stronger guarantee than mocking `get_chat_model` out entirely (as
 of it): it catches a real kwarg/class mismatch against the actual installed
 client, which a mock can't.
 
+## Kubernetes deployment and image builds (`deploy/`, `.github/workflows/images.yml`)
+
+`deploy/README.md` covers how to deploy. This section is about why it's built this way.
+
+- **Kustomize, not Helm.** There's one app with a handful of settings and no
+  third-party consumers of a chart. A `base/` plus per-environment overlays
+  covers it without a templating language. MongoDB, the S3 store and the
+  `aitana-secrets` Secret belong to DevOps and are only *referenced*. Redis
+  (just a broker) and Gotenberg (stateless) ship in the base. MinIO doesn't:
+  in the cluster, the object store is whatever S3 endpoint the `MINIO_*`
+  settings point at.
+- **The frontend image proxies `/api/`.** In production the frontend is nginx
+  (`frontend/nginx/default.conf.template`). It serves `dist/` and
+  reverse-proxies `/api/` to `aitana-api` with the prefix stripped, so FastAPI
+  routes stay at the root (no `root_path`). `VITE_API_URL=/api` is a *build arg*
+  with that default, deliberately not per-deployment config: a same-origin
+  path makes one image work everywhere, and the Ingress is a single rule with
+  no controller-specific rewrites. The nginx template is rendered by the base
+  image's envsubst entrypoint, and `NGINX_ENVSUBST_FILTER` restricts
+  substitution to `API_UPSTREAM`/`MAX_BODY_SIZE` so nginx's own `$uri`/`$host`
+  survive. If you add an endpoint that streams or takes very long, check
+  `proxy_read_timeout` (300s) and, on the Ingress, the matching annotations.
+- **`frontend/Dockerfile` is multi-stage.** `target: dev` (the Vite dev
+  server) is what `docker-compose.yml` builds; the default last stage is the
+  production nginx image. Building without `--target` gives you nginx, not
+  Vite.
+- **The backend image runs as uid 10001**, so it fits clusters that enforce
+  `runAsNonRoot`. `HOME`/`DENO_DIR` point inside `/app`, and the Deno/Pyodide
+  warmup runs *as that user*, so its cache is readable at runtime. `/app` and
+  `/app/node_modules` are chowned non-recursively on purpose: the sandbox
+  writes `./node_modules` relative to the working directory (see "Python
+  sandbox for grading"), and a recursive chown would copy the whole `.venv`
+  into another layer. Because of that runtime write, the root filesystem
+  can't be read-only.
+- **The root `.dockerignore` is a whitelist.** Before that, a local build
+  copied `.env` (API keys), `.venv`, `configs/` and the student files at the
+  repo root into the image. If the image needs a new top-level file, add an
+  `!` line for it.
+- **Resource names are fixed** (`aitana-api`, `aitana-redis`, ...), with no
+  `namePrefix`: nginx's `API_UPSTREAM` default and `base/config.env`'s
+  `REDIS_URL`/`GOTENBERG_URL` are written against them.
+- **Multi-arch CI on native runners.** Each image is built once per platform
+  (amd64 on `ubuntu-24.04`, arm64 on `ubuntu-24.04-arm`), pushed by digest,
+  and a `merge` job joins them into one manifest list. That's Docker's
+  documented "distribute builds across runners" pattern; uv, Deno and npm
+  under QEMU are far too slow. PRs build both platforms and push nothing. If
+  arm64 hosted runners become unavailable (e.g. the repo goes private), the
+  workflow's comment says how to fall back to QEMU. A third job renders every
+  `deploy/overlays/*` and checks it with kubeconform.
+
 ## Verifying manually: never touch a stack you didn't start
 
 **Do not start the stack** and **do not run commands against running containers**.

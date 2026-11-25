@@ -17,3 +17,6 @@ configs/
 # grading/sandbox.py) with `uv run celery`/`uvicorn` directly on the host
 # instead of via docker-compose -- cached wheels, not source.
 /node_modules/
+
+# Kustomize secret generator input for test clusters (deploy/overlays/*)
+deploy/**/secret.env

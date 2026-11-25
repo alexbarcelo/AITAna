@@ -159,6 +159,15 @@ cd frontend && npm install && cp .env.example .env && npm run dev
 
 Or bring up everything at once: `docker compose up`.
 
+## Deployment (Kubernetes)
+
+Kustomize manifests are in `deploy/` (a `base/` plus an `overlays/example/` to
+copy per environment). Multi-arch (amd64/arm64) images are built by GitHub
+Actions (`.github/workflows/images.yml`) and pushed to
+`ghcr.io/alexbarcelo/aitana-api` and `ghcr.io/alexbarcelo/aitana-frontend`.
+MongoDB, S3-compatible object storage and the `aitana-secrets` Secret come from
+outside the manifests. See [`deploy/README.md`](deploy/README.md).
+
 ## Repository layout
 
 ```
@@ -174,7 +183,8 @@ src/aitana/
   api/           FastAPI app + routers (students, courses, editions, rubrics,
                  submissions)
   worker/        Celery app + the grade_submission background task
-frontend/        React + TypeScript + Vite app
+frontend/        React + TypeScript + Vite app (nginx/ = production proxy config)
+deploy/          Kustomize manifests (base + example overlay)
 tests/           pytest suite (API routers + grading logic)
 ```
 

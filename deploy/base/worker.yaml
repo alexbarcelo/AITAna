@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aitana-worker
+  labels:
+    app.kubernetes.io/name: aitana-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aitana-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aitana-worker
+    spec:
+      # Let an in-flight grading run finish on rollout (Celery warm shutdown).
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: aitana-api
+          command: ["celery", "-A", "aitana.worker.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+          envFrom:
+            - configMapRef:
+                name: aitana-config
+            - secretRef:
+                name: aitana-secrets
+          # No probes: no HTTP endpoint, and `celery inspect ping` is too
+          # heavy to run as one.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 768Mi
+            limits:
+              # PyMuPDF conversions + Pyodide sandbox runs.
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

@@ -1,0 +1,33 @@
+# Example overlay: copy this directory per environment and adjust.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: aitana
+
+resources:
+  - ../../base
+  - ingress.yaml
+
+# Pin a released version instead of the moving `main` tag.
+images:
+  - name: ghcr.io/alexbarcelo/aitana-api
+    newTag: main
+  - name: ghcr.io/alexbarcelo/aitana-frontend
+    newTag: main
+
+configMapGenerator:
+  - name: aitana-config
+    behavior: merge
+    envs:
+      - config.env
+
+# The `aitana-secrets` Secret is owned by DevOps (sealed-secrets, External
+# Secrets, ...). For a quick test cluster only, copy secret.env.example to
+# secret.env (never commit it) and uncomment:
+#
+# secretGenerator:
+#   - name: aitana-secrets
+#     envs:
+#       - secret.env
+#     options:
+#       disableNameSuffixHash: true

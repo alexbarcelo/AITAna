@@ -1,0 +1,29 @@
+# Single rule: everything goes to the frontend's nginx, which serves the SPA
+# and proxies /api/ to the api Service. No controller-specific rewrites.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aitana
+  annotations:
+    # ingress-nginx defaults to a 1m request body, which breaks uploads.
+    # Keep in sync with the frontend's MAX_BODY_SIZE.
+    nginx.ingress.kubernetes.io/proxy-body-size: 200m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  # ingressClassName: nginx
+  rules:
+    - host: aitana.example.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: aitana-frontend
+                port:
+                  name: http
+  # tls:
+  #   - hosts: [aitana.example.org]
+  #     secretName: aitana-tls

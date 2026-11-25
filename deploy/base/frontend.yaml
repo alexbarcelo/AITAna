@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aitana-frontend
+  labels:
+    app.kubernetes.io/name: aitana-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aitana-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aitana-frontend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: frontend
+          image: aitana-frontend
+          env:
+            # Defaults baked into the image; listed here to make them visible.
+            - name: API_UPSTREAM
+              value: http://aitana-api:8080
+            - name: MAX_BODY_SIZE
+              value: 200m
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aitana-frontend
+  labels:
+    app.kubernetes.io/name: aitana-frontend
+spec:
+  selector:
+    app.kubernetes.io/name: aitana-frontend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

@@ -1,2 +1,10 @@
-frontend/
-tests/
+# Whitelist: only what the backend image needs. Anything else at the repo
+# root (.env with API keys, .venv, configs/, student files) must never end up
+# in an image.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src
+**/__pycache__

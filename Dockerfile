@@ -7,7 +7,15 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PATH="/app/.venv/bin:/usr/local/bin:$PATH" \
-    DENO_INSTALL=/usr/local
+    DENO_INSTALL=/usr/local \
+    DENO_DIR=/app/.cache/deno \
+    HOME=/app
+
+# Non-root runtime user (Kubernetes clusters commonly enforce runAsNonRoot).
+# Fixed uid so deploy/ manifests can reference it. HOME/DENO_DIR point inside
+# /app so the Deno cache warmed below is readable by this user at runtime.
+RUN groupadd --system --gid 10001 aitana \
+    && useradd --system --uid 10001 --gid aitana --home-dir /app --no-create-home aitana
 
 # Deno, not a Python package: it runs the sandboxed Python-execution tool a
 # rubric question can opt into (Question.needs_python_sandbox). See
@@ -35,9 +43,19 @@ RUN uv sync --locked --no-install-project --extra openai --extra ollama --extra 
 COPY . .
 RUN uv sync --locked --extra openai --extra ollama --extra openrouter
 
+# The sandbox writes to ./node_modules (relative to /app) and the Deno cache
+# at runtime, so those -- and /app itself, non-recursively -- must be writable
+# by the runtime user. Not a recursive chown of /app: that would duplicate the
+# whole .venv into another layer.
+RUN mkdir -p /app/node_modules /app/.cache/deno \
+    && chown aitana:aitana /app /app/node_modules /app/.cache /app/.cache/deno
+
+USER 10001
+
 # Best-effort cache warmup: pre-fetches the sandbox's JSR/npm dependencies
 # and Pyodide's own bootstrap wheels (micropip, packaging) into ./node_modules
 # so the *first real* grading request doesn't stall on a cold network fetch.
+# Runs as the runtime user so the cache is owned by it.
 # `|| true` because, like `uv sync` above, this needs outbound network at
 # build time -- a build without it should still succeed, just with that
 # fetch cost deferred to the first grading run instead.

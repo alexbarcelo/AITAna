@@ -68,7 +68,9 @@ services:
       - redis
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      target: dev
     ports:
       - "5173:5173"
     volumes:

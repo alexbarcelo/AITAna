@@ -1,0 +1,153 @@
+name: images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/alexbarcelo/aitana
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # One native build per image x platform, pushed by digest only; `merge`
+  # stitches the digests into a multi-arch manifest list under the real tags.
+  # (Docker's "distribute build across multiple runners" pattern -- avoids
+  # QEMU, which is very slow for uv/Deno/npm.)
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: api
+            context: .
+          - name: frontend
+            context: frontend
+        platform:
+          - arch: linux/amd64
+            runner: ubuntu-24.04
+          - arch: linux/arm64
+            # Native arm64 hosted runners are free for public repos. If they
+            # aren't available, use ubuntu-24.04 here too and uncomment the
+            # setup-qemu-action step below (slow, but works).
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.platform.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Platform pair
+        run: |
+          platform='${{ matrix.platform.arch }}'
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      # - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-${{ matrix.image.name }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          platforms: ${{ matrix.platform.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: >-
+            type=image,name=${{ env.IMAGE_PREFIX }}-${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ env.PLATFORM_PAIR }}
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest='${{ steps.build.outputs.digest }}'
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: digests-${{ matrix.image.name }}-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        image: [api, frontend]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.image }}-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-${{ matrix.image }}
+          # main -> :main + :latest, v1.2.3 -> :1.2.3 + :1.2, plus :sha-xxxxxxx
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Create manifest list
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          # Word splitting is intended (one -t per tag, one ref per digest).
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE_PREFIX }}-${{ matrix.image }}@sha256:%s ' *)
+
+      - name: Inspect
+        run: docker buildx imagetools inspect '${{ env.IMAGE_PREFIX }}-${{ matrix.image }}:${{ steps.meta.outputs.version }}'
+
+  manifests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render and validate kustomize overlays
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP" kubeconform
+          for overlay in deploy/overlays/*/; do
+            echo "::group::$overlay"
+            kubectl kustomize "$overlay" | "$RUNNER_TEMP/kubeconform" -strict -summary -
+            echo "::endgroup::"
+          done
