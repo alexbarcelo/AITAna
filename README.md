@@ -20,6 +20,7 @@ gotchas, and conventions worth knowing before changing the code.
 ```
 React (Vite) --> FastAPI --> MongoDB (students, courses, editions, rubrics, submissions)
                           --> MinIO (raw submission files)
+                          --> Gotenberg (.docx -> PDF, LibreOffice)
                           --> enqueues grading on Redis/Celery
                  Celery worker --> MongoDB / MinIO / the LLM provider
 ```
@@ -85,10 +86,12 @@ A rubric fixes one `format` at creation time (default `pdf_form`):
   module docstring for why).
 
 - **`generic_document`** ("Generic document" in the UI) -- any PDF, no form
-  fields needed, or a Word `.docx`, which is converted to PDF on upload
-  (PyMuPDF's `Document.convert_to_pdf`) so only a PDF is ever stored. MuPDF
-  lays out the `.docx` itself, so tables and complex formatting can come out
-  rougher than in a PDF exported from Word. Right after upload
+  fields needed, or a Word `.docx`, which is converted to PDF on upload by
+  LibreOffice running in a [Gotenberg](https://gotenberg.dev) sidecar, so
+  the PDF is what gets graded and shown in the editor (the original `.docx`
+  is kept alongside it and can be downloaded). With `GOTENBERG_URL` left
+  blank it falls back to PyMuPDF's own `Document.convert_to_pdf`, whose
+  layout of tables and complex formatting is much rougher. Right after upload
   it's converted to Markdown with PyMuPDF (`Document.to_markdown`, backed
   by `pymupdf4llm`), images included. Then each answer has to be located
   -- **segmentation**: in the segmentation editor (PDF and numbered
