@@ -1,11 +1,15 @@
 """Shared fixtures for the API test suite.
 
-Everything runs against an in-memory Mongo (mongomock-motor) and in-process
-fakes for MinIO/Celery -- no live mongo/minio/redis needed. Requests go
-through httpx's ASGITransport directly (not FastAPI's lifespan-aware
-TestClient), so the whole request stays on the *same* asyncio event loop as
-the `mongo_db` fixture -- Motor/mongomock clients are bound to the loop that
-created them.
+Runs against a real PostgreSQL: `TEST_DATABASE_URL` if set, otherwise a
+throwaway `postgres:17-alpine` container (testcontainers) started once per
+session. The schema comes from the real Alembic migrations. Each test runs
+inside one outer transaction that is rolled back at the end: the app's
+commits become savepoints (`join_transaction_mode="create_savepoint"`), so
+tests are isolated without recreating anything.
+
+Object storage and Celery are in-process fakes. Requests go through httpx's
+ASGITransport directly (not FastAPI's lifespan-aware TestClient), on the same
+event loop as the `db` fixture -- asyncpg connections are loop-bound.
 """
 
 import io
@@ -13,12 +17,12 @@ import os
 import zipfile
 from pathlib import Path
 
-import mongomock
-import mongomock_motor
 import pytest
-from beanie import init_beanie
+from alembic import command
+from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
-from mongomock_motor import AsyncMongoMockClient
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.pool import NullPool
 
 # A developer's real .env may point GOTENBERG_URL at a live converter; the
 # suite must never call it (environment beats .env in pydantic-settings, and
@@ -26,56 +30,51 @@ from mongomock_motor import AsyncMongoMockClient
 os.environ["GOTENBERG_URL"] = ""
 
 from aitana.api.main import app  # noqa: E402
-from aitana.documents import DOCUMENT_MODELS, LlmModel
+from aitana.db import LlmModel  # noqa: E402
+from aitana.db.session import get_session  # noqa: E402
+from aitana.settings import Settings  # noqa: E402
 
-# mongomock-motor 0.0.36 lags current pymongo/motor in two ways Beanie relies
-# on. Both shims are test-only; production code never touches mongomock.
-
-# 1) mongomock's Database.list_collection_names() doesn't yet accept the
-#    authorizedCollections/nameOnly kwargs current pymongo/motor pass through
-#    -- needed for Beanie's startup collection scan.
-_original_list_collection_names = mongomock.Database.list_collection_names
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _compat_list_collection_names(self, filter=None, session=None, **_ignored):
-    return _original_list_collection_names(self, filter=filter, session=session)
+@pytest.fixture(scope="session")
+def database_url():
+    """A migrated, empty database for the whole session."""
+    url = os.environ.get("TEST_DATABASE_URL")
+    container = None
+    if not url:
+        from testcontainers.postgres import PostgresContainer
+
+        container = PostgresContainer("postgres:17-alpine", driver=None)
+        container.start()
+        url = container.get_connection_url()
+    url = Settings(database_url=url).database_url  # normalized to the asyncpg driver
+
+    config = Config(str(_REPO_ROOT / "alembic.ini"))
+    config.attributes["database_url"] = url
+    command.upgrade(config, "head")
+    try:
+        yield url
+    finally:
+        if container is not None:
+            container.stop()
 
 
-mongomock.Database.list_collection_names = _compat_list_collection_names
-
-# 2) Real motor's Collection.aggregate() is itself a coroutine that resolves
-#    to a command cursor; mongomock-motor's is a plain sync method, so
-#    `await collection.aggregate(...)` (used by Beanie's fetch_links=True
-#    queries, which compile to a $lookup aggregation) breaks with
-#    "can't be used in 'await' expression".
-_original_collection_aggregate = mongomock_motor.AsyncMongoMockCollection.aggregate
-
-
-async def _awaitable_aggregate(self, *args, **kwargs):
-    return _original_collection_aggregate(self, *args, **kwargs)
-
-
-mongomock_motor.AsyncMongoMockCollection.aggregate = _awaitable_aggregate
-
-# 3) mongomock's $lookup handler hard-rejects a 'pipeline' key with
-#    NotImplementedError even when the pipeline is empty. Beanie adds that
-#    key whenever a fetch_links'd field's target type has its own Link
-#    fields (e.g. Submission.rubric -> Rubric.course), regardless of whether
-#    resolution is actually requested that deep -- production code limits
-#    that depth (`nesting_depths_per_field`, see submissions.py) so the
-#    pipeline Beanie builds is genuinely empty; this shim just stops
-#    mongomock from rejecting the (harmless, empty) key outright.
-_original_handle_lookup_stage = mongomock.aggregate._handle_lookup_stage
-
-
-def _handle_lookup_stage_tolerating_empty_pipeline(in_collection, database, options):
-    if options.get("pipeline") == []:
-        options = {k: v for k, v in options.items() if k != "pipeline"}
-    return _original_handle_lookup_stage(in_collection, database, options)
-
-
-mongomock.aggregate._handle_lookup_stage = _handle_lookup_stage_tolerating_empty_pipeline
-mongomock.aggregate._PIPELINE_HANDLERS["$lookup"] = _handle_lookup_stage_tolerating_empty_pipeline
+@pytest.fixture
+async def db(database_url):
+    """A session inside a transaction that's rolled back after the test.
+    Shared with the app (see `client`), so data a test creates here is what
+    the endpoints see, and vice versa."""
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        session = AsyncSession(bind=connection, join_transaction_mode="create_savepoint", expire_on_commit=False)
+        try:
+            yield session
+        finally:
+            await session.close()
+            await transaction.rollback()
+    await engine.dispose()
 
 
 _W = "http://schemas.openxmlformats.org"
@@ -118,15 +117,7 @@ def minimal_docx():
 
 
 @pytest.fixture
-async def mongo_db():
-    """A fresh isolated mongomock database, with Beanie initialized against it."""
-    db = AsyncMongoMockClient()["aitana_test"]
-    await init_beanie(database=db, document_models=DOCUMENT_MODELS)
-    return db
-
-
-@pytest.fixture
-async def client(monkeypatch, mongo_db):
+async def client(monkeypatch, db):
     fake_objects: dict[str, bytes] = {}
 
     def fake_upload_file(key: str, data: bytes, content_type: str) -> None:
@@ -146,11 +137,11 @@ async def client(monkeypatch, mongo_db):
 
     monkeypatch.setattr("aitana.storage.delete_submission_files", fake_delete_submission_files)
 
-    delayed_submission_ids: list[str] = []
+    delayed_submission_ids: list[int] = []
     delayed_question_ids: list[str | None] = []
-    delayed_model_ids: list[str | None] = []
+    delayed_model_ids: list[int | None] = []
 
-    def fake_delay(submission_id: str, only_question_id: str | None = None, model_id: str | None = None) -> None:
+    def fake_delay(submission_id: int, only_question_id: str | None = None, model_id: int | None = None) -> None:
         delayed_submission_ids.append(submission_id)
         delayed_question_ids.append(only_question_id)
         delayed_model_ids.append(model_id)
@@ -159,8 +150,8 @@ async def client(monkeypatch, mongo_db):
 
     # Generic-document tasks (worker/tasks.py's prepare_submission /
     # suggest_segments_task): (submission_id, model_id) per call.
-    delayed_prepares: list[tuple[str, str | None]] = []
-    delayed_suggestions: list[tuple[str, str | None]] = []
+    delayed_prepares: list[tuple[int, int | None]] = []
+    delayed_suggestions: list[tuple[int, int | None]] = []
     monkeypatch.setattr(
         "aitana.api.routers.submissions.prepare_submission.delay",
         lambda submission_id, segment_model_id=None: delayed_prepares.append((submission_id, segment_model_id)),
@@ -175,15 +166,31 @@ async def client(monkeypatch, mongo_db):
     # provider counts as available (package installed in dev, fake key set).
     monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
     default_llm_model = LlmModel(provider="openai", model="gpt-4o-mini", is_default=True)
-    await default_llm_model.insert()
+    db.add(default_llm_model)
+    await db.commit()
+
+    async def override_get_session():
+        # Like a fresh per-request session: nothing cached from the test's
+        # own setup or from earlier requests; uncommitted work is dropped.
+        db.expunge_all()
+        try:
+            yield db
+        finally:
+            await db.rollback()
+
+    app.dependency_overrides[get_session] = override_get_session
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         ac.delayed_submission_ids = delayed_submission_ids  # type: ignore[attr-defined]
         ac.delayed_question_ids = delayed_question_ids  # type: ignore[attr-defined]
         ac.delayed_model_ids = delayed_model_ids  # type: ignore[attr-defined]
-        ac.default_llm_model_id = str(default_llm_model.id)  # type: ignore[attr-defined]
+        ac.default_llm_model_id = default_llm_model.id  # type: ignore[attr-defined]
         ac.fake_objects = fake_objects  # type: ignore[attr-defined]
         ac.delayed_prepares = delayed_prepares  # type: ignore[attr-defined]
         ac.delayed_suggestions = delayed_suggestions  # type: ignore[attr-defined]
-        yield ac
+        ac.db = db  # type: ignore[attr-defined]
+        try:
+            yield ac
+        finally:
+            app.dependency_overrides.pop(get_session, None)

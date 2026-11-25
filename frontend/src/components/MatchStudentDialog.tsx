@@ -12,7 +12,7 @@ export default function MatchStudentDialog({
   submissionId,
   currentStudentId,
 }: {
-  submissionId: string
+  submissionId: number
   currentStudentId?: string
 }) {
   const [open, setOpen] = useState(false)
@@ -51,7 +51,7 @@ function MatchStudentModal({
   currentStudentId,
   onClose,
 }: {
-  submissionId: string
+  submissionId: number
   currentStudentId?: string
   onClose: () => void
 }) {
@@ -65,7 +65,7 @@ function MatchStudentModal({
     return s.name.toLowerCase().includes(q) || s.student_id.toLowerCase().includes(q)
   })
 
-  function pick(studentId: string) {
+  function pick(studentId: number) {
     setStudent.mutate(
       { submissionId, studentId },
       {
@@ -93,9 +93,9 @@ function MatchStudentModal({
         <div className="max-h-72 overflow-y-auto">
           {filtered.map((s) => (
             <button
-              key={s._id}
+              key={s.id}
               type="button"
-              onClick={() => s._id && pick(s._id)}
+              onClick={() => pick(s.id)}
               disabled={setStudent.isPending}
               className={`flex w-full items-center justify-between px-4 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-50 ${
                 s.student_id === currentStudentId ? 'bg-slate-50 font-medium' : ''

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useCreateSubmission, useEditions, useRubrics, useStudents } from '../api/hooks'
 import { FORMAT_FILE_INFO, SEGMENTED_FORMATS } from '../api/types'
 import LlmSegmentationCheckbox from '../components/LlmSegmentationCheckbox'
+import { parseId } from '../lib/ids'
 
 export default function UploadSubmissionPage() {
   const { data: students } = useStudents()
@@ -19,7 +20,7 @@ export default function UploadSubmissionPage() {
   const [file, setFile] = useState<File | null>(null)
   const [llmSegmentation, setLlmSegmentation] = useState(true)
 
-  const selectedRubric = rubrics?.find((r) => r._id === rubricId)
+  const selectedRubric = rubrics?.find((r) => String(r.id) === rubricId)
   // A rubric with a fixed edition (e.g. an exam) determines the edition
   // automatically; one without (e.g. a lab, reused across editions) needs
   // the professor to pick which edition this submission belongs to. Editions
@@ -48,13 +49,13 @@ export default function UploadSubmissionPage() {
     createSubmission.mutate(
       {
         file,
-        ...(labelled ? { label: label.trim() } : { studentId }),
-        rubricId,
-        editionId: needsExplicitEdition ? editionId : undefined,
+        ...(labelled ? { label: label.trim() } : { studentId: Number(studentId) }),
+        rubricId: Number(rubricId),
+        editionId: needsExplicitEdition ? parseId(editionId) : undefined,
         llmSegmentation,
       },
       {
-        onSuccess: (submission) => navigate(`/submissions/${submission._id}`),
+        onSuccess: (submission) => navigate(`/submissions/${submission.id}`),
       },
     )
   }
@@ -94,7 +95,7 @@ export default function UploadSubmissionPage() {
                 Select a student
               </option>
               {students?.map((s) => (
-                <option key={s._id} value={s._id ?? ''}>
+                <option key={s.id} value={s.id ?? ''}>
                   {s.name} ({s.student_id})
                 </option>
               ))}
@@ -114,7 +115,7 @@ export default function UploadSubmissionPage() {
               Select a rubric
             </option>
             {rubrics?.map((rubric) => (
-              <option key={rubric._id} value={rubric._id ?? ''}>
+              <option key={rubric.id} value={rubric.id ?? ''}>
                 {rubric.title}
               </option>
             ))}
@@ -141,7 +142,7 @@ export default function UploadSubmissionPage() {
                   This rubric is reusable -- pick which edition
                 </option>
                 {editions?.map((edition) => (
-                  <option key={edition._id} value={edition._id ?? ''}>
+                  <option key={edition.id} value={edition.id ?? ''}>
                     {edition.name}
                   </option>
                 ))}

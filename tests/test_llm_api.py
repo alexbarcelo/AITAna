@@ -5,11 +5,22 @@ conftest.py."""
 
 import sys
 
+from sqlalchemy import delete, func, select
+
 from aitana.api.routers import llm as llm_router
-from aitana.documents import Course, LlmModel, Rubric, UserSettings
+from aitana.db import Course, FavoriteLlmModel, LlmModel
 from aitana.grading.llm import available_providers, provider_unavailable_reason
-from aitana.grading.models import Question
 from aitana.settings import Settings
+
+from .factories import make_rubric, question
+
+
+async def _favorite_ids(db) -> list[int]:
+    return list(await db.scalars(select(FavoriteLlmModel.llm_model_id)))
+
+
+async def _model_count(db) -> int:
+    return await db.scalar(select(func.count()).select_from(LlmModel))
 
 
 def _clear_provider_env(monkeypatch):
@@ -74,7 +85,7 @@ async def test_list_models_flags_unavailable_provider(client, monkeypatch):
     assert model["unavailable_reason"] == "OPENAI_API_KEY is not set"
 
 
-async def test_create_model(client):
+async def test_create_model(client, db):
     resp = await client.post("/llm/models", json={"provider": "OpenAI", "model": " gpt-5 ", "is_favorite": True})
     assert resp.status_code == 201
     body = resp.json()
@@ -82,8 +93,7 @@ async def test_create_model(client):
     assert body["is_default"] is False  # a default already exists
     assert body["is_favorite"] is True
 
-    settings = await UserSettings.find_one()
-    assert [str(i) for i in settings.favorite_model_ids] == [body["id"]]
+    assert await _favorite_ids(db) == [body["id"]]
 
 
 async def test_create_model_duplicate_conflicts(client):
@@ -106,17 +116,18 @@ async def test_create_model_empty_identifier_rejected(client):
     assert resp.status_code == 422
 
 
-async def test_first_model_becomes_default(client):
-    await LlmModel.find_all().delete()
+async def test_first_model_becomes_default(client, db):
+    await db.execute(delete(LlmModel))
+    await db.commit()
     resp = await client.post("/llm/models", json={"provider": "openai", "model": "gpt-5"})
     assert resp.json()["is_default"] is True
 
 
-async def test_create_model_as_default_replaces_previous(client):
+async def test_create_model_as_default_replaces_previous(client, db):
     resp = await client.post("/llm/models", json={"provider": "openai", "model": "gpt-5", "is_default": True})
     assert resp.json()["is_default"] is True
-    defaults = await LlmModel.find(LlmModel.is_default == True).to_list()  # noqa: E712
-    assert [str(m.id) for m in defaults] == [resp.json()["id"]]
+    defaults = list(await db.scalars(select(LlmModel.id).where(LlmModel.is_default)))
+    assert defaults == [resp.json()["id"]]
 
 
 async def test_set_default_model(client):
@@ -128,32 +139,33 @@ async def test_set_default_model(client):
     assert models[client.default_llm_model_id]["is_default"] is False
 
 
-async def test_favorite_toggle(client):
+async def test_favorite_toggle(client, db):
     model_id = client.default_llm_model_id
     resp = await client.put(f"/llm/models/{model_id}/favorite")
     assert resp.json()["is_favorite"] is True
     # Idempotent: favoriting twice doesn't duplicate it.
     await client.put(f"/llm/models/{model_id}/favorite")
-    assert len((await UserSettings.find_one()).favorite_model_ids) == 1
+    assert await _favorite_ids(db) == [model_id]
 
     resp = await client.delete(f"/llm/models/{model_id}/favorite")
     assert resp.json()["is_favorite"] is False
-    assert (await UserSettings.find_one()).favorite_model_ids == []
+    assert await _favorite_ids(db) == []
 
 
 async def test_favorite_unknown_model_404(client):
-    resp = await client.put("/llm/models/000000000000000000000000/favorite")
+    resp = await client.put("/llm/models/999999999/favorite")
     assert resp.status_code == 404
 
 
-async def test_delete_model_removes_favorite(client):
+async def test_delete_model_removes_favorite(client, db):
     new_id = (await client.post("/llm/models", json={"provider": "openai", "model": "gpt-5", "is_favorite": True})).json()[
         "id"
     ]
+    assert await _favorite_ids(db) == [new_id]
     resp = await client.delete(f"/llm/models/{new_id}")
     assert resp.status_code == 204
-    assert await LlmModel.get(new_id) is None
-    assert (await UserSettings.find_one()).favorite_model_ids == []
+    assert await db.get(LlmModel, new_id) is None
+    assert await _favorite_ids(db) == []
 
 
 async def test_delete_default_model_with_others_conflicts(client):
@@ -170,44 +182,38 @@ async def test_delete_last_model_allowed(client):
 # ---- Seeding from the environment ----
 
 
-async def test_seed_from_env_when_empty(mongo_db, monkeypatch):
+async def test_seed_from_env_when_empty(db, monkeypatch):
     monkeypatch.setattr(llm_router, "get_settings", lambda: Settings(llm_provider="OpenRouter", llm_model="z-ai/glm-4.5"))
-    await llm_router.seed_llm_models_from_env()
-    [model] = await LlmModel.find_all().to_list()
+    await llm_router.seed_llm_models_from_env(db)
+    [model] = list(await db.scalars(select(LlmModel)))
     assert (model.provider, model.model, model.is_default) == ("openrouter", "z-ai/glm-4.5", True)
 
     # Idempotent: nothing more once any model exists.
-    await llm_router.seed_llm_models_from_env()
-    assert await LlmModel.find_all().count() == 1
+    await llm_router.seed_llm_models_from_env(db)
+    assert await _model_count(db) == 1
 
 
-async def test_seed_from_env_skipped_without_settings(mongo_db, monkeypatch):
+async def test_seed_from_env_skipped_without_settings(db, monkeypatch):
     monkeypatch.setattr(llm_router, "get_settings", lambda: Settings(llm_provider=None, llm_model=None))
-    await llm_router.seed_llm_models_from_env()
-    assert await LlmModel.find_all().count() == 0
+    await llm_router.seed_llm_models_from_env(db)
+    assert await _model_count(db) == 0
 
 
 # ---- Grading endpoints pick a model ----
 
 
-async def _make_submission(client) -> tuple[str, str]:
-    student_id = (await client.post("/students", json={"student_id": "s1", "name": "Ada"})).json()["_id"]
-    course_id = (await client.post("/courses", json={"name": "BDM"})).json()["_id"]
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric = Rubric(
-        slug="lab",
-        title="Lab",
-        course=await Course.get(course_id),
-        questions=[Question(id="q1", title="Q1", question="?", rubric="R")],
-    )
-    await rubric.insert()
+async def _make_submission(client) -> tuple[int, int]:
+    student_id = (await client.post("/students", json={"student_id": "s1", "name": "Ada"})).json()["id"]
+    course_id = (await client.post("/courses", json={"name": "BDM"})).json()["id"]
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric = await make_rubric(client.db, "lab", course=await client.db.get(Course, course_id), questions=[question("q1")])
     resp = await client.post(
         "/submissions",
-        data={"student_id": student_id, "rubric_id": str(rubric.id), "edition_id": edition_id},
+        data={"student_id": student_id, "rubric_id": rubric.id, "edition_id": edition_id},
         files={"file": ("a.pdf", b"%PDF", "application/pdf")},
     )
     assert resp.status_code == 202, resp.text
-    return resp.json()["_id"], str(rubric.id)
+    return resp.json()["id"], rubric.id
 
 
 async def test_grading_uses_default_model_when_none_given(client):
@@ -228,13 +234,14 @@ async def test_grading_uses_requested_model(client):
 
 async def test_grading_unknown_model_404(client):
     submission_id, _ = await _make_submission(client)
-    resp = await client.post(f"/submissions/{submission_id}/regrade", params={"model_id": "000000000000000000000000"})
+    resp = await client.post(f"/submissions/{submission_id}/regrade", params={"model_id": "999999999"})
     assert resp.status_code == 404
 
 
-async def test_grading_without_default_422(client):
+async def test_grading_without_default_422(client, db):
     submission_id, _ = await _make_submission(client)
-    await LlmModel.find_all().delete()
+    await db.execute(delete(LlmModel))
+    await db.commit()
     resp = await client.post(f"/submissions/{submission_id}/regrade")
     assert resp.status_code == 422
     assert "No default LLM model" in resp.json()["detail"]
@@ -279,12 +286,12 @@ async def test_create_model_invalid_reasoning_effort_rejected(client):
     assert resp.status_code == 422
 
 
-async def test_update_reasoning_effort(client):
+async def test_update_reasoning_effort(client, db):
     model_id = client.default_llm_model_id
     resp = await client.patch(f"/llm/models/{model_id}", json={"reasoning_effort": "medium"})
     assert resp.status_code == 200
     assert resp.json()["reasoning_effort"] == "medium"
-    assert (await LlmModel.get(model_id)).reasoning_effort == "medium"
+    assert (await db.get(LlmModel, model_id)).reasoning_effort == "medium"
 
     resp = await client.patch(f"/llm/models/{model_id}", json={"reasoning_effort": None})
     assert resp.json()["reasoning_effort"] is None
@@ -295,24 +302,24 @@ async def test_update_reasoning_effort_requires_the_field(client):
     assert resp.status_code == 422
 
 
-async def test_seed_from_env_includes_reasoning_effort(mongo_db, monkeypatch):
+async def test_seed_from_env_includes_reasoning_effort(db, monkeypatch):
     monkeypatch.setattr(
         llm_router,
         "get_settings",
         lambda: Settings(llm_provider="openai", llm_model="gpt-5", llm_reasoning_effort="HIGH"),
     )
-    await llm_router.seed_llm_models_from_env()
-    assert (await LlmModel.find_one()).reasoning_effort == "high"
+    await llm_router.seed_llm_models_from_env(db)
+    assert (await db.scalar(select(LlmModel))).reasoning_effort == "high"
 
 
-async def test_seed_from_env_ignores_invalid_reasoning_effort(mongo_db, monkeypatch):
+async def test_seed_from_env_ignores_invalid_reasoning_effort(db, monkeypatch):
     monkeypatch.setattr(
         llm_router,
         "get_settings",
         lambda: Settings(llm_provider="openai", llm_model="gpt-5", llm_reasoning_effort="extreme"),
     )
-    await llm_router.seed_llm_models_from_env()
-    assert (await LlmModel.find_one()).reasoning_effort is None
+    await llm_router.seed_llm_models_from_env(db)
+    assert (await db.scalar(select(LlmModel))).reasoning_effort is None
 
 
 async def test_test_answer_passes_models_reasoning_effort(client, monkeypatch):

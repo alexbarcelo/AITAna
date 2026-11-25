@@ -1,8 +1,15 @@
-"""Celery task: extract answers from a submission's raw file and grade each question.
+"""Celery tasks: convert/segment generic documents, extract answers from a
+submission's stored file and grade each question.
 
-Beanie/Motor are async; Celery tasks run sync, so each task wraps its DB work
-in asyncio.run(...) and initializes Beanie fresh (a new event loop needs its
-own Motor client) -- fine for the one-shot, short-lived nature of this task.
+Celery tasks run sync and the database layer is async, so each task wraps
+its work in `asyncio.run(...)` with its own unpooled engine
+(`db.session.task_session`) -- asyncpg connections are bound to the event
+loop that opened them.
+
+Every state change is committed right away, so polling clients see progress
+(including each graded question). A submission deleted while a task works on
+it (`DELETE ...?force=true`) makes the next commit match no row
+(`StaleDataError`): the task logs it and stops.
 """
 
 import asyncio
@@ -12,12 +19,15 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from beanie import PydanticObjectId
 from langchain_core.language_models.chat_models import BaseChatModel
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.orm.exc import StaleDataError
 
 from .. import storage
-from ..db import init_db
-from ..documents import (
+from ..db import (
     AnsweredQuestion,
     GradingTrace,
     SegmentationSource,
@@ -25,6 +35,7 @@ from ..documents import (
     SubmissionStatus,
     resolve_llm_model,
 )
+from ..db.session import task_session
 from ..grading.extraction import FORMAT_FILE_INFO, SEGMENTED_FORMATS, extract_answers
 from ..grading.extraction.generic_document import (
     MARKDOWN_NAME,
@@ -35,33 +46,76 @@ from ..grading.extraction.generic_document import (
 )
 from ..grading.grading import grade_answer
 from ..grading.llm import get_chat_model
-from ..grading.models import ConvertedDocument, DocumentImage, ExtractedImage, ExtractionResult, GradeTrace, Question
+from ..grading.models import (
+    ConvertedDocument,
+    DocumentImage,
+    ExtractedImage,
+    ExtractionResult,
+    GradeTrace,
+    GradingLevel,
+    Question,
+)
 from ..grading.segmentation import suggest_segments
 from .celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-# See api/routers/submissions.py's _SHALLOW_LINKS -- grading only needs
-# rubric.questions, never rubric.course/rubric.edition.
-_SHALLOW_RUBRIC_LINK = {"rubric": 1}
+
+class SubmissionGone(Exception):
+    """The submission row disappeared mid-task (deleted with `force`)."""
+
+
+async def _commit(session: AsyncSession) -> None:
+    try:
+        await session.commit()
+    except StaleDataError as exc:
+        await session.rollback()
+        raise SubmissionGone from exc
+
+
+async def _mark(session: AsyncSession, submission_id: int, status: SubmissionStatus, error: str | None) -> None:
+    """Set status/error after a failure, with a fresh UPDATE: the session is
+    rolled back first (it may hold a failed flush), which expires every
+    loaded object."""
+    await session.rollback()
+    await session.execute(
+        update(Submission)
+        .where(Submission.id == submission_id)
+        .values(status=status, error=error, updated_at=datetime.now(UTC))
+    )
+    await session.commit()
+
+
+async def _load_submission(session: AsyncSession, submission_id: int) -> Submission | None:
+    submission = await session.get(Submission, submission_id, options=(selectinload(Submission.rubric),))
+    if submission is None:
+        logger.error("Submission %s not found", submission_id)
+    return submission
 
 
 @celery_app.task(name="aitana.grade_submission")
-def grade_submission(submission_id: str, only_question_id: str | None = None, model_id: str | None = None) -> None:
-    asyncio.run(_grade_submission(submission_id, only_question_id, model_id))
+def grade_submission(submission_id: int, only_question_id: str | None = None, model_id: int | None = None) -> None:
+    asyncio.run(_run_grade_submission(submission_id, only_question_id, model_id))
+
+
+async def _run_grade_submission(submission_id: int, only_question_id: str | None, model_id: int | None) -> None:
+    async with task_session() as session:
+        try:
+            await _grade_submission(session, submission_id, only_question_id, model_id)
+        except SubmissionGone:
+            logger.warning("Submission %s was deleted while being processed", submission_id)
 
 
 async def _grade_submission(
-    submission_id: str, only_question_id: str | None = None, model_id: str | None = None
+    session: AsyncSession, submission_id: int, only_question_id: str | None = None, model_id: int | None = None
 ) -> None:
     """`only_question_id` re-grades just that question: every other answer
     keeps its previous LLM grade (see `_rebuild_answers`) and is not sent to
     the LLM again -- for re-running one question after a rubric tweak.
 
     `model_id` is the `LlmModel` to grade with (the API always resolves and
-    passes one); `None` falls back to the current default, for tasks
-    enqueued before model selection existed."""
-    submission = await _load_submission(submission_id)
+    passes one); `None` falls back to the current default."""
+    submission = await _load_submission(session, submission_id)
     if submission is None:
         return
 
@@ -70,7 +124,7 @@ async def _grade_submission(
         if submission.document is None:
             # Conversion never succeeded (or never ran): a re-grade retries
             # it, and ends up waiting for segmentation like a fresh upload.
-            await _prepare(submission, model_id)
+            await _prepare(session, submission, model_id)
             return
         if missing := missing_questions(submission.segments, [q.id for q in rubric.questions]):
             # E.g. the rubric gained a question since segmenting -- grading
@@ -78,24 +132,27 @@ async def _grade_submission(
             logger.info("Submission %s needs segmentation for %s before grading", submission_id, missing)
             submission.status = SubmissionStatus.AWAITING_SEGMENTATION
             submission.error = None
-            await submission.save()
+            await _commit(session)
             return
 
     try:
         submission.status = SubmissionStatus.EXTRACTING
-        await submission.save()
+        await _commit(session)
 
         extracted = extract_submission_file(submission)
 
+        # Persisted before the LLM client is even built: a bad provider
+        # config still leaves the extracted answers visible.
         submission.status = SubmissionStatus.GRADING
         submission.answers = _rebuild_answers(
             rubric.questions, extracted, submission.answers, keep_grades_except=only_question_id
         )
-        await submission.save()
+        await _commit(session)
 
-        llm_model = await resolve_llm_model(model_id)
+        llm_model = await resolve_llm_model(session, model_id)
         chat_model = get_chat_model(llm_model.provider, llm_model.model, reasoning_effort=llm_model.reasoning_effort)
         await _grade_answers(
+            session,
             submission,
             rubric.questions,
             chat_model,
@@ -109,53 +166,53 @@ async def _grade_submission(
         )
 
         submission.status = SubmissionStatus.GRADED
-        await submission.save()
+        submission.updated_at = datetime.now(UTC)
+        await _commit(session)
+    except SubmissionGone:
+        raise
     except Exception as exc:  # noqa: BLE001 -- one bad submission shouldn't crash the worker
         logger.exception("Grading submission %s failed", submission_id)
-        submission.status = SubmissionStatus.FAILED
-        submission.error = str(exc)
-        await submission.save()
+        await _mark(session, submission_id, SubmissionStatus.FAILED, str(exc))
 
 
 @celery_app.task(name="aitana.prepare_submission")
-def prepare_submission(submission_id: str, segment_model_id: str | None = None) -> None:
+def prepare_submission(submission_id: int, segment_model_id: int | None = None) -> None:
     """Generic documents: convert to Markdown (+ images), then, with
     `segment_model_id`, ask that model for a segmentation suggestion. Always
     ends in `awaiting_segmentation` (or `failed` if conversion failed) --
     grading only starts once a professor confirms the segments."""
-    asyncio.run(_prepare_submission(submission_id, segment_model_id))
+    asyncio.run(_run_prepare_submission(submission_id, segment_model_id))
 
 
 @celery_app.task(name="aitana.suggest_segments")
-def suggest_segments_task(submission_id: str, model_id: str | None = None) -> None:
-    asyncio.run(_suggest_segments_by_id(submission_id, model_id))
+def suggest_segments_task(submission_id: int, model_id: int | None = None) -> None:
+    asyncio.run(_run_suggest_segments(submission_id, model_id))
 
 
-async def _load_submission(submission_id: str) -> Submission | None:
-    await init_db()
-    submission = await Submission.get(
-        PydanticObjectId(submission_id), fetch_links=True, nesting_depths_per_field=_SHALLOW_RUBRIC_LINK
-    )
-    if submission is None:
-        logger.error("Submission %s not found", submission_id)
-    return submission
+async def _run_prepare_submission(submission_id: int, segment_model_id: int | None) -> None:
+    async with task_session() as session:
+        try:
+            if (submission := await _load_submission(session, submission_id)) is not None:
+                await _prepare(session, submission, segment_model_id)
+        except SubmissionGone:
+            logger.warning("Submission %s was deleted while being processed", submission_id)
 
 
-async def _prepare_submission(submission_id: str, segment_model_id: str | None) -> None:
-    if (submission := await _load_submission(submission_id)) is not None:
-        await _prepare(submission, segment_model_id)
+async def _run_suggest_segments(submission_id: int, model_id: int | None) -> None:
+    async with task_session() as session:
+        try:
+            if (submission := await _load_submission(session, submission_id)) is not None:
+                await _suggest(session, submission, model_id)
+        except SubmissionGone:
+            logger.warning("Submission %s was deleted while being processed", submission_id)
 
 
-async def _suggest_segments_by_id(submission_id: str, model_id: str | None) -> None:
-    if (submission := await _load_submission(submission_id)) is not None:
-        await _suggest(submission, model_id)
-
-
-async def _prepare(submission: Submission, segment_model_id: str | None) -> None:
+async def _prepare(session: AsyncSession, submission: Submission, segment_model_id: int | None) -> None:
+    submission_id = submission.id
     try:
         submission.status = SubmissionStatus.CONVERTING
         submission.error = None
-        await submission.save()
+        await _commit(session)
 
         with tempfile.TemporaryDirectory() as tmp:
             pdf_path = Path(tmp) / "submission.pdf"
@@ -173,7 +230,7 @@ async def _prepare(submission: Submission, segment_model_id: str | None) -> None
             )
         logger.info(
             "Submission %s converted: %d line(s), %d page(s), %d image(s)",
-            submission.id,
+            submission_id,
             converted.line_count,
             len(converted.page_start_lines),
             len(images),
@@ -190,19 +247,19 @@ async def _prepare(submission: Submission, segment_model_id: str | None) -> None
         submission.segmentation_source = None
         submission.segmented_at = None
         submission.status = SubmissionStatus.AWAITING_SEGMENTATION
-        await submission.save()
+        await _commit(session)
+    except SubmissionGone:
+        raise
     except Exception as exc:  # noqa: BLE001 -- same policy as grading
-        logger.exception("Converting submission %s failed", submission.id)
-        submission.status = SubmissionStatus.FAILED
-        submission.error = f"PDF conversion failed: {exc}"
-        await submission.save()
+        logger.exception("Converting submission %s failed", submission_id)
+        await _mark(session, submission_id, SubmissionStatus.FAILED, f"PDF conversion failed: {exc}")
         return
 
     if segment_model_id is not None:
-        await _suggest(submission, segment_model_id)
+        await _suggest(session, submission, segment_model_id)
 
 
-async def _suggest(submission: Submission, model_id: str | None) -> None:
+async def _suggest(session: AsyncSession, submission: Submission, model_id: int | None) -> None:
     """LLM segmentation suggestion. A failure is not fatal: the submission
     still ends up `awaiting_segmentation` (with `error` set) so a professor
     can segment it by hand."""
@@ -211,10 +268,10 @@ async def _suggest(submission: Submission, model_id: str | None) -> None:
         return
     submission.status = SubmissionStatus.SEGMENTING
     submission.error = None
-    await submission.save()
+    await _commit(session)
     try:
         markdown = storage.download_bytes(submission.document.markdown_object_key).decode("utf-8")
-        llm_model = await resolve_llm_model(model_id)
+        llm_model = await resolve_llm_model(session, model_id)
         chat_model = get_chat_model(llm_model.provider, llm_model.model, reasoning_effort=llm_model.reasoning_effort)
         segments = await asyncio.to_thread(suggest_segments, chat_model, markdown, submission.rubric.questions)
         submission.segments = segments
@@ -224,12 +281,12 @@ async def _suggest(submission: Submission, model_id: str | None) -> None:
         logger.exception("LLM segmentation of submission %s failed", submission.id)
         submission.error = f"LLM segmentation failed: {exc}"
     submission.status = SubmissionStatus.AWAITING_SEGMENTATION
-    await submission.save()
+    await _commit(session)
 
 
 def extract_submission_file(submission: Submission) -> ExtractionResult:
     """Download the submission's stored file and run its rubric's extractor.
-    `submission.rubric` must be resolved. Also used outside grading to get
+    `submission.rubric` must be loaded. Also used outside grading to get
     images back (they're never stored, see AGENTS.md "Cell outputs and image
     inputs").
 
@@ -306,10 +363,11 @@ def _rebuild_answers(
 
 
 async def _grade_answers(
+    session: AsyncSession,
     submission: Submission,
     questions: list[Question],
     chat_model: BaseChatModel,
-    grading_scale: dict[str, str],
+    grading_scale: list[GradingLevel],
     provider: str,
     model: str,
     *,
@@ -318,25 +376,18 @@ async def _grade_answers(
     images: dict[str, list[ExtractedImage]] | None = None,
     rubric_context: str | None = None,
 ) -> None:
-    """Grade each question in order, saving after every single one.
+    """Grade each question in order, committing after every single one (so
+    polling clients see partial progress).
 
-    Re-indexes into `submission.answers[i]` fresh each iteration rather than
-    holding object references from a single zip() bound before the loop
-    started: `Document.save()` re-parses the whole document and replaces
-    `answers` with newly-constructed `AnsweredQuestion` instances every time
-    (Beanie's `validate_on_save`), so a reference captured before any
-    `save()` call goes stale after the first one -- mutating it is a no-op
-    that silently drops every grade past the first question.
+    `answers` is a JSONB column, and the grade is written into it in place
+    -- `flag_modified` is what makes that in-place change reach the database
+    (see `PydanticJSONB`); without it every grade would be silently dropped.
 
-    Also persists a `GradingTrace` document per question, captured via
-    `grade_answer`'s `on_trace` hook -- see `documents/grading_trace.py` for
-    why this is a separate collection rather than embedded in `submission`.
-    Inserted before `submission.save()` so a trace exists even if something
-    about the submission save itself goes wrong -- the grade was still
-    produced, and that's the part worth not losing.
-
-    The trace's compact `info` summary is also stored on the answer itself
-    (`AnsweredQuestion.grading_info`) for the submission page's tooltip.
+    Also adds a `GradingTrace` row per question, captured via
+    `grade_answer`'s `on_trace` hook, committed together with that
+    question's grade. The trace's compact `info` summary is also stored on
+    the answer itself (`AnsweredQuestion.grading_info`) for the submission
+    page's tooltip.
 
     `only_question_id` skips every other question (no LLM call, no trace).
     `images` (`ExtractionResult.images`, by answer key) are attached only for
@@ -364,8 +415,10 @@ async def _grade_answers(
             rubric_context=rubric_context,
         )
         if captured_trace is not None:
-            await GradingTrace(submission=submission, question_id=question.id, trace=captured_trace).insert()
+            session.add(GradingTrace(submission_id=submission.id, question_id=question.id, trace=captured_trace))
 
         submission.answers[i].grade = grade
         submission.answers[i].grading_info = captured_trace.info if captured_trace is not None else None
-        await submission.save()
+        flag_modified(submission, "answers")
+        submission.updated_at = datetime.now(UTC)
+        await _commit(session)

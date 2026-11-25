@@ -7,7 +7,7 @@ import { coursesForEdition } from '../lib/editions'
 export default function EditionsPage() {
   const { data: editions, isLoading, error } = useEditions()
   const createEdition = useCreateEdition()
-  const [expanded, setExpanded] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<number | null>(null)
 
   const [name, setName] = useState('')
 
@@ -53,10 +53,10 @@ export default function EditionsPage() {
 
       <div className="space-y-3">
         {editions?.map((edition) => (
-          <div key={edition._id} className="rounded-lg border border-slate-200 bg-white p-4">
+          <div key={edition.id} className="rounded-lg border border-slate-200 bg-white p-4">
             <button
               className="flex w-full items-center justify-between text-left"
-              onClick={() => setExpanded(expanded === edition._id ? null : (edition._id ?? null))}
+              onClick={() => setExpanded(expanded === edition.id ? null : edition.id)}
             >
               <div>
                 <div className="font-medium">{edition.name}</div>
@@ -64,11 +64,11 @@ export default function EditionsPage() {
               </div>
               <div className="flex items-center gap-3 text-xs text-slate-400">
                 <span>Created {formatDate(edition.created_at)}</span>
-                <span>{expanded === edition._id ? '▲' : '▼'}</span>
+                <span>{expanded === edition.id ? '▲' : '▼'}</span>
               </div>
             </button>
 
-            {expanded === edition._id && edition._id && <EditionCourses editionId={edition._id} />}
+            {expanded === edition.id && <EditionCourses editionId={edition.id} />}
           </div>
         ))}
         {editions && editions.length === 0 && <p className="text-slate-400">No editions yet -- add one above.</p>}
@@ -81,10 +81,8 @@ export default function EditionsPage() {
  * edition itself carries no course link (see Edition's doc comment in
  * api/types.ts), so "used by" means "at least one rubric pins this course
  * and this edition together." */
-function EditionCourses({ editionId }: { editionId: string }) {
+function EditionCourses({ editionId }: { editionId: number }) {
   const { data: rubrics } = useRubrics()
-  // r.edition is a nested Link -- keyed by `.id`, not `._id` (see
-  // lib/editions.ts / types.ts's NestedEdition doc comment).
   const usingRubrics = rubrics?.filter((r) => r.edition?.id === editionId) ?? []
   const courses = rubrics ? coursesForEdition(rubrics, editionId) : []
 

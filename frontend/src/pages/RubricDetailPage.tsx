@@ -5,13 +5,14 @@ import type { GradingScale } from '../api/types'
 import GradeBadge from '../components/GradeBadge'
 import RubricForm from '../components/RubricForm'
 import { formatDate } from '../lib/date'
+import { parseId } from '../lib/ids'
 
 function QuestionTestPanel({
   rubricId,
   questionId,
   gradingScale,
 }: {
-  rubricId: string
+  rubricId: number
   questionId: string
   gradingScale: GradingScale
 }) {
@@ -74,7 +75,7 @@ function QuestionTestPanel({
 export default function RubricDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { data: rubric, isLoading, error } = useRubric(id)
+  const { data: rubric, isLoading, error } = useRubric(parseId(id))
   const [editing, setEditing] = useState(false)
   const deleteRubric = useDeleteRubric()
   const { data: submissionCounts } = useRubricSubmissionCounts()
@@ -85,7 +86,7 @@ export default function RubricDetailPage() {
   function handleDelete() {
     if (!rubric) return
     if (!window.confirm(`Delete "${rubric.title}"? This can't be undone.`)) return
-    deleteRubric.mutate(rubric._id, { onSuccess: () => navigate('/rubrics') })
+    deleteRubric.mutate(rubric.id, { onSuccess: () => navigate('/rubrics') })
   }
 
   if (editing) {
@@ -118,8 +119,8 @@ export default function RubricDetailPage() {
             <span>Edition: {rubric.edition ? rubric.edition.name : 'any (reusable across editions)'}</span>
             <span>Created: {formatDate(rubric.created_at)}</span>
             <span>Last updated: {formatDate(rubric.updated_at)}</span>
-            <Link to={`/?rubric_id=${rubric._id}`} className="text-slate-700 hover:underline">
-              {submissionCounts ? (submissionCounts[rubric._id] ?? 0) : '...'} submission(s)
+            <Link to={`/?rubric_id=${rubric.id}`} className="text-slate-700 hover:underline">
+              {submissionCounts ? (submissionCounts[rubric.id] ?? 0) : '...'} submission(s)
             </Link>
           </div>
           {deleteRubric.isError && (
@@ -215,7 +216,7 @@ export default function RubricDetailPage() {
                 </ul>
               </div>
             )}
-            <QuestionTestPanel rubricId={rubric._id} questionId={q.id} gradingScale={rubric.grading_scale} />
+            <QuestionTestPanel rubricId={rubric.id} questionId={q.id} gradingScale={rubric.grading_scale} />
           </div>
         ))}
         {rubric.questions.length === 0 && <p className="text-slate-400">No questions.</p>}

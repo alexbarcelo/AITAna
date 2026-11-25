@@ -1,19 +1,13 @@
 import { effectiveGrade, type AnsweredQuestion, type GradingScale } from '../api/types'
+import { findLevel, maxScore, orderedLevels } from './gradingScale'
 
 /**
- * Grade levels are ordinal labels, not numbers (see `GradingScale`), so the
- * only "average" that makes sense across any rubric's scale is the mean
- * *position* in that scale: 0 = the first (worst) level, 1 = the last
- * (best). It's a relative indicator for comparing students/questions within
- * one rubric -- not a mark, and not comparable across rubrics with
- * different scales. A level not in `scale` (e.g. removed after grading)
- * scores `null` and is left out of the mean, same as an ungraded answer.
+ * The score of a grade level in this rubric's scale. A level not in `scale`
+ * (e.g. removed after grading) scores `null` and is left out of every
+ * statistic, same as an ungraded answer.
  */
 export function levelScore(level: string, scale: GradingScale): number | null {
-  const levelIds = Object.keys(scale)
-  const index = levelIds.indexOf(level)
-  if (index === -1) return null
-  return levelIds.length > 1 ? index / (levelIds.length - 1) : 1
+  return findLevel(scale, level)?.score ?? null
 }
 
 export interface GradeStats {
@@ -27,12 +21,14 @@ export interface GradeStats {
   manual: number
   /** Answers whose extracted text is blank. */
   blank: number
-  /** Mean `levelScore` over graded answers, or `null` if none are scoreable. */
+  /** Sum of the graded answers' scores over the best possible sum (every one
+   * at the scale's top level): 1 = all top marks. `null` if nothing is
+   * scoreable. */
   meanScore: number | null
 }
 
 export function gradeStats(answers: AnsweredQuestion[], scale: GradingScale): GradeStats {
-  const counts: Record<string, number> = Object.fromEntries(Object.keys(scale).map((level) => [level, 0]))
+  const counts: Record<string, number> = Object.fromEntries(orderedLevels(scale).map((level) => [level.id, 0]))
   let graded = 0
   let manual = 0
   let blank = 0
@@ -57,7 +53,7 @@ export function gradeStats(answers: AnsweredQuestion[], scale: GradingScale): Gr
     ungraded: answers.length - graded,
     manual,
     blank,
-    meanScore: scored > 0 ? scoreSum / scored : null,
+    meanScore: scored > 0 && maxScore(scale) > 0 ? scoreSum / (scored * maxScore(scale)) : null,
   }
 }
 

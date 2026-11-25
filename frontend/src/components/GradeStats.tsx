@@ -1,5 +1,6 @@
 import { gradeColor, prettifyLevel } from '../lib/gradeColor'
 import { formatScore, gradeStats, median, type GradeStats } from '../lib/gradeStats'
+import { orderedLevels } from '../lib/gradingScale'
 import { effectiveGrade, type Submission, type SubmissionRubric } from '../api/types'
 
 /**
@@ -49,8 +50,8 @@ const HISTOGRAM_BINS = 5
 /**
  * Whole-batch/rubric summary above the grading grid: headline numbers, the
  * overall grade distribution, how student scores spread out, and which
- * questions went worst/best. "Score" is the mean position in the grading
- * scale (see `levelScore`), not a mark.
+ * questions went worst/best. "Score" is the graded answers' total over the
+ * best possible total, from the rubric's level scores (see `gradeStats`).
  */
 export function GradingStatsSummary({ submissions, rubric }: { submissions: Submission[]; rubric: SubmissionRubric }) {
   const scale = rubric.grading_scale
@@ -81,9 +82,10 @@ export function GradingStatsSummary({ submissions, rubric }: { submissions: Subm
     .sort((a, b) => a.score - b.score)
 
   const bins = Array.from({ length: HISTOGRAM_BINS }, () => 0)
-  for (const score of studentScores) bins[Math.min(HISTOGRAM_BINS - 1, Math.floor(score * HISTOGRAM_BINS))]++
+  // Clamped: with negative-scoring levels a student can land below 0%.
+  for (const score of studentScores) bins[Math.max(0, Math.min(HISTOGRAM_BINS - 1, Math.floor(score * HISTOGRAM_BINS)))]++
   const maxBin = Math.max(1, ...bins)
-  const histogramColor = gradeColor(Object.keys(scale).at(-1) ?? '', scale)?.hex ?? '#256abf'
+  const histogramColor = gradeColor(orderedLevels(scale).at(-1)?.id ?? '', scale)?.hex ?? '#256abf'
 
   const pctOfAll = (n: number) => (overall.graded + overall.ungraded > 0 ? Math.round((n / (overall.graded + overall.ungraded)) * 100) : 0)
 
@@ -99,8 +101,8 @@ export function GradingStatsSummary({ submissions, rubric }: { submissions: Subm
         <StatTile
           label="Mean score"
           value={formatScore(overall.meanScore)}
-          detail="position in the scale"
-          title="Mean position of every graded answer in the grading scale: 0% = all at the lowest level, 100% = all at the highest. A relative indicator, not a mark."
+          detail="of the maximum"
+          title="Total score of every graded answer over the best possible total (every answer at the top level), from the rubric's level scores."
         />
         <StatTile
           label="Median student"

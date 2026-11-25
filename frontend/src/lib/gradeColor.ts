@@ -1,7 +1,8 @@
 import type { GradingScale } from '../api/types'
+import { orderedLevels } from './gradingScale'
 
 /**
- * A grade level is an **ordinal** value (its rank in the rubric's
+ * A grade level is an **ordinal** value (its rank by score in the rubric's
  * `grading_scale`), not a fixed small vocabulary -- a rubric can define any
  * number of levels with any names (see `GradingScale`'s doc comment). Per
  * the dataviz color-formula ("Ordinal: position in a sequence -- one hue,
@@ -9,7 +10,7 @@ import type { GradingScale } from '../api/types'
  * (red/amber/green): a rainbow encodes identity, not position, and breaks
  * down the moment a rubric isn't exactly some fixed set of levels. This
  * uses one hue (blue, this project's documented ordinal/sequential default)
- * stepped by the level's position in the scale instead.
+ * stepped by the level's rank in the scale instead (lowest score = lightest).
  *
  * Steps are the documented sequential-hue ramp's named steps (250..700),
  * restricted to the ones proven legible here: step 250 clears the "ordinal
@@ -48,12 +49,12 @@ export function prettifyLevel(level: string): string {
 /**
  * The ordinal color step for a grade level within a scale -- shared by
  * `GradeBadge` and anything else that needs to color by grade (e.g.
- * `GradingGrid`'s cells) without re-deriving the position-in-scale logic.
+ * `GradingGrid`'s cells) without re-deriving the rank-in-scale logic.
  * Returns `null` for a level that isn't in `scale` (or when `scale` itself
  * is missing).
  */
 export function gradeColor(level: string, scale?: GradingScale): { hex: string; text: 'black' | 'white' } | null {
-  const levelIds = scale ? Object.keys(scale) : []
+  const levelIds = scale ? orderedLevels(scale).map((l) => l.id) : []
   const index = levelIds.indexOf(level)
   return index === -1 ? null : stepForPosition(index, levelIds.length)
 }

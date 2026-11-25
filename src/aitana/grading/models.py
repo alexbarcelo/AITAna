@@ -1,29 +1,71 @@
 """Structured output schema returned by the LLM for a single graded answer."""
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import AfterValidator, BaseModel, Field, create_model
 
-# The original, and still default, grading scale: coarse and deliberately
-# not numeric -- the point is fast, actionable feedback for the student and
-# teacher, not a precise score. A Rubric can override this entirely (see
-# Rubric.grading_scale's docstring) -- this is just what a rubric gets when
-# it doesn't specify its own, and what the frontend's rubric-creation form
-# offers as its default preset (keep frontend/src/api/gradingScalePresets.ts
-# in sync if this ever changes).
-#
-# Dict order matters and is a load-bearing convention, not incidental:
-# entries run worst -> best. `grade_answer`'s blank-answer short-circuit
-# uses the *first* key verbatim as "no answer was given", and the frontend's
-# GradeBadge colors levels along a single-hue ramp by this same position
-# (first = lightest/weakest, last = darkest/strongest) -- see its docstring.
-DEFAULT_GRADING_SCALE: dict[str, str] = {
-    "not_attempted": "Blank, off-topic, or shows no understanding of the question.",
-    "some_effort": "On-topic but misses most key points or has major misconceptions.",
-    "almost_there": "Covers most key points with minor gaps or imprecision.",
-    "solid": "Covers the key points correctly and shows clear understanding.",
-}
+class GradingLevel(BaseModel):
+    """One level of a rubric's grading scale. `id` is what the LLM answers
+    with and what's stored on a `Grade`; `description` is what the LLM grades
+    against; `score` is the level's numeric value, used for ordering and for
+    the grading statistics (see `GradingScale`)."""
+
+    id: str = Field(min_length=1)
+    description: str
+    score: float
+
+
+def _check_grading_scale(levels: list[GradingLevel]) -> list[GradingLevel]:
+    if not levels:
+        raise ValueError("grading_scale must have at least one level")
+    ids = [level.id for level in levels]
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        raise ValueError(f"grading_scale has duplicate level ids: {', '.join(duplicates)}")
+    zeros = [level.id for level in levels if level.score == 0]
+    if len(zeros) != 1:
+        raise ValueError(
+            "grading_scale must have exactly one level with score 0 (the level a blank answer gets)"
+            + (f", found {len(zeros)}: {', '.join(zeros)}" if zeros else "")
+        )
+    return levels
+
+
+# A rubric's grading scale: a list of levels with distinct ids and exactly
+# one level scored 0 -- the level a blank answer gets without calling the
+# LLM (`blank_level`). Levels are ordered by `score`, never by list
+# position: worst = lowest score (`ordered_levels`).
+GradingScale = Annotated[list[GradingLevel], AfterValidator(_check_grading_scale)]
+
+
+def ordered_levels(grading_scale: list[GradingLevel]) -> list[GradingLevel]:
+    """Levels from worst to best (ascending score; ties keep list order)."""
+    return sorted(grading_scale, key=lambda level: level.score)
+
+
+def blank_level(grading_scale: list[GradingLevel]) -> GradingLevel:
+    """The level a blank answer gets: the one scored 0 (`GradingScale`
+    guarantees there is exactly one)."""
+    return next(level for level in grading_scale if level.score == 0)
+
+
+# What a rubric gets when it doesn't specify its own scale. The frontend's
+# rubric form offers the same levels as its default preset
+# (frontend/src/api/gradingScalePresets.ts) -- keep both in sync.
+DEFAULT_GRADING_SCALE: list[GradingLevel] = [
+    GradingLevel(id="not_attempted", description="Blank, off-topic, or shows no understanding of the question.", score=0),
+    GradingLevel(
+        id="some_effort", description="On-topic but misses most key points or has major misconceptions.", score=1
+    ),
+    GradingLevel(id="almost_there", description="Covers most key points with minor gaps or imprecision.", score=2),
+    GradingLevel(id="solid", description="Covers the key points correctly and shows clear understanding.", score=3),
+]
+
+
+def default_grading_scale() -> list[GradingLevel]:
+    return [level.model_copy() for level in DEFAULT_GRADING_SCALE]
+
 
 _FEEDBACK_DESCRIPTION = (
     "Short (2-3 sentence), specific feedback addressed to the student: "
@@ -43,7 +85,7 @@ class Grade(BaseModel):
     storage, regardless of which scale produced it.
     """
 
-    level: str = Field(description="Identifier of the assigned grading level (one of the rubric's grading_scale keys).")
+    level: str = Field(description="Identifier of the assigned grading level (one of the rubric's grading_scale ids).")
     feedback: str = Field(description=_FEEDBACK_DESCRIPTION)
 
 
@@ -56,10 +98,8 @@ class GradeTrace(BaseModel):
     Python sandbox, see `sandbox.py`), token usage, and timing.
 
     DB-agnostic like `Grade`/`Question` (see their docstrings) -- produced by
-    `grade_answer` via its optional `on_trace` callback and never stored
-    itself; `worker/tasks.py` persists it as a `GradingTrace` Beanie document
-    (`documents/grading_trace.py`), embedding it under that document's
-    `trace` field. `POST /rubrics/{id}/test-answer`'s synchronous "try it"
+    `grade_answer` via its optional `on_trace` callback; `worker/tasks.py` persists it as a `GradingTrace` row
+    (`db/models.py`), in that table's `trace` JSONB column. `POST /rubrics/{id}/test-answer`'s synchronous "try it"
     endpoint doesn't pass `on_trace`, so nothing is captured there either --
     consistent with that endpoint's existing "nothing is persisted" promise.
 
@@ -97,7 +137,7 @@ class GradeTrace(BaseModel):
     info: dict[str, Any] = Field(default_factory=dict)
 
 
-def grade_schema_for_scale(grading_scale: dict[str, str]) -> type[BaseModel]:
+def grade_schema_for_scale(grading_scale: list[GradingLevel]) -> type[BaseModel]:
     """Build a one-off structured-output schema for one grading call.
 
     `Grade.level` can't statically enumerate valid values (they're per-rubric
@@ -109,7 +149,7 @@ def grade_schema_for_scale(grading_scale: dict[str, str]) -> type[BaseModel]:
     call) and rubrics aren't typically graded back-to-back with different
     scales in a way that would make caching worthwhile.
     """
-    levels = tuple(grading_scale.keys())
+    levels = tuple(level.id for level in ordered_levels(grading_scale))
     return create_model(
         "GradeOutput",
         level=(Literal[levels], Field(description=f"Exactly one of: {', '.join(levels)}.")),
@@ -120,7 +160,7 @@ def grade_schema_for_scale(grading_scale: dict[str, str]) -> type[BaseModel]:
 class SubmissionFormat(str, Enum):
     """Which file format a rubric's submissions are graded from.
 
-    Set once on the `Rubric` (see `documents/rubric.py`), not per
+    Set once on the `Rubric` (see `db/models.py`), not per
     `Submission`: a rubric's `Question.field` values only make sense under
     one format (a PDF AcroForm field name vs. a notebook cell tag), so a
     rubric authored for one format never accepts the other. Determines two
@@ -138,22 +178,6 @@ class SubmissionFormat(str, Enum):
     # extraction/generic_document.py) by a professor, optionally helped by an
     # LLM suggestion (grading/segmentation.py). Graded only after that.
     GENERIC_DOCUMENT = "generic_document"
-
-    @classmethod
-    def _missing_(cls, value: object) -> "SubmissionFormat | None":
-        """Accept the pre-rename values (`LEGACY_FORMAT_VALUES`) wherever a
-        format is parsed -- stored rubrics not migrated yet, old rubric YAML
-        files, API callers -- so the rename breaks nothing. They never come
-        back out: the canonical value is what's serialized (and the only one
-        the OpenAPI schema lists)."""
-        canonical = LEGACY_FORMAT_VALUES.get(value) if isinstance(value, str) else None
-        return cls(canonical) if canonical is not None else None
-
-
-# Format values before the rename to `pdf_form`/`generic_document`. Also
-# used by the startup migration rewriting stored rubrics
-# (documents/rubric.py's `migrate_legacy_formats`).
-LEGACY_FORMAT_VALUES: dict[str, str] = {"pdf": "pdf_form", "pdf_generic": "generic_document"}
 
 
 class ExtractedImage(BaseModel):
@@ -192,7 +216,7 @@ class ExtractionResult(BaseModel):
 
 class DocumentImage(BaseModel):
     """One image extracted while converting a generic document to Markdown,
-    stored in MinIO. `line` is the 1-based Markdown line holding its
+    stored in object storage. `line` is the 1-based Markdown line holding its
     `![](name)` reference -- which segment that line falls into decides
     which answer the image belongs to."""
 
@@ -206,7 +230,7 @@ class DocumentImage(BaseModel):
 class ConvertedDocument(BaseModel):
     """Result of converting a generic document submission to Markdown (see
     extraction/generic_document.py). The Markdown itself and the images live in
-    MinIO, only this metadata is stored on the `Submission`.
+    object storage, only this metadata is stored on the `Submission`.
 
     The stored Markdown is the coordinate system every `AnswerSegment` is
     expressed in -- it's generated once and never silently regenerated,
@@ -240,7 +264,7 @@ class Question(BaseModel):
     submitted file, plus grading instructions.
 
     DB-agnostic on purpose -- reused both as the grading-time input (see
-    grading.py) and embedded verbatim inside the `Rubric` Beanie document.
+    grading.py) and stored verbatim in the `Rubric`'s `questions` JSONB column.
     """
 
     id: str

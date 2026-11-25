@@ -1,7 +1,7 @@
 [project]
 name = "aitana"
 version = "0.1.0"
-description = "Automatic first-pass grading of hands-on lab answer sheets (PDF, Jupyter notebooks) -- FastAPI + MongoDB + MinIO + Celery"
+description = "Automatic first-pass grading of hands-on lab answer sheets (PDF, Jupyter notebooks) -- FastAPI + PostgreSQL + MinIO + Celery"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -16,8 +16,9 @@ dependencies = [
     "fastapi>=0.118.0",
     "uvicorn[standard]>=0.34.0",
     "python-multipart>=0.0.20",
-    "beanie>=1.29.0",
-    "pymongo>=4.15.0",
+    "sqlalchemy[asyncio]>=2.0.40",
+    "asyncpg>=0.30.0",
+    "alembic>=1.16.0",
     "celery>=5.4.0",
     "redis>=5.2.0",
     "minio>=7.2.12",
@@ -37,7 +38,9 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.25.0",
     "httpx>=0.28.0",
-    "mongomock-motor>=0.0.35",
+    # Real PostgreSQL for the test suite (tests/conftest.py), unless
+    # TEST_DATABASE_URL points at one already
+    "testcontainers[postgres]>=4.10.0",
     # All four provider extras, so the full grading/llm.py surface
     # (construction, not live API calls -- no keys available in CI/dev) is
     # exercised by the test suite

@@ -4,7 +4,20 @@ from pydantic import ValidationError
 
 from aitana.grading import grading
 from aitana.grading.grading import build_system_prompt, grade_answer
-from aitana.grading.models import DEFAULT_GRADING_SCALE, Grade, GradeTrace, Question, grade_schema_for_scale
+from aitana.grading.models import (
+    DEFAULT_GRADING_SCALE,
+    Grade,
+    GradeTrace,
+    GradingLevel,
+    Question,
+    grade_schema_for_scale,
+)
+
+# Deliberately listed best-first: order comes from the scores, not the list.
+PASS_FAIL = [
+    GradingLevel(id="pass", description="Met the bar.", score=1),
+    GradingLevel(id="fail", description="Did not meet the bar.", score=0),
+]
 
 
 class _FakeChatModel:
@@ -58,19 +71,17 @@ def test_grade_answer_short_circuits_blank_answers_without_calling_llm():
 
     result = grade_answer(fake_model, question, "   ", DEFAULT_GRADING_SCALE)
 
-    assert result.level == "not_attempted"  # the default scale's first (worst) key
+    assert result.level == "not_attempted"  # the default scale's score-0 level
     assert "No answer" in result.feedback
 
 
-def test_grade_answer_blank_short_circuit_uses_first_key_of_a_custom_scale():
+def test_grade_answer_blank_short_circuit_uses_the_zero_level_of_a_custom_scale():
     """The blank-answer short-circuit doesn't hardcode "not_attempted" --
-    it's whatever a rubric's grading_scale lists first, since a custom scale
-    might not have a level by that name at all (e.g. a pass/fail scale)."""
+    it's whichever level scores 0, wherever it sits in the list."""
     question = _question()
     fake_model = _FakeChatModel(Grade(level="pass", feedback="should never be returned"))
-    custom_scale = {"fail": "Did not meet the bar.", "pass": "Met the bar."}
 
-    result = grade_answer(fake_model, question, "", custom_scale)
+    result = grade_answer(fake_model, question, "", PASS_FAIL)
 
     assert result.level == "fail"
 
@@ -158,20 +169,17 @@ def test_grade_answer_passes_rubric_context_into_trace_prompt(monkeypatch):
 
 def test_build_system_prompt_renders_grading_scale_as_grading_section():
     question = _question()
-    custom_scale = {"fail": "Did not meet the bar.", "pass": "Met the bar."}
-
-    prompt = build_system_prompt(question, custom_scale)
+    prompt = build_system_prompt(question, PASS_FAIL)
 
     assert "# Grading" in prompt
-    assert "- fail: Did not meet the bar." in prompt
-    assert "- pass: Met the bar." in prompt
-    # The old hardcoded 4-level block shouldn't leak in for a scale that
-    # doesn't define those levels.
+    # Worst to best, by score -- and scores themselves stay out of the prompt.
+    assert "- fail: Did not meet the bar.\n- pass: Met the bar." in prompt
+    assert "fail (0)" not in prompt and ": 0" not in prompt
     assert "not_attempted" not in prompt
 
 
 def test_grade_schema_for_scale_accepts_only_configured_levels():
-    schema = grade_schema_for_scale({"fail": "...", "pass": "..."})
+    schema = grade_schema_for_scale(PASS_FAIL)
 
     assert schema(level="pass", feedback="ok").level == "pass"
     with pytest.raises(ValidationError):

@@ -17,38 +17,49 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from beanie import PydanticObjectId
-from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ... import storage
-from ...documents import Batch, BatchType, Rubric, Student, Submission, SubmissionStatus
+from ...db import BATCH_LOADS, SUBMISSION_LOADS, Batch, BatchType, Student, Submission, SubmissionStatus
+from ...db.session import get_session
 from ...grading.extraction import FORMAT_FILE_INFO
 from ..feedback_export import course_name, load_answer_images, render_feedback_html
+from ..schemas import BatchOut, SubmissionOut
 from .llm import MODEL_ID_QUERY, require_llm_model
 from .submissions import (
-    _SHALLOW_LINKS,
-    _resolve_edition,
-    _upload_model,
     delete_submissions,
     enqueue_initial_processing,
-    enqueue_regrade,
-    enqueue_segment_suggestion,
+    enqueue_regrades,
+    enqueue_segment_suggestions,
     expected_extensions_text,
+    get_rubric_or_404,
     guard_not_in_progress,
     original_upload_name,
+    resolve_edition,
     store_original_upload,
     to_stored_format,
     upload_extension,
+    upload_model,
 )
 
 router = APIRouter(prefix="/batches", tags=["batches"])
 
-# Batch.rubric links to Course/Edition itself, so fetching it needs the same
-# depth cap as Submission.rubric (see submissions.py's _SHALLOW_LINKS and
-# AGENTS.md's nested-$lookup-under-mongomock note) -- callers here only ever
-# use rubric.slug/title, never rubric.course/rubric.edition.
-_BATCH_SHALLOW_LINKS = {"rubric": 1}
+
+async def _get_batch(session: AsyncSession, batch_id: int, *, loaded: bool = False) -> Batch:
+    batch = await session.get(Batch, batch_id, options=BATCH_LOADS if loaded else ())
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return batch
+
+
+async def _batch_submissions(session: AsyncSession, batch_id: int, *conditions, loaded: bool = False) -> list[Submission]:
+    query = select(Submission).where(Submission.batch_id == batch_id, *conditions).order_by(Submission.id)
+    if loaded:
+        query = query.options(*SUBMISSION_LOADS)
+    return list(await session.scalars(query))
 
 
 @dataclass
@@ -157,20 +168,21 @@ def _folder_label(folder_name: str) -> str:
 
 
 class BatchUploadResult(BaseModel):
-    batch: Batch
+    batch: BatchOut
     created: int
-    submissions: list[Submission]
+    submissions: list[SubmissionOut]
 
 
 @router.post("", response_model=BatchUploadResult, status_code=202)
 async def create_batch(
     file: UploadFile = File(...),
-    rubric_id: PydanticObjectId = Form(...),
-    edition_id: PydanticObjectId | None = Form(None),
+    rubric_id: int = Form(...),
+    edition_id: int | None = Form(None),
     type: BatchType = Form(...),
     llm_segmentation: bool = Form(True),
     match_students: bool = Form(True),
-    model_id: PydanticObjectId | None = MODEL_ID_QUERY,
+    model_id: int | None = MODEL_ID_QUERY,
+    session: AsyncSession = Depends(get_session),
 ) -> BatchUploadResult:
     """`llm_segmentation`: see `create_submission` (generic documents only).
 
@@ -179,11 +191,9 @@ async def create_batch(
     folder name minus Atenea's `_<id>_assignsubmission_file` suffix (the
     group name, for a group assignment). `batch_internal_id` is still kept
     verbatim either way, for the feedback zip."""
-    rubric = await Rubric.get(rubric_id)
-    if rubric is None:
-        raise HTTPException(status_code=404, detail="Rubric not found")
-    resolved_model_id = await _upload_model(rubric, model_id, llm_segmentation)
-    edition = await _resolve_edition(rubric, edition_id)
+    rubric = await get_rubric_or_404(session, rubric_id)
+    resolved_model_id = await upload_model(session, rubric, model_id, llm_segmentation)
+    edition = await resolve_edition(session, rubric, edition_id)
 
     raw = await file.read()
     try:
@@ -213,15 +223,15 @@ async def create_batch(
     ]
 
     batch = Batch(rubric=rubric, edition=edition, type=type, original_filename=file.filename, item_count=len(items))
-    await batch.insert()
+    session.add(batch)
 
     # One query for the whole roster, matched per item in memory -- cheaper
     # than a query per item, and `_match_student` needs the full list anyway
     # to detect an ambiguous (shared-name) match.
-    students = await Student.find_all().to_list() if match_students else []
+    students = list(await session.scalars(select(Student))) if match_students else []
 
     submissions: list[Submission] = []
-    for item, ext, data in zip(items, item_extensions, stored_data, strict=True):
+    for item in items:
         submission = Submission(
             rubric=rubric,
             edition=edition,
@@ -229,46 +239,52 @@ async def create_batch(
             label=None if match_students else _folder_label(item.folder_name),
             batch=batch,
             batch_internal_id=item.folder_name,
-            file_object_key="",
             original_filename=original_upload_name(item.filename),
         )
-        await submission.insert()
+        session.add(submission)
+        submissions.append(submission)
+    # Ids are part of the storage keys: flush to get them, store every file,
+    # then commit -- a storage failure leaves no rows behind.
+    await session.flush()
 
+    for submission, item, ext, data in zip(submissions, items, item_extensions, stored_data, strict=True):
         key = storage.batch_object_key(rubric.slug, str(submission.id), extension)
         storage.upload_file(key, data, content_type)
         submission.file_object_key = key
         store_original_upload(submission, rubric.format, item.data, ext)
-        await submission.save()
+    await session.commit()
 
+    for submission in submissions:
         enqueue_initial_processing(submission, rubric, resolved_model_id, llm_segmentation)
-        submissions.append(submission)
 
-    return BatchUploadResult(batch=batch, created=len(submissions), submissions=submissions)
+    return BatchUploadResult(
+        batch=BatchOut.model_validate(batch),
+        created=len(submissions),
+        submissions=[SubmissionOut.model_validate(s) for s in submissions],
+    )
 
 
-@router.get("", response_model=list[Batch])
+@router.get("", response_model=list[BatchOut])
 async def list_batches(
-    rubric_id: PydanticObjectId | None = None,
-    edition_id: PydanticObjectId | None = None,
+    rubric_id: int | None = None,
+    edition_id: int | None = None,
+    session: AsyncSession = Depends(get_session),
 ) -> list[Batch]:
-    filters = []
+    query = select(Batch).options(*BATCH_LOADS).order_by(Batch.id)
     if rubric_id is not None:
-        filters.append(Batch.rubric.id == rubric_id)
+        query = query.where(Batch.rubric_id == rubric_id)
     if edition_id is not None:
-        filters.append(Batch.edition.id == edition_id)
-    return await Batch.find(*filters, fetch_links=True, nesting_depths_per_field=_BATCH_SHALLOW_LINKS).to_list()
+        query = query.where(Batch.edition_id == edition_id)
+    return list(await session.scalars(query))
 
 
-@router.get("/{batch_id}", response_model=Batch)
-async def get_batch(batch_id: PydanticObjectId) -> Batch:
-    batch = await Batch.get(batch_id, fetch_links=True, nesting_depths_per_field=_BATCH_SHALLOW_LINKS)
-    if batch is None:
-        raise HTTPException(status_code=404, detail="Batch not found")
-    return batch
+@router.get("/{batch_id}", response_model=BatchOut)
+async def get_batch(batch_id: int, session: AsyncSession = Depends(get_session)) -> Batch:
+    return await _get_batch(session, batch_id, loaded=True)
 
 
 @router.get("/{batch_id}/feedback.zip")
-async def download_batch_feedback(batch_id: PydanticObjectId) -> Response:
+async def download_batch_feedback(batch_id: int, session: AsyncSession = Depends(get_session)) -> Response:
     """Zip of one standalone feedback HTML per submission in this batch,
     each inside a folder named after `Submission.batch_internal_id` -- the
     exact per-student folder name from the original upload (see its
@@ -277,16 +293,11 @@ async def download_batch_feedback(batch_id: PydanticObjectId) -> Response:
     assignment) then lines each file back up with the right student, the
     same way the LMS's own per-submission export named these folders in the
     first place."""
-    batch = await Batch.get(batch_id, fetch_links=True, nesting_depths_per_field=_BATCH_SHALLOW_LINKS)
-    if batch is None:
-        raise HTTPException(status_code=404, detail="Batch not found")
-
-    submissions = await Submission.find(
-        Submission.batch.id == batch_id, fetch_links=True, nesting_depths_per_field=_SHALLOW_LINKS
-    ).to_list()
+    batch = await _get_batch(session, batch_id, loaded=True)
+    submissions = await _batch_submissions(session, batch_id, loaded=True)
 
     # One rubric for the whole batch, so one course lookup.
-    course = await course_name(batch.rubric)
+    course = await course_name(session, batch.rubric)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for submission in submissions:
@@ -302,19 +313,18 @@ async def download_batch_feedback(batch_id: PydanticObjectId) -> Response:
 
 
 @router.delete("/{batch_id}", status_code=204)
-async def delete_batch(batch_id: PydanticObjectId, force: bool = False) -> None:
+async def delete_batch(batch_id: int, force: bool = False, session: AsyncSession = Depends(get_session)) -> None:
     """Delete a batch together with every submission it created (and their
     grading traces and stored files) -- a batch is just the record of one
     zip upload, so its submissions go with it. Same in-progress guard as
     `DELETE /submissions/{id}`, applied to the whole batch up front: either
     everything is deleted or nothing is."""
-    batch = await Batch.get(batch_id)
-    if batch is None:
-        raise HTTPException(status_code=404, detail="Batch not found")
-    submissions = await Submission.find(Submission.batch.id == batch_id).to_list()
+    batch = await _get_batch(session, batch_id)
+    submissions = await _batch_submissions(session, batch_id)
     guard_not_in_progress(submissions, force)
-    await delete_submissions(submissions)
-    await batch.delete()
+    await delete_submissions(session, submissions)
+    await session.delete(batch)
+    await session.commit()
 
 
 class BatchRegradeResult(BaseModel):
@@ -323,7 +333,10 @@ class BatchRegradeResult(BaseModel):
 
 @router.post("/{batch_id}/regrade", response_model=BatchRegradeResult, status_code=202)
 async def regrade_batch(
-    batch_id: PydanticObjectId, question_id: str | None = None, model_id: PydanticObjectId | None = MODEL_ID_QUERY
+    batch_id: int,
+    question_id: str | None = None,
+    model_id: int | None = MODEL_ID_QUERY,
+    session: AsyncSession = Depends(get_session),
 ) -> BatchRegradeResult:
     """Force every submission in this batch back through extraction+grading
     from scratch -- the bulk version of `POST /submissions/{id}/regrade`
@@ -333,17 +346,13 @@ async def regrade_batch(
 
     With `question_id`, only that question is re-graded (one LLM call per
     submission); every other answer keeps its current grade."""
-    llm_model = await require_llm_model(model_id)
-    batch = await Batch.get(batch_id)
-    if batch is None:
-        raise HTTPException(status_code=404, detail="Batch not found")
-    if question_id is not None and question_id not in {q.id for q in (await batch.rubric.fetch()).questions}:
+    llm_model = await require_llm_model(session, model_id)
+    batch = await _get_batch(session, batch_id, loaded=True)
+    if question_id is not None and question_id not in {q.id for q in batch.rubric.questions}:
         raise HTTPException(status_code=422, detail=f"Question {question_id!r} is not in this batch's rubric")
 
-    submissions = await Submission.find(Submission.batch.id == batch_id).to_list()
-    for submission in submissions:
-        await enqueue_regrade(submission, llm_model.id, question_id)
-
+    submissions = await _batch_submissions(session, batch_id)
+    await enqueue_regrades(session, submissions, llm_model.id, question_id)
     return BatchRegradeResult(regraded=len(submissions))
 
 
@@ -353,20 +362,17 @@ class BatchSegmentSuggestResult(BaseModel):
 
 @router.post("/{batch_id}/segments/suggest", response_model=BatchSegmentSuggestResult, status_code=202)
 async def suggest_batch_segments(
-    batch_id: PydanticObjectId, model_id: PydanticObjectId | None = MODEL_ID_QUERY
+    batch_id: int, model_id: int | None = MODEL_ID_QUERY, session: AsyncSession = Depends(get_session)
 ) -> BatchSegmentSuggestResult:
     """LLM segmentation suggestion for every generic document in this batch
     that is converted, waiting for segmentation, and has no segments yet --
     e.g. a batch uploaded without LLM-assisted segmentation. Never touches
     a submission someone already segmented."""
-    llm_model = await require_llm_model(model_id)
-    batch = await Batch.get(batch_id)
-    if batch is None:
-        raise HTTPException(status_code=404, detail="Batch not found")
-    submissions = await Submission.find(
-        Submission.batch.id == batch_id, Submission.status == SubmissionStatus.AWAITING_SEGMENTATION
-    ).to_list()
+    llm_model = await require_llm_model(session, model_id)
+    await _get_batch(session, batch_id)
+    submissions = await _batch_submissions(
+        session, batch_id, Submission.status == SubmissionStatus.AWAITING_SEGMENTATION
+    )
     pending = [s for s in submissions if s.document is not None and s.segments is None]
-    for submission in pending:
-        await enqueue_segment_suggestion(submission, llm_model.id)
+    await enqueue_segment_suggestions(session, pending, llm_model.id)
     return BatchSegmentSuggestResult(suggested=len(pending))

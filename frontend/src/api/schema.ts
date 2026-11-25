@@ -35,10 +35,9 @@ export interface paths {
         post?: never;
         /**
          * Delete Student
-         * @description `409` if any submission is linked to this student. MongoDB has no
-         *     referential integrity (a Link is just a stored DBRef), so this has to be
-         *     an explicit check -- otherwise those submissions would be left pointing
-         *     at a missing student.
+         * @description `409` if any submission is linked to this student. The foreign key
+         *     would refuse the delete anyway; counting first gives a message that says
+         *     why.
          */
         delete: operations["delete_student_students__student_id__delete"];
         options?: never;
@@ -153,13 +152,7 @@ export interface paths {
         };
         /**
          * List Rubrics
-         * @description Optionally filtered by the rubric's own `course`/`edition` links --
-         *     unlike `Submission`'s `course_id` filter (api/routers/submissions.py),
-         *     no two-step lookup is needed here: `Rubric.course`/`.edition` *are* the
-         *     relationship being filtered on, not one derived from another link. Same
-         *     `Link.id ==` pattern either way (AGENTS.md sharp edge #3), so a positive
-         *     match is only verified against real MongoDB, not mongomock -- see
-         *     tests/test_rubrics_api.py's filter tests.
+         * @description Optionally filtered by the rubric's own course/edition (ANDed).
          */
         get: operations["list_rubrics_rubrics_get"];
         put?: never;
@@ -184,9 +177,7 @@ export interface paths {
         /**
          * Rubric Submission Counts
          * @description `{rubric_id: number of submissions}` for every rubric that has any
-         *     (absent = 0), in one aggregation rather than a count per rubric. Groups
-         *     on the whole stored `rubric` DBRef -- a `$rubric.$id` field path isn't
-         *     valid in an aggregation expression.
+         *     (absent = 0), in one query rather than a count per rubric.
          */
         get: operations["rubric_submission_counts_rubrics_submission_counts_get"];
         put?: never;
@@ -209,23 +200,18 @@ export interface paths {
         /**
          * Update Rubric
          * @description Edit an existing rubric in place from a JSON body -- the "Build
-         *     manually" edit path (same body shape as `POST /rubrics`, see
-         *     `RubricCreate`). Unlike creation, a duplicate `slug` only 409s if it
-         *     belongs to a *different* rubric -- resubmitting the form unchanged (or
-         *     changing everything except the slug) isn't a conflict with itself.
+         *     manually" edit path (same body shape as `POST /rubrics`). Unlike
+         *     creation, a duplicate `slug` only 409s if it belongs to a *different*
+         *     rubric -- resubmitting the form unchanged isn't a conflict with itself.
          */
         put: operations["update_rubric_rubrics__rubric_id__put"];
         post?: never;
         /**
          * Delete Rubric
-         * @description Delete a rubric outright. Blocked with `409` if any `Submission` or
-         *     `Batch` already references it -- deleting out from under those would
-         *     leave them pointing at nothing (`Submission.rubric`/`Batch.rubric` are
-         *     both required `Link[Rubric]` fields, and every submission/batch view
-         *     reads `rubric.slug`/`.title`/`.questions` to render at all), silently
-         *     breaking history that already exists rather than just losing an unused
-         *     definition. A rubric with no submissions/batches yet (still being
-         *     drafted, or never actually used) deletes freely.
+         * @description Delete a rubric outright. Blocked with `409` if any submission or
+         *     batch references it (the foreign keys would refuse anyway; checking
+         *     first gives a message that says why). A rubric nobody has used yet
+         *     deletes freely.
          */
         delete: operations["delete_rubric_rubrics__rubric_id__delete"];
         options?: never;
@@ -268,13 +254,10 @@ export interface paths {
          *     /rubrics/upload`, except:
          *     - the slug (if not overridden by the form field or a `slug:` YAML key)
          *       defaults to the rubric's *current* slug rather than being re-derived
-         *       from the uploaded filename -- re-uploading a differently-named file to
-         *       update an existing rubric shouldn't change its identity as a side
-         *       effect.
-         *     - a `course_slug:`/`edition_slug:` key in the file is ignored
-         *       (`honor_yaml_course_edition=False`) -- a rubric's course/edition
-         *       aren't editable via this flow at all (see `_parse_rubric_yaml`'s
-         *       docstring), only via the `course_id`/`edition_id` form fields.
+         *       from the uploaded filename.
+         *     - a `course_slug:`/`edition_slug:` key in the file is ignored; the course
+         *       and edition stay as they are unless the `course_id`/`edition_id` form
+         *       fields say otherwise.
          */
         put: operations["update_rubric_yaml_rubrics__rubric_id__upload_put"];
         post?: never;
@@ -296,9 +279,9 @@ export interface paths {
         /**
          * Test Rubric Answer
          * @description Grade one free-typed answer against a single question of this rubric,
-         *     synchronously, with no Submission/file/MinIO/Celery involved -- lets a
-         *     rubric author try out wording changes and see the LLM's actual response
-         *     before wiring up a real exam upload. Nothing here is persisted.
+         *     synchronously, with no submission, file or background job involved --
+         *     lets a rubric author try out wording changes and see the LLM's actual
+         *     response. Nothing here is persisted.
          */
         post: operations["test_rubric_answer_rubrics__rubric_id__test_answer_post"];
         delete?: never;
@@ -314,7 +297,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Submissions */
+        /**
+         * List Submissions
+         * @description All filters AND together. `course_id` goes through the rubric (a
+         *     submission's course *is* its rubric's course); `edition_id` is the
+         *     submission's own edition.
+         */
         get: operations["list_submissions_submissions_get"];
         put?: never;
         /**
@@ -458,8 +446,7 @@ export interface paths {
          * @description The file exactly as uploaded, for a submission that was converted
          *     before storing (e.g. a `.docx` against a generic-document rubric --
          *     `/file` serves the converted PDF). `404` when there's no separate
-         *     original: the upload was stored as-is (use `/file`), or it predates
-         *     keeping originals.
+         *     original: the upload was stored as-is (use `/file`).
          */
         get: operations["download_original_upload_submissions__submission_id__original_get"];
         put?: never;
@@ -792,14 +779,12 @@ export interface paths {
         post?: never;
         /**
          * Delete Grading Traces
-         * @description Bulk-delete grading traces -- the cleanup mechanism this collection
-         *     has instead of a TTL index (see `documents/grading_trace.py`'s
-         *     docstring: traceability data is meant to accumulate until someone
-         *     deliberately decides to prune it, not expire on its own).
+         * @description Bulk-delete grading traces -- traces never expire on their own
+         *     (traceability is the point), this is how they're pruned.
          *
          *     Requires at least one of `submission_id`/`before`, or the explicit
          *     `all=true` escape hatch -- a bare `DELETE /grading-traces` silently
-         *     wiping the entire collection would be an easy mistake otherwise.
+         *     wiping the entire table would be an easy mistake otherwise.
          *     `submission_id`/`before` given together AND, same as every other
          *     multi-filter list endpoint in this app.
          */
@@ -888,7 +873,7 @@ export interface paths {
          *     new default first, so grading never silently loses its fallback. The
          *     last remaining model can always be deleted. Past grades keep their own
          *     record of which model produced them (`AnsweredQuestion.grading_info`),
-         *     so nothing else references a model.
+         *     and favorites go with the model (cascading foreign key).
          */
         delete: operations["delete_model_llm_models__model_id__delete"];
         options?: never;
@@ -979,7 +964,10 @@ export interface components {
             /** End Line */
             end_line?: number | null;
         };
-        /** AnsweredQuestion */
+        /**
+         * AnsweredQuestion
+         * @description One question's answer within a submission (`Submission.answers`).
+         */
         AnsweredQuestion: {
             /** Question Id */
             question_id: string;
@@ -1004,50 +992,22 @@ export interface components {
             /** Manual Graded At */
             manual_graded_at?: string | null;
         };
-        /**
-         * Batch
-         * @description One batch-upload event: a zip containing one subfolder per student
-         *     submission, all against the same rubric. `rubric` (implying the course,
-         *     same as `Submission` never storing course directly) is required; `edition`
-         *     is required too, resolved the same way a single submission's edition is
-         *     (the rubric's own edition if it has one, else the uploader's explicit
-         *     choice). See `Submission.batch`/`.batch_internal_id` for how the
-         *     individual extracted items relate back to this.
-         */
-        Batch: {
-            /** @description MongoDB document ObjectID */
-            _id?: components["schemas"]["PydanticObjectId"] | null;
-            /** Rubric */
-            rubric: {
-                /** Id */
-                id: string;
-                /** Collection */
-                collection: string;
-            } | {
-                [key: string]: unknown;
-            };
-            /** Edition */
-            edition: {
-                /** Id */
-                id: string;
-                /** Collection */
-                collection: string;
-            } | {
-                [key: string]: unknown;
-            };
+        /** BatchOut */
+        BatchOut: {
+            /** Id */
+            id: number;
+            rubric: components["schemas"]["RubricSummaryOut"];
+            edition: components["schemas"]["EditionOut"];
             type: components["schemas"]["BatchType"];
             /** Original Filename */
             original_filename?: string | null;
-            /**
-             * Item Count
-             * @default 0
-             */
+            /** Item Count */
             item_count: number;
             /**
              * Created At
              * Format: date-time
              */
-            created_at?: string;
+            created_at: string;
         };
         /** BatchRegradeResult */
         BatchRegradeResult: {
@@ -1061,28 +1021,27 @@ export interface components {
         };
         /**
          * BatchType
-         * @description Which zip layout a batch upload follows -- only one today (Atenea,
-         *     UPC's Moodle instance's assignment-submission export). Same shape as
-         *     `StudentImportFormat`/`_IMPORT_PARSERS` in `api/routers/students.py`:
-         *     add a member here plus a matching parser registered in
-         *     `api/routers/batches.py`'s `_BATCH_PARSERS` for another.
+         * @description Which zip layout a batch upload follows. Add a member plus a parser
+         *     registered in `api/routers/batches.py`'s `_BATCH_PARSERS` for another.
          * @enum {string}
          */
         BatchType: "atenea";
         /** BatchUploadResult */
         BatchUploadResult: {
-            batch: components["schemas"]["Batch"];
+            batch: components["schemas"]["BatchOut"];
             /** Created */
             created: number;
             /** Submissions */
-            submissions: components["schemas"]["Submission"][];
+            submissions: components["schemas"]["SubmissionOut"][];
         };
         /** Body_create_batch_batches_post */
         Body_create_batch_batches_post: {
             /** File */
             file: string;
-            rubric_id: components["schemas"]["PydanticObjectId"];
-            edition_id?: components["schemas"]["PydanticObjectId"] | null;
+            /** Rubric Id */
+            rubric_id: number;
+            /** Edition Id */
+            edition_id?: number | null;
             type: components["schemas"]["BatchType"];
             /**
              * Llm Segmentation
@@ -1099,11 +1058,14 @@ export interface components {
         Body_create_submission_submissions_post: {
             /** File */
             file: string;
-            student_id?: components["schemas"]["PydanticObjectId"] | null;
+            /** Student Id */
+            student_id?: number | null;
             /** Label */
             label?: string | null;
-            rubric_id: components["schemas"]["PydanticObjectId"];
-            edition_id?: components["schemas"]["PydanticObjectId"] | null;
+            /** Rubric Id */
+            rubric_id: number;
+            /** Edition Id */
+            edition_id?: number | null;
             /**
              * Llm Segmentation
              * @default true
@@ -1122,8 +1084,10 @@ export interface components {
             yaml_file: string;
             /** Slug */
             slug?: string | null;
-            course_id?: components["schemas"]["PydanticObjectId"] | null;
-            edition_id?: components["schemas"]["PydanticObjectId"] | null;
+            /** Course Id */
+            course_id?: number | null;
+            /** Edition Id */
+            edition_id?: number | null;
             format?: components["schemas"]["SubmissionFormat"] | null;
         };
         /** Body_upload_rubric_yaml_rubrics_upload_post */
@@ -1132,14 +1096,16 @@ export interface components {
             yaml_file: string;
             /** Slug */
             slug?: string | null;
-            course_id?: components["schemas"]["PydanticObjectId"] | null;
-            edition_id?: components["schemas"]["PydanticObjectId"] | null;
+            /** Course Id */
+            course_id?: number | null;
+            /** Edition Id */
+            edition_id?: number | null;
             format?: components["schemas"]["SubmissionFormat"] | null;
         };
         /** BulkRegradeRequest */
         BulkRegradeRequest: {
             /** Submission Ids */
-            submission_ids: components["schemas"]["PydanticObjectId"][];
+            submission_ids: number[];
             /** Question Id */
             question_id?: string | null;
         };
@@ -1152,7 +1118,7 @@ export interface components {
          * ConvertedDocument
          * @description Result of converting a generic document submission to Markdown (see
          *     extraction/generic_document.py). The Markdown itself and the images live in
-         *     MinIO, only this metadata is stored on the `Submission`.
+         *     object storage, only this metadata is stored on the `Submission`.
          *
          *     The stored Markdown is the coordinate system every `AnswerSegment` is
          *     expressed in -- it's generated once and never silently regenerated,
@@ -1168,14 +1134,17 @@ export interface components {
             /** Images */
             images?: components["schemas"]["DocumentImage"][];
         };
-        /**
-         * Course
-         * @description A subject, e.g. "BDM" -- reused across years. See Edition for a
-         *     specific term instance of a course (e.g. "2026/27").
-         */
-        Course: {
-            /** @description MongoDB document ObjectID */
-            _id?: components["schemas"]["PydanticObjectId"] | null;
+        /** CourseCreate */
+        CourseCreate: {
+            /** Name */
+            name: string;
+            /** Slug */
+            slug?: string | null;
+        };
+        /** CourseOut */
+        CourseOut: {
+            /** Id */
+            id: number;
             /** Name */
             name: string;
             /** Slug */
@@ -1184,19 +1153,12 @@ export interface components {
              * Created At
              * Format: date-time
              */
-            created_at?: string;
-        };
-        /** CourseCreate */
-        CourseCreate: {
-            /** Name */
-            name: string;
-            /** Slug */
-            slug?: string | null;
+            created_at: string;
         };
         /**
          * DocumentImage
          * @description One image extracted while converting a generic document to Markdown,
-         *     stored in MinIO. `line` is the 1-based Markdown line holding its
+         *     stored in object storage. `line` is the 1-based Markdown line holding its
          *     `![](name)` reference -- which segment that line falls into decides
          *     which answer the image belongs to.
          */
@@ -1237,22 +1199,17 @@ export interface components {
             /** Images */
             images: components["schemas"]["DocumentImageView"][];
         };
-        /**
-         * Edition
-         * @description A term, e.g. "2026/27" -- global, shared across every course taught
-         *     that term, not owned by any one of them. Which course(s) an edition
-         *     actually applies to is expressed elsewhere: a `Rubric` pins itself to
-         *     one course *and* (optionally) one edition (`Rubric.course`/`.edition`)
-         *     -- there is no `Edition.course` here to look it up through. See
-         *     AGENTS.md's "Data model" section for why
-         *     this was pulled out of `Edition` (it used to belong to exactly one
-         *     course, which meant "2026/27" had to be recreated once per course and
-         *     then looked like two unrelated, identically-named editions everywhere in
-         *     the UI).
-         */
-        Edition: {
-            /** @description MongoDB document ObjectID */
-            _id?: components["schemas"]["PydanticObjectId"] | null;
+        /** EditionCreate */
+        EditionCreate: {
+            /** Name */
+            name: string;
+            /** Slug */
+            slug?: string | null;
+        };
+        /** EditionOut */
+        EditionOut: {
+            /** Id */
+            id: number;
             /** Name */
             name: string;
             /** Slug */
@@ -1261,14 +1218,7 @@ export interface components {
              * Created At
              * Format: date-time
              */
-            created_at?: string;
-        };
-        /** EditionCreate */
-        EditionCreate: {
-            /** Name */
-            name: string;
-            /** Slug */
-            slug?: string | null;
+            created_at: string;
         };
         /**
          * Grade
@@ -1285,7 +1235,7 @@ export interface components {
         Grade: {
             /**
              * Level
-             * @description Identifier of the assigned grading level (one of the rubric's grading_scale keys).
+             * @description Identifier of the assigned grading level (one of the rubric's grading_scale ids).
              */
             level: string;
             /**
@@ -1304,10 +1254,8 @@ export interface components {
          *     Python sandbox, see `sandbox.py`), token usage, and timing.
          *
          *     DB-agnostic like `Grade`/`Question` (see their docstrings) -- produced by
-         *     `grade_answer` via its optional `on_trace` callback and never stored
-         *     itself; `worker/tasks.py` persists it as a `GradingTrace` Beanie document
-         *     (`documents/grading_trace.py`), embedding it under that document's
-         *     `trace` field. `POST /rubrics/{id}/test-answer`'s synchronous "try it"
+         *     `grade_answer` via its optional `on_trace` callback; `worker/tasks.py` persists it as a `GradingTrace` row
+         *     (`db/models.py`), in that table's `trace` JSONB column. `POST /rubrics/{id}/test-answer`'s synchronous "try it"
          *     endpoint doesn't pass `on_trace`, so nothing is captured there either --
          *     consistent with that endpoint's existing "nothing is persisted" promise.
          *
@@ -1361,44 +1309,26 @@ export interface components {
             };
         };
         /**
-         * GradingTrace
-         * @description One record per real `grade_answer()` call (`worker/tasks.py`'s
-         *     `_grade_answers`) -- kept in its own collection, not embedded in
-         *     `Submission`/`AnsweredQuestion`, so this diagnostic data (the full
-         *     system prompt, any thinking/tool-call content, token usage) never rides
-         *     along on every `Submission.save()`/serialization the way an embedded
-         *     field would (see AGENTS.md sharp edge #1 for why `Submission` already
-         *     gets re-serialized on every grading step -- this deliberately doesn't
-         *     add to that).
-         *
-         *     Not written for `POST /rubrics/{id}/test-answer`'s synchronous "try it"
-         *     calls -- that endpoint's docstring already promises nothing is
-         *     persisted, and `grade_answer` only emits a trace when a caller passes
-         *     `on_trace` (see `grading/grading.py`), which that endpoint doesn't.
-         *
-         *     There is no TTL/expiry on this collection by design (traceability is the
-         *     point) -- `GET /grading-traces` and `DELETE /grading-traces`
-         *     (`api/routers/grading_traces.py`) are the mechanism for inspecting and
-         *     manually pruning it instead. `regrade_submission` (`api/routers/
-         *     submissions.py`) does *not* clean up a submission's previous traces
-         *     before re-grading -- old and new traces for the same submission/question
-         *     coexist, distinguished by `created_at`, which is deliberate (it's the
-         *     "what did the last run before we fixed the rubric actually see" case
-         *     that traceability exists for) but does mean a repeatedly-regraded
-         *     submission accumulates traces without the cleanup endpoint being used.
+         * GradingLevel
+         * @description One level of a rubric's grading scale. `id` is what the LLM answers
+         *     with and what's stored on a `Grade`; `description` is what the LLM grades
+         *     against; `score` is the level's numeric value, used for ordering and for
+         *     the grading statistics (see `GradingScale`).
          */
-        GradingTrace: {
-            /** @description MongoDB document ObjectID */
-            _id?: components["schemas"]["PydanticObjectId"] | null;
-            /** Submission */
-            submission: {
-                /** Id */
-                id: string;
-                /** Collection */
-                collection: string;
-            } | {
-                [key: string]: unknown;
-            };
+        GradingLevel: {
+            /** Id */
+            id: string;
+            /** Description */
+            description: string;
+            /** Score */
+            score: number;
+        };
+        /** GradingTraceOut */
+        GradingTraceOut: {
+            /** Id */
+            id: number;
+            /** Submission Id */
+            submission_id: number;
             /** Question Id */
             question_id: string;
             trace: components["schemas"]["GradeTrace"];
@@ -1406,7 +1336,7 @@ export interface components {
              * Created At
              * Format: date-time
              */
-            created_at?: string;
+            created_at: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1443,7 +1373,8 @@ export interface components {
          *     the frontend gets everything in one request.
          */
         LlmModelView: {
-            id: components["schemas"]["PydanticObjectId"];
+            /** Id */
+            id: number;
             /** Provider */
             provider: string;
             /** Model */
@@ -1468,15 +1399,13 @@ export interface components {
             /** Unavailable Reason */
             unavailable_reason?: string | null;
         };
-        /** @example 5eb7cf5a86d9755df3a6c593 */
-        PydanticObjectId: string;
         /**
          * Question
          * @description One gradable question: where to read the student's answer from the
          *     submitted file, plus grading instructions.
          *
          *     DB-agnostic on purpose -- reused both as the grading-time input (see
-         *     grading.py) and embedded verbatim inside the `Rubric` Beanie document.
+         *     grading.py) and stored verbatim in the `Rubric`'s `questions` JSONB column.
          */
         Question: {
             /** Id */
@@ -1512,41 +1441,43 @@ export interface components {
             include_images: boolean;
         };
         /**
-         * Rubric
-         * @description A gradable deliverable's rubric -- not every deliverable is an exam,
-         *     it might be a lab. "Rubric" covers both.
+         * RubricIn
+         * @description Body of `POST /rubrics` and `PUT /rubrics/{id}` -- and what the YAML
+         *     upload paths build, so every path validates the same way.
          */
-        Rubric: {
-            /** @description MongoDB document ObjectID */
-            _id?: components["schemas"]["PydanticObjectId"] | null;
+        RubricIn: {
+            /** Title */
+            title: string;
+            /** Slug */
+            slug?: string | null;
+            /** Course Id */
+            course_id: number;
+            /** Edition Id */
+            edition_id?: number | null;
+            /** @default pdf_form */
+            format: components["schemas"]["SubmissionFormat"];
+            /** Grading Scale */
+            grading_scale?: components["schemas"]["GradingLevel"][];
+            /** Context */
+            context?: string | null;
+            /** Questions */
+            questions: components["schemas"]["Question"][];
+        };
+        /** RubricOut */
+        RubricOut: {
+            /** Id */
+            id: number;
             /** Slug */
             slug: string;
             /** Title */
             title: string;
-            /** Course */
-            course: {
-                /** Id */
-                id: string;
-                /** Collection */
-                collection: string;
-            } | {
-                [key: string]: unknown;
-            };
-            /** Edition */
-            edition?: {
-                /** Id */
-                id: string;
-                /** Collection */
-                collection: string;
-            } | {
-                [key: string]: unknown;
-            } | null;
-            /** @default pdf_form */
+            /** Course Id */
+            course_id: number;
+            /** Edition Id */
+            edition_id: number | null;
             format: components["schemas"]["SubmissionFormat"];
             /** Grading Scale */
-            grading_scale?: {
-                [key: string]: string;
-            };
+            grading_scale: components["schemas"]["GradingLevel"][];
             /** Context */
             context?: string | null;
             /** Questions */
@@ -1555,31 +1486,48 @@ export interface components {
              * Created At
              * Format: date-time
              */
-            created_at?: string;
+            created_at: string;
             /**
              * Updated At
              * Format: date-time
              */
-            updated_at?: string;
+            updated_at: string;
+            course: components["schemas"]["CourseOut"];
+            edition: components["schemas"]["EditionOut"] | null;
         };
-        /** RubricCreate */
-        RubricCreate: {
+        /**
+         * RubricSummaryOut
+         * @description A rubric nested inside a submission or batch: everything but its
+         *     course/edition objects (their ids are here).
+         */
+        RubricSummaryOut: {
+            /** Id */
+            id: number;
+            /** Slug */
+            slug: string;
             /** Title */
             title: string;
-            /** Slug */
-            slug?: string | null;
-            course_id: components["schemas"]["PydanticObjectId"];
-            edition_id?: components["schemas"]["PydanticObjectId"] | null;
-            /** @default pdf_form */
+            /** Course Id */
+            course_id: number;
+            /** Edition Id */
+            edition_id: number | null;
             format: components["schemas"]["SubmissionFormat"];
             /** Grading Scale */
-            grading_scale?: {
-                [key: string]: string;
-            };
+            grading_scale: components["schemas"]["GradingLevel"][];
             /** Context */
             context?: string | null;
             /** Questions */
             questions: components["schemas"]["Question"][];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /**
          * SegmentationSource
@@ -1603,25 +1551,8 @@ export interface components {
         };
         /** SetSubmissionStudent */
         SetSubmissionStudent: {
-            student_id: components["schemas"]["PydanticObjectId"];
-        };
-        /** Student */
-        Student: {
-            /** @description MongoDB document ObjectID */
-            _id?: components["schemas"]["PydanticObjectId"] | null;
             /** Student Id */
-            student_id: string;
-            /** Name */
-            name: string;
-            /** Email */
-            email?: string | null;
-            /** Username */
-            username?: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at?: string;
+            student_id: number;
         };
         /** StudentCreate */
         StudentCreate: {
@@ -1648,83 +1579,64 @@ export interface components {
             /** Updated */
             updated: number;
             /** Students */
-            students: components["schemas"]["Student"][];
+            students: components["schemas"]["StudentOut"][];
+        };
+        /** StudentOut */
+        StudentOut: {
+            /** Id */
+            id: number;
+            /** Student Id */
+            student_id: string;
+            /** Name */
+            name: string;
+            /** Email */
+            email?: string | null;
+            /** Username */
+            username?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /**
-         * Submission
-         * @description A student's deliverable against a rubric -- "correction" was a
-         *     confusing name (it reads as "the fix," not "the thing graded"), and not
-         *     every rubric is an exam, so "submission" fits both labs and exams.
+         * SubmissionFormat
+         * @description Which file format a rubric's submissions are graded from.
          *
-         *     Normally one per student x rubric -- but a submission created by a batch
-         *     upload (see `batch`/`batch_internal_id` below) starts out with no
-         *     `student`: the zip's per-item folder name isn't necessarily identifiable
-         *     against our roster at upload time, only `rubric`/`edition` are known.
-         *     Grading doesn't need `student` at all (see `worker/tasks.py`), so this
-         *     doesn't block a batch item from being graded -- only from being
-         *     attributed to a specific student until something matches it up later.
-         *
-         *     A *labelled* submission (e.g. a group project, where matching to
-         *     roster students is more work than it's worth) also has no `student`,
-         *     deliberately: `label` is the free-form identifier the professor gave it
-         *     instead ("Group 3", a team name, ...). See AGENTS.md "Labelled
-         *     submissions".
+         *     Set once on the `Rubric` (see `db/models.py`), not per
+         *     `Submission`: a rubric's `Question.field` values only make sense under
+         *     one format (a PDF AcroForm field name vs. a notebook cell tag), so a
+         *     rubric authored for one format never accepts the other. Determines two
+         *     things: which extractor in `grading/extraction/` turns the raw uploaded
+         *     file into `{answer_key: text}`, and how `Question.field` is interpreted
+         *     while doing that.
+         * @enum {string}
          */
-        Submission: {
-            /** @description MongoDB document ObjectID */
-            _id?: components["schemas"]["PydanticObjectId"] | null;
-            /** Student */
-            student?: {
-                /** Id */
-                id: string;
-                /** Collection */
-                collection: string;
-            } | {
-                [key: string]: unknown;
-            } | null;
+        SubmissionFormat: "pdf_form" | "notebook" | "generic_document";
+        /** SubmissionOut */
+        SubmissionOut: {
+            /** Id */
+            id: number;
+            student: components["schemas"]["StudentOut"] | null;
             /** Label */
             label?: string | null;
-            /** Rubric */
-            rubric: {
-                /** Id */
-                id: string;
-                /** Collection */
-                collection: string;
-            } | {
-                [key: string]: unknown;
-            };
-            /** Edition */
-            edition: {
-                /** Id */
-                id: string;
-                /** Collection */
-                collection: string;
-            } | {
-                [key: string]: unknown;
-            };
+            rubric: components["schemas"]["RubricSummaryOut"];
+            edition: components["schemas"]["EditionOut"];
+            /** Batch Id */
+            batch_id?: number | null;
+            /** Batch Internal Id */
+            batch_internal_id?: string | null;
             /** File Object Key */
             file_object_key: string;
             /** Original Filename */
             original_filename?: string | null;
             /** Original Object Key */
             original_object_key?: string | null;
-            /** @default pending */
             status: components["schemas"]["SubmissionStatus"];
             /** Answers */
-            answers?: components["schemas"]["AnsweredQuestion"][];
+            answers: components["schemas"]["AnsweredQuestion"][];
             /** Error */
             error?: string | null;
-            /** Batch */
-            batch?: {
-                /** Id */
-                id: string;
-                /** Collection */
-                collection: string;
-            } | {
-                [key: string]: unknown;
-            } | null;
-            /** Batch Internal Id */
-            batch_internal_id?: string | null;
             document?: components["schemas"]["ConvertedDocument"] | null;
             /** Segments */
             segments?: components["schemas"]["AnswerSegment"][] | null;
@@ -1735,27 +1647,13 @@ export interface components {
              * Created At
              * Format: date-time
              */
-            created_at?: string;
+            created_at: string;
             /**
              * Updated At
              * Format: date-time
              */
-            updated_at?: string;
+            updated_at: string;
         };
-        /**
-         * SubmissionFormat
-         * @description Which file format a rubric's submissions are graded from.
-         *
-         *     Set once on the `Rubric` (see `documents/rubric.py`), not per
-         *     `Submission`: a rubric's `Question.field` values only make sense under
-         *     one format (a PDF AcroForm field name vs. a notebook cell tag), so a
-         *     rubric authored for one format never accepts the other. Determines two
-         *     things: which extractor in `grading/extraction/` turns the raw uploaded
-         *     file into `{answer_key: text}`, and how `Question.field` is interpreted
-         *     while doing that.
-         * @enum {string}
-         */
-        SubmissionFormat: "pdf_form" | "notebook" | "generic_document";
         /**
          * SubmissionStatus
          * @enum {string}
@@ -1805,7 +1703,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Student"][];
+                    "application/json": components["schemas"]["StudentOut"][];
                 };
             };
         };
@@ -1829,7 +1727,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Student"];
+                    "application/json": components["schemas"]["StudentOut"];
                 };
             };
             /** @description Validation Error */
@@ -1848,7 +1746,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                student_id: components["schemas"]["PydanticObjectId"];
+                student_id: number;
             };
             cookie?: never;
         };
@@ -1860,7 +1758,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Student"];
+                    "application/json": components["schemas"]["StudentOut"];
                 };
             };
             /** @description Validation Error */
@@ -1879,7 +1777,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                student_id: components["schemas"]["PydanticObjectId"];
+                student_id: number;
             };
             cookie?: never;
         };
@@ -1951,7 +1849,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Course"][];
+                    "application/json": components["schemas"]["CourseOut"][];
                 };
             };
         };
@@ -1975,7 +1873,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Course"];
+                    "application/json": components["schemas"]["CourseOut"];
                 };
             };
             /** @description Validation Error */
@@ -1994,7 +1892,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                course_id: components["schemas"]["PydanticObjectId"];
+                course_id: number;
             };
             cookie?: never;
         };
@@ -2006,7 +1904,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Course"];
+                    "application/json": components["schemas"]["CourseOut"];
                 };
             };
             /** @description Validation Error */
@@ -2035,7 +1933,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Edition"][];
+                    "application/json": components["schemas"]["EditionOut"][];
                 };
             };
         };
@@ -2059,7 +1957,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Edition"];
+                    "application/json": components["schemas"]["EditionOut"];
                 };
             };
             /** @description Validation Error */
@@ -2078,7 +1976,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                edition_id: components["schemas"]["PydanticObjectId"];
+                edition_id: number;
             };
             cookie?: never;
         };
@@ -2090,7 +1988,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Edition"];
+                    "application/json": components["schemas"]["EditionOut"];
                 };
             };
             /** @description Validation Error */
@@ -2107,8 +2005,8 @@ export interface operations {
     list_rubrics_rubrics_get: {
         parameters: {
             query?: {
-                course_id?: components["schemas"]["PydanticObjectId"] | null;
-                edition_id?: components["schemas"]["PydanticObjectId"] | null;
+                course_id?: number | null;
+                edition_id?: number | null;
             };
             header?: never;
             path?: never;
@@ -2122,7 +2020,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Rubric"][];
+                    "application/json": components["schemas"]["RubricOut"][];
                 };
             };
             /** @description Validation Error */
@@ -2145,7 +2043,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RubricCreate"];
+                "application/json": components["schemas"]["RubricIn"];
             };
         };
         responses: {
@@ -2155,7 +2053,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Rubric"];
+                    "application/json": components["schemas"]["RubricOut"];
                 };
             };
             /** @description Validation Error */
@@ -2196,7 +2094,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                rubric_id: components["schemas"]["PydanticObjectId"];
+                rubric_id: number;
             };
             cookie?: never;
         };
@@ -2208,7 +2106,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Rubric"];
+                    "application/json": components["schemas"]["RubricOut"];
                 };
             };
             /** @description Validation Error */
@@ -2227,13 +2125,13 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                rubric_id: components["schemas"]["PydanticObjectId"];
+                rubric_id: number;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RubricCreate"];
+                "application/json": components["schemas"]["RubricIn"];
             };
         };
         responses: {
@@ -2243,7 +2141,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Rubric"];
+                    "application/json": components["schemas"]["RubricOut"];
                 };
             };
             /** @description Validation Error */
@@ -2262,7 +2160,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                rubric_id: components["schemas"]["PydanticObjectId"];
+                rubric_id: number;
             };
             cookie?: never;
         };
@@ -2305,7 +2203,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Rubric"];
+                    "application/json": components["schemas"]["RubricOut"];
                 };
             };
             /** @description Validation Error */
@@ -2324,7 +2222,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                rubric_id: components["schemas"]["PydanticObjectId"];
+                rubric_id: number;
             };
             cookie?: never;
         };
@@ -2340,7 +2238,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Rubric"];
+                    "application/json": components["schemas"]["RubricOut"];
                 };
             };
             /** @description Validation Error */
@@ -2358,11 +2256,11 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description LLM model to grade with; defaults to the default model */
-                model_id?: components["schemas"]["PydanticObjectId"] | null;
+                model_id?: number | null;
             };
             header?: never;
             path: {
-                rubric_id: components["schemas"]["PydanticObjectId"];
+                rubric_id: number;
             };
             cookie?: never;
         };
@@ -2395,11 +2293,11 @@ export interface operations {
     list_submissions_submissions_get: {
         parameters: {
             query?: {
-                student_id?: components["schemas"]["PydanticObjectId"] | null;
-                rubric_id?: components["schemas"]["PydanticObjectId"] | null;
-                course_id?: components["schemas"]["PydanticObjectId"] | null;
-                edition_id?: components["schemas"]["PydanticObjectId"] | null;
-                batch_id?: components["schemas"]["PydanticObjectId"] | null;
+                student_id?: number | null;
+                rubric_id?: number | null;
+                course_id?: number | null;
+                edition_id?: number | null;
+                batch_id?: number | null;
                 status?: components["schemas"]["SubmissionStatus"] | null;
             };
             header?: never;
@@ -2414,7 +2312,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Submission"][];
+                    "application/json": components["schemas"]["SubmissionOut"][];
                 };
             };
             /** @description Validation Error */
@@ -2432,7 +2330,7 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description LLM model to grade with; defaults to the default model */
-                model_id?: components["schemas"]["PydanticObjectId"] | null;
+                model_id?: number | null;
             };
             header?: never;
             path?: never;
@@ -2450,7 +2348,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Submission"];
+                    "application/json": components["schemas"]["SubmissionOut"];
                 };
             };
             /** @description Validation Error */
@@ -2469,7 +2367,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
             };
             cookie?: never;
         };
@@ -2481,7 +2379,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Submission"];
+                    "application/json": components["schemas"]["SubmissionOut"];
                 };
             };
             /** @description Validation Error */
@@ -2502,7 +2400,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
             };
             cookie?: never;
         };
@@ -2531,7 +2429,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
             };
             cookie?: never;
         };
@@ -2547,7 +2445,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Submission"];
+                    "application/json": components["schemas"]["SubmissionOut"];
                 };
             };
             /** @description Validation Error */
@@ -2566,7 +2464,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
             };
             cookie?: never;
         };
@@ -2582,7 +2480,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Submission"];
+                    "application/json": components["schemas"]["SubmissionOut"];
                 };
             };
             /** @description Validation Error */
@@ -2601,7 +2499,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
                 question_id: string;
             };
             cookie?: never;
@@ -2618,7 +2516,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Submission"];
+                    "application/json": components["schemas"]["SubmissionOut"];
                 };
             };
             /** @description Validation Error */
@@ -2637,7 +2535,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
                 question_id: string;
             };
             cookie?: never;
@@ -2650,7 +2548,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Submission"];
+                    "application/json": components["schemas"]["SubmissionOut"];
                 };
             };
             /** @description Validation Error */
@@ -2671,7 +2569,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
             };
             cookie?: never;
         };
@@ -2702,7 +2600,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
             };
             cookie?: never;
         };
@@ -2733,7 +2631,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
                 question_id: string;
                 index: number;
             };
@@ -2766,7 +2664,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
             };
             cookie?: never;
         };
@@ -2796,7 +2694,7 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description LLM model to grade with; defaults to the default model */
-                model_id?: components["schemas"]["PydanticObjectId"] | null;
+                model_id?: number | null;
             };
             header?: never;
             path?: never;
@@ -2832,11 +2730,11 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description LLM model to grade with; defaults to the default model */
-                model_id?: components["schemas"]["PydanticObjectId"] | null;
+                model_id?: number | null;
             };
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
             };
             cookie?: never;
         };
@@ -2848,7 +2746,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Submission"];
+                    "application/json": components["schemas"]["SubmissionOut"];
                 };
             };
             /** @description Validation Error */
@@ -2867,7 +2765,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
             };
             cookie?: never;
         };
@@ -2898,7 +2796,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
                 index: number;
             };
             cookie?: never;
@@ -2929,11 +2827,11 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description LLM model to grade with; defaults to the default model */
-                model_id?: components["schemas"]["PydanticObjectId"] | null;
+                model_id?: number | null;
             };
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
             };
             cookie?: never;
         };
@@ -2949,7 +2847,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Submission"];
+                    "application/json": components["schemas"]["SubmissionOut"];
                 };
             };
             /** @description Validation Error */
@@ -2967,11 +2865,11 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description LLM model to grade with; defaults to the default model */
-                model_id?: components["schemas"]["PydanticObjectId"] | null;
+                model_id?: number | null;
             };
             header?: never;
             path: {
-                submission_id: components["schemas"]["PydanticObjectId"];
+                submission_id: number;
             };
             cookie?: never;
         };
@@ -2983,7 +2881,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Submission"];
+                    "application/json": components["schemas"]["SubmissionOut"];
                 };
             };
             /** @description Validation Error */
@@ -3000,8 +2898,8 @@ export interface operations {
     list_batches_batches_get: {
         parameters: {
             query?: {
-                rubric_id?: components["schemas"]["PydanticObjectId"] | null;
-                edition_id?: components["schemas"]["PydanticObjectId"] | null;
+                rubric_id?: number | null;
+                edition_id?: number | null;
             };
             header?: never;
             path?: never;
@@ -3015,7 +2913,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Batch"][];
+                    "application/json": components["schemas"]["BatchOut"][];
                 };
             };
             /** @description Validation Error */
@@ -3033,7 +2931,7 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description LLM model to grade with; defaults to the default model */
-                model_id?: components["schemas"]["PydanticObjectId"] | null;
+                model_id?: number | null;
             };
             header?: never;
             path?: never;
@@ -3070,7 +2968,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                batch_id: components["schemas"]["PydanticObjectId"];
+                batch_id: number;
             };
             cookie?: never;
         };
@@ -3082,7 +2980,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Batch"];
+                    "application/json": components["schemas"]["BatchOut"];
                 };
             };
             /** @description Validation Error */
@@ -3103,7 +3001,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                batch_id: components["schemas"]["PydanticObjectId"];
+                batch_id: number;
             };
             cookie?: never;
         };
@@ -3132,7 +3030,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                batch_id: components["schemas"]["PydanticObjectId"];
+                batch_id: number;
             };
             cookie?: never;
         };
@@ -3163,11 +3061,11 @@ export interface operations {
             query?: {
                 question_id?: string | null;
                 /** @description LLM model to grade with; defaults to the default model */
-                model_id?: components["schemas"]["PydanticObjectId"] | null;
+                model_id?: number | null;
             };
             header?: never;
             path: {
-                batch_id: components["schemas"]["PydanticObjectId"];
+                batch_id: number;
             };
             cookie?: never;
         };
@@ -3197,11 +3095,11 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description LLM model to grade with; defaults to the default model */
-                model_id?: components["schemas"]["PydanticObjectId"] | null;
+                model_id?: number | null;
             };
             header?: never;
             path: {
-                batch_id: components["schemas"]["PydanticObjectId"];
+                batch_id: number;
             };
             cookie?: never;
         };
@@ -3230,7 +3128,7 @@ export interface operations {
     list_grading_traces_grading_traces_get: {
         parameters: {
             query?: {
-                submission_id?: components["schemas"]["PydanticObjectId"] | null;
+                submission_id?: number | null;
                 question_id?: string | null;
                 limit?: number;
             };
@@ -3246,7 +3144,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["GradingTrace"][];
+                    "application/json": components["schemas"]["GradingTraceOut"][];
                 };
             };
             /** @description Validation Error */
@@ -3263,7 +3161,7 @@ export interface operations {
     delete_grading_traces_grading_traces_delete: {
         parameters: {
             query?: {
-                submission_id?: components["schemas"]["PydanticObjectId"] | null;
+                submission_id?: number | null;
                 before?: string | null;
                 all?: boolean;
             };
@@ -3300,7 +3198,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                trace_id: components["schemas"]["PydanticObjectId"];
+                trace_id: number;
             };
             cookie?: never;
         };
@@ -3312,7 +3210,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["GradingTrace"];
+                    "application/json": components["schemas"]["GradingTraceOut"];
                 };
             };
             /** @description Validation Error */
@@ -3404,7 +3302,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                model_id: components["schemas"]["PydanticObjectId"];
+                model_id: number;
             };
             cookie?: never;
         };
@@ -3433,7 +3331,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                model_id: components["schemas"]["PydanticObjectId"];
+                model_id: number;
             };
             cookie?: never;
         };
@@ -3468,7 +3366,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                model_id: components["schemas"]["PydanticObjectId"];
+                model_id: number;
             };
             cookie?: never;
         };
@@ -3499,7 +3397,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                model_id: components["schemas"]["PydanticObjectId"];
+                model_id: number;
             };
             cookie?: never;
         };
@@ -3530,7 +3428,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                model_id: components["schemas"]["PydanticObjectId"];
+                model_id: number;
             };
             cookie?: never;
         };

@@ -11,10 +11,11 @@ import RenameLabelDialog from '../components/RenameLabelDialog'
 import StatusBadge from '../components/StatusBadge'
 import { UntaggedCellsBadge, UntaggedCellsSummary } from '../components/UntaggedCells'
 import { effectiveGrade, FORMAT_FILE_INFO, IN_PROGRESS_STATUSES, SEGMENTED_FORMATS, submissionName } from '../api/types'
+import { parseId } from '../lib/ids'
 
 export default function SubmissionDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const { data: submission, isLoading, error } = useSubmission(id)
+  const { data: submission, isLoading, error } = useSubmission(parseId(id))
   const regrade = useRegradeSubmission()
   const navigate = useNavigate()
 
@@ -34,10 +35,10 @@ export default function SubmissionDetailPage() {
             {submission.student || submission.label ? submissionName(submission) : 'Unmatched'} &middot;{' '}
             {submission.rubric.title}
             {submission.label && !submission.student && (
-              <RenameLabelDialog submissionId={submission._id} currentLabel={submission.label} />
+              <RenameLabelDialog submissionId={submission.id} currentLabel={submission.label} />
             )}
             {submission.batch_internal_id && !submission.label && (
-              <MatchStudentDialog submissionId={submission._id} currentStudentId={submission.student?.student_id} />
+              <MatchStudentDialog submissionId={submission.id} currentStudentId={submission.student?.student_id} />
             )}
           </h1>
           <p className="text-sm text-slate-500">
@@ -48,11 +49,11 @@ export default function SubmissionDetailPage() {
               </>
             )}
             {submission.edition.name}
-            {submission.batch && (
+            {submission.batch_id && (
               <>
                 {' '}
                 &middot;{' '}
-                <Link to={`/?batch_id=${submission.batch._id}`} className="hover:underline">
+                <Link to={`/?batch_id=${submission.batch_id}`} className="hover:underline">
                   batch
                 </Link>
               </>
@@ -63,14 +64,14 @@ export default function SubmissionDetailPage() {
           <SubmissionGradingInfoTooltip answers={submission.answers} />
           <StatusBadge status={submission.status} />
           <a
-            href={`${API_URL}/submissions/${submission._id}/file`}
+            href={`${API_URL}/submissions/${submission.id}/file`}
             className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
           >
             Download {fileInfo.fileLabel}
           </a>
           {submission.original_object_key && (
             <a
-              href={`${API_URL}/submissions/${submission._id}/original`}
+              href={`${API_URL}/submissions/${submission.id}/original`}
               title={`The file as uploaded${submission.original_filename ? ` (${submission.original_filename})` : ''}, before conversion to PDF`}
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
             >
@@ -78,7 +79,7 @@ export default function SubmissionDetailPage() {
             </a>
           )}
           <a
-            href={`${API_URL}/submissions/${submission._id}/feedback.html`}
+            href={`${API_URL}/submissions/${submission.id}/feedback.html`}
             title="Standalone HTML page with this submission's feedback -- no internet connection needed to view it"
             className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
           >
@@ -86,7 +87,7 @@ export default function SubmissionDetailPage() {
           </a>
           {segmented && submission.document && (
             <Link
-              to={`/submissions/${submission._id}/segments`}
+              to={`/submissions/${submission.id}/segments`}
               title="Review where each answer starts and ends in the PDF"
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
             >
@@ -98,7 +99,7 @@ export default function SubmissionDetailPage() {
               // Not a hard block -- see SubmissionsPage's regrade bar.
               if (inProgress && !window.confirm('This submission is still in progress (or stuck if its job was lost). Re-grade anyway?'))
                 return
-              regrade.mutate(submission._id)
+              regrade.mutate(submission.id)
             }}
             disabled={regrade.isPending}
             title="Force re-grading: re-extracts the file and replaces the LLM grades/feedback (manual grades are kept)"
@@ -108,7 +109,7 @@ export default function SubmissionDetailPage() {
           </button>
           <DeleteSubmissionButton
             submission={submission}
-            onDeleted={() => navigate(submission.batch ? `/?batch_id=${submission.batch._id}` : '/')}
+            onDeleted={() => navigate(submission.batch_id ? `/?batch_id=${submission.batch_id}` : '/')}
           />
         </div>
       </div>
@@ -134,7 +135,7 @@ export default function SubmissionDetailPage() {
             {submission.error && <span className="block text-red-700">{submission.error}</span>}
           </span>
           <Link
-            to={`/submissions/${submission._id}/segments`}
+            to={`/submissions/${submission.id}/segments`}
             className="rounded-md bg-violet-700 px-3 py-1.5 font-medium text-white"
           >
             Segment answers
@@ -168,9 +169,9 @@ export default function SubmissionDetailPage() {
               <p className="mb-3 whitespace-pre-wrap rounded bg-slate-50 p-3 text-sm text-slate-700">
                 {answer.student_answer || <span className="text-slate-400">No answer provided.</span>}
               </p>
-              <AnswerImages submissionId={submission._id} answer={answer} />
+              <AnswerImages submissionId={submission.id} answer={answer} />
               <AnswerGradeEditor
-                submissionId={submission._id}
+                submissionId={submission.id}
                 answer={answer}
                 scale={submission.rubric.grading_scale}
                 disabled={inProgress}

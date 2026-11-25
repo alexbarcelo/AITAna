@@ -1,0 +1,78 @@
+# Example PostgreSQL for AITAna, run by the CloudNativePG operator
+# (https://cloudnative-pg.io). Any PostgreSQL works -- the app only needs a
+# DATABASE_URL -- this is one way to get one inside the cluster.
+#
+# Prerequisite, once per cluster: install the operator, e.g.
+#   kubectl apply --server-side -f \
+#     https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.27/releases/cnpg-1.27.0.yaml
+# (or the `cnpg/cloudnative-pg` Helm chart). Check the CloudNativePG docs
+# for the current release.
+#
+# From this Cluster the operator creates:
+#   - Services `aitana-db-rw` (primary), `aitana-db-ro`, `aitana-db-r`
+#   - Secret `aitana-db-app` with the `aitana` owner's credentials; its `uri`
+#     key (postgresql://aitana:...@aitana-db-rw.<namespace>:5432/aitana) is
+#     what database-url.yaml feeds to the app as DATABASE_URL.
+# The schema itself is created by the api's `migrate` initContainer.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: aitana-db
+spec:
+  # 1 is enough to try it out; 3 gives a primary plus two streaming replicas
+  # with automated failover.
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:17
+  storage:
+    size: 5Gi
+    # storageClass: <your storage class>
+  bootstrap:
+    initdb:
+      database: aitana
+      owner: aitana
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+  # Backups (WAL archiving + base backups) go through the Barman Cloud
+  # plugin (https://cloudnative-pg.io/plugin-barman-cloud/), installed
+  # separately, writing to any S3 endpoint -- e.g. the same one as MINIO_*.
+  # Uncomment together with the ObjectStore and ScheduledBackup below:
+  #
+  # plugins:
+  #   - name: barman-cloud.cloudnative-pg.io
+  #     isWALArchiver: true
+  #     parameters:
+  #       barmanObjectName: aitana-db-backups
+
+# ---
+# apiVersion: barmancloud.cnpg.io/v1
+# kind: ObjectStore
+# metadata:
+#   name: aitana-db-backups
+# spec:
+#   retentionPolicy: "30d"
+#   configuration:
+#     destinationPath: s3://aitana-backups/postgres
+#     endpointURL: https://s3.example.org
+#     s3Credentials:
+#       accessKeyId: {name: aitana-db-backup-s3, key: ACCESS_KEY_ID}
+#       secretAccessKey: {name: aitana-db-backup-s3, key: ACCESS_SECRET_KEY}
+# ---
+# apiVersion: postgresql.cnpg.io/v1
+# kind: ScheduledBackup
+# metadata:
+#   name: aitana-db-daily
+# spec:
+#   schedule: "0 0 3 * * *"
+#   cluster: {name: aitana-db}
+#   method: plugin
+#   pluginConfiguration:
+#     name: barman-cloud.cloudnative-pg.io
+#
+# Connection pooling (CloudNativePG's `Pooler`, PgBouncer) isn't needed at
+# this app's volume. If you add one, use `poolMode: session`: asyncpg's
+# prepared statements don't survive transaction-mode pooling.

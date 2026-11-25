@@ -10,7 +10,7 @@ import type { LlmModel } from '../api/types'
 export interface ActiveModelState {
   models?: LlmModel[]
   activeModel?: LlmModel
-  setActiveModelId: (id: string | null) => void
+  setActiveModelId: (id: number | null) => void
 }
 
 export const ActiveModelContext = createContext<ActiveModelState>({ setActiveModelId: () => {} })
@@ -22,7 +22,7 @@ export function useActiveModel(): ActiveModelState {
 /** What every grading-triggering hook sends as `?model_id=`. `undefined`
  * (models not loaded yet, or none usable) lets the backend fall back to its
  * default, or reject the request if there is none. */
-export function useActiveModelId(): string | undefined {
+export function useActiveModelId(): number | undefined {
   return useActiveModel().activeModel?.id
 }
 
@@ -30,7 +30,7 @@ export function useActiveModelId(): string | undefined {
  * stale choice (model deleted, provider key removed) silently falls back
  * rather than making every grading request fail -- the header always shows
  * which model is actually active. */
-export function resolveActiveModel(models: LlmModel[] | undefined, storedId: string | null): LlmModel | undefined {
+export function resolveActiveModel(models: LlmModel[] | undefined, storedId: number | null): LlmModel | undefined {
   if (!models) return undefined
   const stored = models.find((m) => m.id === storedId && m.available)
   return stored ?? models.find((m) => m.is_default && m.available)

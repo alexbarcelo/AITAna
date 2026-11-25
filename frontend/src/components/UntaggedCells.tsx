@@ -120,9 +120,9 @@ export function UntaggedCellsReport({ submissions, rubric }: { submissions: Subm
             </thead>
             <tbody>
               {affected.map((s) => (
-                <tr key={s._id} className="border-t border-slate-100">
+                <tr key={s.id} className="border-t border-slate-100">
                   <td className="px-3 py-1.5">
-                    <Link to={`/submissions/${s._id}`} className="hover:underline">
+                    <Link to={`/submissions/${s.id}`} className="hover:underline">
                       {submissionName(s) ?? 'Unmatched'}
                     </Link>
                   </td>

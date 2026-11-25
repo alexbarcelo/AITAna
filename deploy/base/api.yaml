@@ -6,7 +6,8 @@ metadata:
     app.kubernetes.io/name: aitana-api
 spec:
   # Startup steps (migrations, model seeding, ensure_bucket) are idempotent,
-  # so more replicas are safe.
+  # and concurrent migrations serialize on an advisory lock, so more
+  # replicas are safe.
   replicas: 1
   selector:
     matchLabels:
@@ -23,6 +24,27 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      # Schema migrations run before the API starts serving (Alembic; holds a
+      # PostgreSQL advisory lock, so concurrent replicas migrate one at a time).
+      initContainers:
+        - name: migrate
+          image: aitana-api
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef:
+                name: aitana-config
+            - secretRef:
+                name: aitana-secrets
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
       containers:
         - name: api
           image: aitana-api
@@ -35,7 +57,7 @@ spec:
                 name: aitana-config
             - secretRef:
                 name: aitana-secrets
-          # Lifespan connects to Mongo/S3 and runs migrations before serving.
+          # Lifespan connects to PostgreSQL/S3 before serving.
           startupProbe:
             httpGet: {path: /health, port: http}
             periodSeconds: 5

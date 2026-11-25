@@ -6,6 +6,7 @@ import type { Batch, BatchType } from '../api/types'
 import { TrashIcon } from '../components/DeleteSubmissionButton'
 import LlmSegmentationCheckbox from '../components/LlmSegmentationCheckbox'
 import { formatDateTime } from '../lib/date'
+import { parseId } from '../lib/ids'
 
 const BATCH_TYPE_OPTIONS = Object.keys(BATCH_TYPE_LABELS) as BatchType[]
 
@@ -38,9 +39,9 @@ export default function BatchesPage() {
           </thead>
           <tbody>
             {batches.map((batch) => (
-              <tr key={batch._id} className="border-t border-slate-100 hover:bg-slate-50">
+              <tr key={batch.id} className="border-t border-slate-100 hover:bg-slate-50">
                 <td className="px-4 py-2">
-                  <Link to={`/?batch_id=${batch._id}`} className="text-slate-900 hover:underline">
+                  <Link to={`/?batch_id=${batch.id}`} className="text-slate-900 hover:underline">
                     {batch.rubric.title}
                   </Link>
                 </td>
@@ -79,7 +80,7 @@ function DeleteBatchButton({ batch }: { batch: Batch }) {
     const what = `the batch for "${batch.rubric.title}" (${batch.edition.name}, uploaded ${formatDateTime(batch.created_at)})`
     if (!window.confirm(`Delete ${what} and all ${batch.item_count} of its submissions? This can't be undone.`)) return
     deleteBatch.mutate(
-      { batchId: batch._id },
+      { batchId: batch.id },
       {
         onError: (err) => {
           // 409: some submissions are still being processed. Lost jobs never
@@ -87,7 +88,7 @@ function DeleteBatchButton({ batch }: { batch: Batch }) {
           if (err instanceof ApiError && err.status === 409) {
             if (window.confirm('Some submissions in this batch are still being processed (or stuck if their jobs were lost). Delete anyway?'))
               deleteBatch.mutate(
-                { batchId: batch._id, force: true },
+                { batchId: batch.id, force: true },
                 { onError: (e) => window.alert(e.message || 'Failed to delete this batch.') },
               )
             return
@@ -115,11 +116,11 @@ function SuggestSegmentsButton({ batch }: { batch: Batch }) {
   const suggest = useSuggestBatchSegments()
   return (
     <span className="inline-flex items-center gap-2">
-      <Link to={`/?batch_id=${batch._id}`} className="text-xs text-slate-600 hover:underline">
+      <Link to={`/?batch_id=${batch.id}`} className="text-xs text-slate-600 hover:underline">
         submissions
       </Link>
       <button
-        onClick={() => suggest.mutate(batch._id)}
+        onClick={() => suggest.mutate(batch.id)}
         disabled={suggest.isPending}
         title="Ask the active model to suggest a segmentation for every submission in this batch that has none yet"
         className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 disabled:opacity-50"
@@ -145,7 +146,7 @@ function UploadBatchForm() {
   // Same "rubric's own edition, else the uploader must pick one" logic as
   // UploadSubmissionPage -- a batch upload asks for exactly the same two
   // things a single submission upload does (rubric implies course).
-  const selectedRubric = rubrics?.find((r) => r._id === rubricId)
+  const selectedRubric = rubrics?.find((r) => String(r.id) === rubricId)
   const fixedEdition = selectedRubric?.edition ?? null
   const needsExplicitEdition = Boolean(selectedRubric) && !fixedEdition
   const canSubmit = Boolean(file && rubricId && (fixedEdition || editionId))
@@ -160,7 +161,14 @@ function UploadBatchForm() {
     e.preventDefault()
     if (!canSubmit || !file) return
     createBatch.mutate(
-      { file, rubricId, type, editionId: needsExplicitEdition ? editionId : undefined, llmSegmentation, matchStudents },
+      {
+        file,
+        rubricId: Number(rubricId),
+        type,
+        editionId: needsExplicitEdition ? parseId(editionId) : undefined,
+        llmSegmentation,
+        matchStudents,
+      },
       {
         onSuccess: () => {
           setFile(null)
@@ -192,7 +200,7 @@ function UploadBatchForm() {
               Select a rubric
             </option>
             {rubrics?.map((rubric) => (
-              <option key={rubric._id} value={rubric._id ?? ''}>
+              <option key={rubric.id} value={rubric.id ?? ''}>
                 {rubric.title}
               </option>
             ))}
@@ -219,7 +227,7 @@ function UploadBatchForm() {
                   This rubric is reusable -- pick which edition
                 </option>
                 {editions?.map((edition) => (
-                  <option key={edition._id} value={edition._id ?? ''}>
+                  <option key={edition.id} value={edition.id ?? ''}>
                     {edition.name}
                   </option>
                 ))}

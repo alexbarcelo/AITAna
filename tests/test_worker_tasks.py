@@ -1,26 +1,35 @@
-"""Regression coverage for the grading loop's incremental-save behavior.
+"""The worker's grading loop and task bodies, against the real database.
 
-This targets a real bug found in manual end-to-end testing: Beanie's
-Document.save() re-parses the whole document and replaces `answers` with
-freshly-constructed AnsweredQuestion instances on every call (validate_on_save).
-A loop that captures answer references once before the loop (e.g. via
-zip(questions, submission.answers)) silently drops every grade past the
-first question, since later iterations mutate objects no longer referenced
-by submission.answers. See _grade_answers in worker/tasks.py.
+`_grade_answers` writes each grade *in place* into the `answers` JSONB list
+and commits after every question; the ORM can't see in-place changes to a
+JSONB value on its own (`PydanticJSONB`), so
+`test_grade_answers_persists_every_question` is the regression test for the
+`flag_modified` call that makes those writes stick.
 """
 
-from aitana.documents import Course, Edition, GradingTrace, Rubric, Student, Submission
-from aitana.documents.submission import AnsweredQuestion
-from aitana.grading.models import DEFAULT_GRADING_SCALE, Grade, Question
+import pytest
+from sqlalchemy import select
+
+from aitana.db import AnsweredQuestion, Course, Edition, GradingTrace, LlmModel, Rubric, Student, Submission, SubmissionStatus
+from aitana.grading.models import (
+    DEFAULT_GRADING_SCALE,
+    ExtractionResult,
+    Grade,
+    GradingLevel,
+    Question,
+    SubmissionFormat,
+)
+from aitana.worker import tasks
 from aitana.worker.tasks import _grade_answers
+
+from .factories import add, reload
 
 
 def _fake_create_agent(grades: list[Grade]):
     """Builds a fake `create_agent` replacement (see grading._grade_with_tools)
     that pops from a *shared* queue. grade_answer() calls create_agent() fresh
     for every question, so each call's agent.invoke() must consume the next
-    grade in order, not restart from the first (a fresh `iter(grades)` per
-    call would return "solid" three times instead of solid/almost_there/some_effort).
+    grade in order, not restart from the first.
     """
     remaining = list(grades)
 
@@ -34,96 +43,100 @@ def _fake_create_agent(grades: list[Grade]):
     return _create_agent
 
 
-async def test_grade_answers_persists_every_question_not_just_the_first(mongo_db, monkeypatch):
-    course = Course(name="BDM", slug="bdm")
-    await course.insert()
-    edition = Edition(course=course, name="2026/27", slug="bdm_2026_27")
-    await edition.insert()
-    student = Student(student_id="s1", name="Ada")
-    await student.insert()
-    rubric = Rubric(
-        slug="containers",
-        title="Containers",
-        course=course,
-        questions=[
-            Question(id="answer1", title="Q1", question="Q1?", rubric="R1"),
-            Question(id="answer2", title="Q2", question="Q2?", rubric="R2"),
-            Question(id="answer3", title="Q3", question="Q3?", rubric="R3"),
-        ],
+async def _setup(db, questions: list[Question], answers: list[AnsweredQuestion], **rubric_fields) -> Submission:
+    course = await add(db, Course(name="BDM", slug="bdm"))
+    edition = await add(db, Edition(name="2026/27", slug="2026_27"))
+    student = await add(db, Student(student_id="s1", name="Ada"))
+    rubric = await add(db, Rubric(slug="containers", title="Containers", course=course, questions=questions, **rubric_fields))
+    return await add(
+        db, Submission(student=student, rubric=rubric, edition=edition, file_object_key="k", answers=answers)
     )
-    await rubric.insert()
-    submission = Submission(
-        student=student,
-        rubric=rubric,
-        edition=edition,
-        file_object_key="k",
-        answers=[
-            AnsweredQuestion(question_id="answer1", student_answer="a1"),
-            AnsweredQuestion(question_id="answer2", student_answer="a2"),
-            AnsweredQuestion(question_id="answer3", student_answer="a3"),
-        ],
-    )
-    await submission.insert()
 
+
+async def _traces(db) -> list[GradingTrace]:
+    return list(await db.scalars(select(GradingTrace).order_by(GradingTrace.id)))
+
+
+def _q(qid: str, **fields) -> Question:
+    return Question(id=qid, title=qid.upper(), question=f"{qid}?", rubric=f"R {qid}", **fields)
+
+
+async def test_grade_answers_persists_every_question(db, monkeypatch):
+    submission = await _setup(
+        db,
+        [_q("answer1"), _q("answer2"), _q("answer3")],
+        [AnsweredQuestion(question_id=f"answer{i}", student_answer=f"a{i}") for i in (1, 2, 3)],
+    )
     grades = [
         Grade(level="solid", feedback="f1"),
         Grade(level="almost_there", feedback="f2"),
         Grade(level="some_effort", feedback="f3"),
     ]
     monkeypatch.setattr("aitana.grading.grading.create_agent", _fake_create_agent(grades))
-    await _grade_answers(submission, rubric.questions, object(), DEFAULT_GRADING_SCALE, "openai", "gpt-4o-mini")
+    await _grade_answers(
+        db, submission, submission.rubric.questions, object(), DEFAULT_GRADING_SCALE, "openai", "gpt-4o-mini"
+    )
 
-    fresh = await Submission.get(submission.id)
-    assert [a.grade.level if a.grade else None for a in fresh.answers] == [
-        "solid",
-        "almost_there",
-        "some_effort",
-    ]
+    fresh = await reload(db, Submission, submission.id)
+    assert [a.grade.level if a.grade else None for a in fresh.answers] == ["solid", "almost_there", "some_effort"]
 
-    traces = await GradingTrace.find_all().to_list()
-    assert sorted(t.question_id for t in traces) == ["answer1", "answer2", "answer3"]
-    assert {t.trace.grade.level for t in traces} == {"solid", "almost_there", "some_effort"}
+    traces = await _traces(db)
+    assert [t.question_id for t in traces] == ["answer1", "answer2", "answer3"]
+    assert all(t.submission_id == submission.id for t in traces)
+    assert [t.trace.grade.level for t in traces] == ["solid", "almost_there", "some_effort"]
     assert all(t.trace.provider == "openai" and t.trace.model == "gpt-4o-mini" for t in traces)
     assert all(a.grading_info and a.grading_info["model"] == "gpt-4o-mini" for a in fresh.answers)
     assert all(a.grading_info["reasoning_effort"] is None for a in fresh.answers)
 
 
-async def test_grade_answers_records_reasoning_effort(mongo_db, monkeypatch):
+async def test_grade_answers_records_reasoning_effort(db, monkeypatch):
     """The grading model's effort (LlmModel.reasoning_effort, passed in by
     _grade_submission) lands in both the answer's audit info and the trace."""
-    course = Course(name="BDM", slug="bdm")
-    await course.insert()
-    edition = Edition(name="2026/27", slug="2026_27")
-    await edition.insert()
-    rubric = Rubric(slug="lab", title="Lab", course=course, questions=[Question(id="q1", title="Q1", question="?", rubric="R")])
-    await rubric.insert()
-    submission = Submission(
-        rubric=rubric, edition=edition, file_object_key="k", answers=[AnsweredQuestion(question_id="q1", student_answer="a")]
-    )
-    await submission.insert()
+    submission = await _setup(db, [_q("q1")], [AnsweredQuestion(question_id="q1", student_answer="a")])
 
     monkeypatch.setattr("aitana.grading.grading.create_agent", _fake_create_agent([Grade(level="solid", feedback="f")]))
     await _grade_answers(
-        submission, rubric.questions, object(), DEFAULT_GRADING_SCALE, "openai", "gpt-5", reasoning_effort="high"
+        db, submission, submission.rubric.questions, object(), DEFAULT_GRADING_SCALE, "openai", "gpt-5",
+        reasoning_effort="high",
     )
 
-    fresh = await Submission.get(submission.id)
+    fresh = await reload(db, Submission, submission.id)
     assert fresh.answers[0].grading_info["reasoning_effort"] == "high"
-    [trace] = await GradingTrace.find_all().to_list()
+    [trace] = await _traces(db)
     assert trace.trace.info["reasoning_effort"] == "high"
 
 
-def test_rebuild_answers_carries_over_manual_overrides(mongo_db):
+async def test_grade_answers_blank_answer_gets_the_zero_level(db, monkeypatch):
+    """No LLM call for a blank answer: it gets the scale's score-0 level,
+    wherever that level sits in the list."""
+    scale = [
+        GradingLevel(id="great", description="Great", score=2),
+        GradingLevel(id="nothing", description="Nothing", score=0),
+        GradingLevel(id="wrong", description="Wrong", score=-1),
+    ]
+    submission = await _setup(
+        db, [_q("q1")], [AnsweredQuestion(question_id="q1", student_answer="   ")], grading_scale=scale
+    )
+
+    def _no_llm(**kwargs):
+        raise AssertionError("blank answers must not reach the LLM")
+
+    monkeypatch.setattr("aitana.grading.grading.create_agent", _no_llm)
+    await _grade_answers(db, submission, submission.rubric.questions, object(), submission.rubric.grading_scale, "o", "m")
+
+    fresh = await reload(db, Submission, submission.id)
+    assert fresh.answers[0].grade.level == "nothing"
+    [trace] = await _traces(db)
+    assert trace.trace.blank_short_circuit is True
+
+
+def test_rebuild_answers_carries_over_manual_overrides():
     from datetime import UTC, datetime
 
-    from aitana.grading.models import ExtractionResult
     from aitana.worker.tasks import _rebuild_answers
 
     when = datetime(2026, 10, 1, tzinfo=UTC)
-    questions = [
-        Question(id="answer1", title="Q1", question="Q1?", rubric="R1"),
-        Question(id="answer2", title="Q2", question="Q2?", rubric="R2"),
-    ]
+    questions = [_q("answer1"), _q("answer2")]
     previous = [
         AnsweredQuestion(
             question_id="answer1",
@@ -150,14 +163,9 @@ def test_rebuild_answers_carries_over_manual_overrides(mongo_db):
     assert [a.untagged_cells for a in answers] == [0, 3]
 
 
-def test_rebuild_answers_keeps_other_grades_on_single_question_regrade(mongo_db):
-    from aitana.grading.models import ExtractionResult
+def test_rebuild_answers_keeps_other_grades_on_single_question_regrade():
     from aitana.worker.tasks import _rebuild_answers
 
-    questions = [
-        Question(id="answer1", title="Q1", question="Q1?", rubric="R1"),
-        Question(id="answer2", title="Q2", question="Q2?", rubric="R2"),
-    ]
     previous = [
         AnsweredQuestion(
             question_id="answer1", student_answer="a1", grade=Grade(level="solid", feedback="f1"), grading_info={"model": "m"}
@@ -167,7 +175,10 @@ def test_rebuild_answers_keeps_other_grades_on_single_question_regrade(mongo_db)
         ),
     ]
     answers = _rebuild_answers(
-        questions, ExtractionResult(answers={"answer1": "a1", "answer2": "a2"}), previous, keep_grades_except="answer2"
+        [_q("answer1"), _q("answer2")],
+        ExtractionResult(answers={"answer1": "a1", "answer2": "a2"}),
+        previous,
+        keep_grades_except="answer2",
     )
     assert answers[0].grade == Grade(level="solid", feedback="f1")
     assert answers[0].grading_info == {"model": "m"}
@@ -175,53 +186,35 @@ def test_rebuild_answers_keeps_other_grades_on_single_question_regrade(mongo_db)
     assert answers[1].grading_info is None
 
 
-async def test_grade_answers_only_question_id(mongo_db, monkeypatch):
-    course = Course(name="BDM", slug="bdm")
-    await course.insert()
-    edition = Edition(name="2026/27", slug="2026_27")
-    await edition.insert()
-    rubric = Rubric(
-        slug="containers",
-        title="Containers",
-        course=course,
-        questions=[
-            Question(id="answer1", title="Q1", question="Q1?", rubric="R1"),
-            Question(id="answer2", title="Q2", question="Q2?", rubric="R2"),
-        ],
-    )
-    await rubric.insert()
+async def test_grade_answers_only_question_id(db, monkeypatch):
     old = Grade(level="solid", feedback="old")
-    submission = Submission(
-        rubric=rubric,
-        edition=edition,
-        file_object_key="k",
-        answers=[
+    submission = await _setup(
+        db,
+        [_q("answer1"), _q("answer2")],
+        [
             AnsweredQuestion(question_id="answer1", student_answer="a1", grade=old),
             AnsweredQuestion(question_id="answer2", student_answer="a2"),
         ],
     )
-    await submission.insert()
 
     monkeypatch.setattr(
         "aitana.grading.grading.create_agent", _fake_create_agent([Grade(level="some_effort", feedback="new")])
     )
     await _grade_answers(
-        submission, rubric.questions, object(), DEFAULT_GRADING_SCALE, "openai", "m", only_question_id="answer2"
+        db, submission, submission.rubric.questions, object(), DEFAULT_GRADING_SCALE, "openai", "m",
+        only_question_id="answer2",
     )
 
-    fresh = await Submission.get(submission.id)
+    fresh = await reload(db, Submission, submission.id)
     assert [a.grade for a in fresh.answers] == [old, Grade(level="some_effort", feedback="new")]
-    assert [t.question_id for t in await GradingTrace.find_all().to_list()] == ["answer2"]
+    assert [t.question_id for t in await _traces(db)] == ["answer2"]
 
 
-def test_rebuild_answers_uses_outputs_and_counts_images_only_when_enabled(mongo_db):
-    from aitana.grading.models import ExtractedImage, ExtractionResult
+def test_rebuild_answers_uses_outputs_and_counts_images_only_when_enabled():
+    from aitana.grading.models import ExtractedImage
     from aitana.worker.tasks import _rebuild_answers
 
-    questions = [
-        Question(id="answer1", title="Q1", question="Q1?", rubric="R1"),
-        Question(id="answer2", title="Q2", question="Q2?", rubric="R2", include_outputs=True, include_images=True),
-    ]
+    questions = [_q("answer1"), _q("answer2", include_outputs=True, include_images=True)]
     image = ExtractedImage(mime_type="image/png", data="AAAA")
     extracted = ExtractionResult(
         answers={"answer1": "code1", "answer2": "code2"},
@@ -235,34 +228,18 @@ def test_rebuild_answers_uses_outputs_and_counts_images_only_when_enabled(mongo_
     assert [a.image_count for a in answers] == [0, 2]
 
 
-async def test_grade_answers_forwards_images_only_for_include_images(mongo_db, monkeypatch):
+async def test_grade_answers_forwards_images_only_for_include_images(db, monkeypatch):
     from aitana.grading.models import ExtractedImage
 
-    course = Course(name="BDM", slug="bdm")
-    await course.insert()
-    edition = Edition(name="2026/27", slug="2026_27")
-    await edition.insert()
-    rubric = Rubric(
-        slug="figures",
-        title="Figures",
-        course=course,
-        format="notebook",
-        questions=[
-            Question(id="answer1", title="Q1", question="Q1?", rubric="R1"),
-            Question(id="answer2", title="Q2", question="Q2?", rubric="R2", include_images=True),
-        ],
-    )
-    await rubric.insert()
-    submission = Submission(
-        rubric=rubric,
-        edition=edition,
-        file_object_key="k",
-        answers=[
+    submission = await _setup(
+        db,
+        [_q("answer1"), _q("answer2", include_images=True)],
+        [
             AnsweredQuestion(question_id="answer1", student_answer="a1"),
             AnsweredQuestion(question_id="answer2", student_answer="a2"),
         ],
+        format=SubmissionFormat.NOTEBOOK,
     )
-    await submission.insert()
 
     seen: list = []
     remaining = [Grade(level="solid", feedback="1"), Grade(level="solid", feedback="2")]
@@ -275,8 +252,9 @@ async def test_grade_answers_forwards_images_only_for_include_images(mongo_db, m
     monkeypatch.setattr("aitana.grading.grading.create_agent", lambda **kwargs: _Agent())
     image = ExtractedImage(mime_type="image/png", data="AAAA")
     await _grade_answers(
+        db,
         submission,
-        rubric.questions,
+        submission.rubric.questions,
         object(),
         DEFAULT_GRADING_SCALE,
         "openai",
@@ -286,16 +264,102 @@ async def test_grade_answers_forwards_images_only_for_include_images(mongo_db, m
 
     assert seen[0] == "a1"  # include_images off: plain text, image ignored
     assert seen[1][1] == {"type": "image", "base64": "AAAA", "mime_type": "image/png"}
-    traces = await GradingTrace.find_all().to_list()
-    assert sorted(t.trace.image_count for t in traces) == [0, 1]
+    assert sorted(t.trace.image_count for t in await _traces(db)) == [0, 1]
 
 
-async def test_extract_segmented_submission_reads_stored_markdown_and_images(mongo_db, monkeypatch):
+# ---- _grade_submission end to end ----
+
+
+async def _setup_pending(db, monkeypatch, extracted: ExtractionResult) -> Submission:
+    """A pending notebook submission, with extraction and the chat model
+    faked out and a default model to resolve."""
+    db.add(LlmModel(provider="openai", model="gpt-4o-mini", is_default=True))
+    submission = await _setup(db, [_q("answer1"), _q("answer2")], [], format=SubmissionFormat.NOTEBOOK)
+    monkeypatch.setattr(tasks, "extract_submission_file", lambda s: extracted)
+    monkeypatch.setattr(tasks, "get_chat_model", lambda *args, **kwargs: object())
+    return submission
+
+
+async def test_grade_submission_extracts_grades_and_finishes(db, monkeypatch):
+    submission = await _setup_pending(db, monkeypatch, ExtractionResult(answers={"answer1": "x", "answer2": "y"}))
+    monkeypatch.setattr(
+        "aitana.grading.grading.create_agent",
+        _fake_create_agent([Grade(level="solid", feedback="1"), Grade(level="some_effort", feedback="2")]),
+    )
+    db.expunge_all()
+
+    await tasks._grade_submission(db, submission.id)
+
+    fresh = await reload(db, Submission, submission.id)
+    assert fresh.status == SubmissionStatus.GRADED
+    assert fresh.error is None
+    assert [(a.question_id, a.student_answer, a.grade.level) for a in fresh.answers] == [
+        ("answer1", "x", "solid"),
+        ("answer2", "y", "some_effort"),
+    ]
+    assert len(await _traces(db)) == 2
+
+
+async def test_grade_submission_failure_keeps_extracted_answers(db, monkeypatch):
+    """A broken provider fails the submission, but the extracted answers
+    were committed before the LLM step and stay visible."""
+    submission = await _setup_pending(db, monkeypatch, ExtractionResult(answers={"answer1": "x", "answer2": "y"}))
+
+    def _broken(*args, **kwargs):
+        raise RuntimeError("OPENAI_API_KEY is not set")
+
+    monkeypatch.setattr(tasks, "get_chat_model", _broken)
+    db.expunge_all()
+
+    await tasks._grade_submission(db, submission.id)
+
+    fresh = await reload(db, Submission, submission.id)
+    assert fresh.status == SubmissionStatus.FAILED
+    assert "OPENAI_API_KEY" in fresh.error
+    assert [a.student_answer for a in fresh.answers] == ["x", "y"]
+
+
+async def test_grade_submission_stops_when_the_row_is_deleted(db, monkeypatch):
+    """A forced delete mid-run (`DELETE /submissions/{id}?force=true`): the
+    task's next commit matches no row, so it stops with `SubmissionGone`
+    (which `_run_grade_submission` logs) instead of failing or writing
+    anything."""
+    from sqlalchemy import delete
+
+    submission = await _setup_pending(db, monkeypatch, ExtractionResult(answers={"answer1": "x", "answer2": "y"}))
+    submission_id = submission.id
+    deleted = False
+    real_commit = tasks._commit
+
+    async def _commit_racing_a_delete(session):
+        # After the first status update, the row disappears "from another
+        # connection": a Core DELETE the session's identity map knows nothing about.
+        nonlocal deleted
+        if not deleted:
+            await real_commit(session)
+            await session.execute(
+                delete(Submission).where(Submission.id == submission_id), execution_options={"synchronize_session": False}
+            )
+            deleted = True
+            return
+        await real_commit(session)
+
+    monkeypatch.setattr(tasks, "_commit", _commit_racing_a_delete)
+    db.expunge_all()
+
+    with pytest.raises(tasks.SubmissionGone):
+        await tasks._grade_submission(db, submission_id)
+    # (The DELETE itself is rolled back here -- in this test it shares the
+    # task's transaction -- so only the task's reaction is asserted.)
+    assert await _traces(db) == []
+
+
+async def test_extract_segmented_submission_reads_stored_markdown_and_images(monkeypatch):
     """Generic documents are sliced from the stored Markdown + segments, and only
     images of `include_images` questions get downloaded."""
     import base64
 
-    from aitana.grading.models import AnswerSegment, ConvertedDocument, DocumentImage, SubmissionFormat
+    from aitana.grading.models import AnswerSegment, ConvertedDocument, DocumentImage
     from aitana.worker.tasks import _extract_segmented_submission
 
     objects = {
@@ -311,17 +375,12 @@ async def test_extract_segmented_submission_reads_stored_markdown_and_images(mon
 
     monkeypatch.setattr("aitana.storage.download_bytes", fake_download)
 
-    course = Course(name="BDM", slug="bdm")
-    await course.insert()
     rubric = Rubric(
         slug="free",
         title="Free",
-        course=course,
+        course=Course(name="BDM", slug="bdm"),
         format=SubmissionFormat.GENERIC_DOCUMENT,
-        questions=[
-            Question(id="q1", title="Q1", question="?", rubric="R", include_images=True),
-            Question(id="q2", title="Q2", question="?", rubric="R"),
-        ],
+        questions=[_q("q1", include_images=True), _q("q2")],
     )
     submission = Submission(
         rubric=rubric,
@@ -346,11 +405,9 @@ async def test_extract_segmented_submission_reads_stored_markdown_and_images(mon
     assert downloaded == ["doc.md", "img1"]
 
 
-async def test_prepare_converts_pdf_and_waits_for_segmentation(mongo_db, monkeypatch):
+async def test_prepare_converts_pdf_and_waits_for_segmentation(db, monkeypatch):
     import pymupdf
 
-    from aitana.documents import SubmissionStatus
-    from aitana.grading.models import SubmissionFormat
     from aitana.worker.tasks import _prepare
 
     doc = pymupdf.open()
@@ -360,18 +417,14 @@ async def test_prepare_converts_pdf_and_waits_for_segmentation(mongo_db, monkeyp
     monkeypatch.setattr("aitana.storage.download_to_path", lambda key, dest: dest.write_bytes(stored[key]))
     monkeypatch.setattr("aitana.storage.upload_file", lambda key, data, content_type: stored.__setitem__(key, data))
 
-    course = Course(name="BDM", slug="bdm")
-    await course.insert()
-    rubric = Rubric(slug="free", title="Free", course=course, format=SubmissionFormat.GENERIC_DOCUMENT, questions=[])
-    await rubric.insert()
-    edition = Edition(name="2026/27", slug="2026_27")
-    await edition.insert()
-    submission = Submission(rubric=rubric, edition=edition, file_object_key="r/s/1.pdf")
-    await submission.insert()
+    course = await add(db, Course(name="BDM", slug="bdm"))
+    rubric = await add(db, Rubric(slug="free", title="Free", course=course, format=SubmissionFormat.GENERIC_DOCUMENT, questions=[]))
+    edition = await add(db, Edition(name="2026/27", slug="2026_27"))
+    submission = await add(db, Submission(rubric=rubric, edition=edition, file_object_key="r/s/1.pdf"))
 
-    await _prepare(submission, None)
+    await _prepare(db, submission, None)
 
-    saved = await Submission.get(submission.id)
+    saved = await reload(db, Submission, submission.id)
     assert saved.status == SubmissionStatus.AWAITING_SEGMENTATION
     assert saved.document.markdown_object_key == "r/s/1/document.md"
     assert "Exercise 1: my answer" in stored["r/s/1/document.md"].decode()

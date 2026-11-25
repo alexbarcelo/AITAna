@@ -2,38 +2,51 @@ import { useState } from 'react'
 import { useCourses, useCreateRubric, useEditions, useUpdateRubric, useUpdateRubricYaml, useUploadRubricYaml } from '../api/hooks'
 import { GRADING_SCALE_PRESETS } from '../api/gradingScalePresets'
 import { FORMAT_FILE_INFO, IMAGE_FORMATS, OUTPUT_FORMATS, SEGMENTED_FORMATS } from '../api/types'
-import type { Question, Rubric, SubmissionFormat } from '../api/types'
+import type { GradingScale, Question, Rubric, SubmissionFormat } from '../api/types'
+import { gradingScaleProblem } from '../lib/gradingScale'
 
 const FORMAT_OPTIONS = Object.keys(FORMAT_FILE_INFO) as SubmissionFormat[]
 
-type GradingScaleRow = { id: string; description: string }
+// `score` is kept as the input's text while editing (so "-", "" or "1." can
+// be typed), parsed by `rowsToScale`.
+type GradingScaleRow = { id: string; description: string; score: string }
 
-function presetToRows(scale: Record<string, string>): GradingScaleRow[] {
-  return Object.entries(scale).map(([id, description]) => ({ id, description }))
+function scaleToRows(scale: GradingScale): GradingScaleRow[] {
+  return scale.map((level) => ({ id: level.id, description: level.description, score: String(level.score) }))
+}
+
+function rowsToScale(rows: GradingScaleRow[]): GradingScale {
+  return rows.map((row) => ({
+    id: row.id.trim(),
+    description: row.description,
+    score: row.score.trim() === '' ? Number.NaN : Number(row.score),
+  }))
 }
 
 /**
- * Free-form editor for a rubric's grading_scale: an ordered id/description
- * list (order matters -- worst to best, see GradingScale's doc comment),
+ * Free-form editor for a rubric's grading_scale: id/description/score rows,
  * seeded from a quick-pick preset (GRADING_SCALE_PRESETS) but fully
- * editable from there -- picking a preset is a starting point, not a lock-in.
+ * editable from there. Exactly one level must score 0: the level a blank
+ * answer gets without asking the LLM. Levels rank by score, so row order
+ * doesn't matter.
  */
 function GradingScaleEditor({ rows, onChange }: { rows: GradingScaleRow[]; onChange: (rows: GradingScaleRow[]) => void }) {
   function updateRow(index: number, patch: Partial<GradingScaleRow>) {
     onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)))
   }
+  const problem = gradingScaleProblem(rowsToScale(rows))
 
   return (
     <div className="space-y-2 rounded-md border border-slate-100 bg-slate-50 p-3">
       <div className="flex items-center justify-between">
         <label className="block text-xs font-medium text-slate-600">
-          Grading levels (worst first, best last -- the LLM assigns exactly one of these)
+          Grading levels (the LLM assigns exactly one; the level scored 0 is what a blank answer gets)
         </label>
         <select
           value=""
           onChange={(e) => {
             const preset = GRADING_SCALE_PRESETS.find((p) => p.label === e.target.value)
-            if (preset) onChange(presetToRows(preset.scale))
+            if (preset) onChange(scaleToRows(preset.scale))
           }}
           className="rounded-md border border-slate-300 px-2 py-1 text-xs"
         >
@@ -60,6 +73,16 @@ function GradingScaleEditor({ rows, onChange }: { rows: GradingScaleRow[]; onCha
             />
             <input
               required
+              type="number"
+              step="any"
+              placeholder="score"
+              title="Numeric score of this level"
+              value={row.score}
+              onChange={(e) => updateRow(i, { score: e.target.value })}
+              className="w-20 rounded-md border border-slate-300 px-2 py-1 text-sm tabular-nums"
+            />
+            <input
+              required
               placeholder="Description shown to the LLM"
               value={row.description}
               onChange={(e) => updateRow(i, { description: e.target.value })}
@@ -77,9 +100,10 @@ function GradingScaleEditor({ rows, onChange }: { rows: GradingScaleRow[]; onCha
           </div>
         ))}
       </div>
+      {problem && <p className="text-xs text-amber-700">{problem}</p>}
       <button
         type="button"
-        onClick={() => onChange([...rows, { id: '', description: '' }])}
+        onClick={() => onChange([...rows, { id: '', description: '', score: '' }])}
         className="text-xs text-slate-600 hover:underline"
       >
         + Add level
@@ -133,7 +157,7 @@ function CourseSelect({
           Select a course
         </option>
         {courses?.map((course) => (
-          <option key={course._id} value={course._id ?? ''}>
+          <option key={course.id} value={course.id ?? ''}>
             {course.name}
           </option>
         ))}
@@ -171,7 +195,7 @@ function EditionSelect({
       >
         <option value="">No fixed edition (reusable, e.g. a lab)</option>
         {editions?.map((edition) => (
-          <option key={edition._id} value={edition._id ?? ''}>
+          <option key={edition.id} value={edition.id ?? ''}>
             {edition.name}
           </option>
         ))}
@@ -288,17 +312,24 @@ function UploadYamlForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => vo
   const mutation = isEdit ? updateRubricYaml : uploadRubric
   const [file, setFile] = useState<File | null>(null)
   const [slug, setSlug] = useState(rubric?.slug ?? '')
-  const [courseId, setCourseId] = useState(rubric?.course.id ?? '')
-  const [editionId, setEditionId] = useState(rubric?.edition?.id ?? '')
+  // Select values are strings; ids are numbers -- converted on submit.
+  const [courseId, setCourseId] = useState(rubric ? String(rubric.course.id) : '')
+  const [editionId, setEditionId] = useState(rubric?.edition ? String(rubric.edition.id) : '')
   const [format, setFormat] = useState<SubmissionFormat>(rubric?.format ?? 'pdf_form')
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!file) return
-    const base = { file, slug: slug || undefined, courseId: courseId || undefined, editionId: editionId || undefined, format }
+    const base = {
+      file,
+      slug: slug || undefined,
+      courseId: courseId ? Number(courseId) : undefined,
+      editionId: editionId ? Number(editionId) : undefined,
+      format,
+    }
     if (isEdit) {
       updateRubricYaml.mutate(
-        { rubricId: rubric!._id, ...base },
+        { rubricId: rubric!.id, ...base },
         {
           onSuccess: () => {
             setFile(null)
@@ -338,8 +369,9 @@ function UploadYamlForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => vo
             from a <code className="rounded bg-slate-100 px-1">course_slug:</code> key in the file instead of the dropdown below,
             and the format from a <code className="rounded bg-slate-100 px-1">format:</code> key instead of the dropdown below.
             Grading levels default to the standard 4-level scale unless the file has its own top-level{' '}
-            <code className="rounded bg-slate-100 px-1">grading_scale:</code> mapping (no dropdown for this one -- see "Build
-            manually" for a quick-pick editor instead).
+            <code className="rounded bg-slate-100 px-1">grading_scale:</code> list of{' '}
+            <code className="rounded bg-slate-100 px-1">{'{id, description, score}'}</code> levels, exactly one scored 0 (no
+            dropdown for this one -- see "Build manually" for a quick-pick editor instead).
           </>
         )}
       </p>
@@ -392,11 +424,12 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
   const mutation = isEdit ? updateRubric : createRubric
   const [title, setTitle] = useState(rubric?.title ?? '')
   const [slug, setSlug] = useState(rubric?.slug ?? '')
-  const [courseId, setCourseId] = useState(rubric?.course.id ?? '')
-  const [editionId, setEditionId] = useState(rubric?.edition?.id ?? '')
+  // Select values are strings; ids are numbers -- converted on submit.
+  const [courseId, setCourseId] = useState(rubric ? String(rubric.course.id) : '')
+  const [editionId, setEditionId] = useState(rubric?.edition ? String(rubric.edition.id) : '')
   const [format, setFormat] = useState<SubmissionFormat>(rubric?.format ?? 'pdf_form')
   const [gradingScaleRows, setGradingScaleRows] = useState<GradingScaleRow[]>(
-    presetToRows(rubric?.grading_scale ?? GRADING_SCALE_PRESETS[0].scale),
+    scaleToRows(rubric?.grading_scale ?? GRADING_SCALE_PRESETS[0].scale),
   )
   const [rubricContext, setRubricContext] = useState(rubric?.context ?? '')
   const [questions, setQuestions] = useState<DraftQuestion[]>(rubric ? rubric.questions.map(questionToDraft) : [emptyQuestion()])
@@ -410,18 +443,15 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
     const body = {
       title,
       slug: slug || undefined,
-      course_id: courseId,
-      edition_id: editionId || undefined,
+      course_id: Number(courseId),
+      edition_id: editionId ? Number(editionId) : undefined,
       format,
-      // Row order is preserved into the dict -- see GradingScale's doc
-      // comment for why that order (worst -> best) is load-bearing, not
-      // cosmetic.
-      grading_scale: Object.fromEntries(gradingScaleRows.map((row) => [row.id.trim(), row.description])),
+      grading_scale: rowsToScale(gradingScaleRows),
       context: rubricContext.trim() || null,
       questions: questions.map((q) => toQuestion(q, format)),
     }
     if (isEdit) {
-      updateRubric.mutate({ rubricId: rubric!._id, ...body }, { onSuccess: () => onDone?.() })
+      updateRubric.mutate({ rubricId: rubric!.id, ...body }, { onSuccess: () => onDone?.() })
     } else {
       createRubric.mutate(body, {
         onSuccess: () => {
@@ -430,7 +460,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
           setCourseId('')
           setEditionId('')
           setFormat('pdf_form')
-          setGradingScaleRows(presetToRows(GRADING_SCALE_PRESETS[0].scale))
+          setGradingScaleRows(scaleToRows(GRADING_SCALE_PRESETS[0].scale))
           setRubricContext('')
           setQuestions([emptyQuestion()])
           onDone?.()
@@ -633,7 +663,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
         </button>
         <button
           type="submit"
-          disabled={mutation.isPending}
+          disabled={mutation.isPending || gradingScaleProblem(rowsToScale(gradingScaleRows)) !== null}
           className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
           {isEdit ? 'Save changes' : 'Create rubric'}

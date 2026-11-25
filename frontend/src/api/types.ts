@@ -1,6 +1,6 @@
 import type { components } from './schema'
 
-export type Student = components['schemas']['Student']
+export type Student = components['schemas']['StudentOut']
 export type Question = components['schemas']['Question']
 export type Grade = components['schemas']['Grade']
 export type AnsweredQuestion = components['schemas']['AnsweredQuestion']
@@ -17,8 +17,8 @@ export type SubmissionDocument = components['schemas']['DocumentView']
 /**
  * What the student should see for an answer: the TA's manual override if
  * any, else the LLM's grade. Mirrors the backend's
- * `AnsweredQuestion.effective_grade` (`documents/submission.py`) -- the LLM's
- * own `grade` is never edited in place, so both stay available.
+ * `AnsweredQuestion.effective_grade` (`db/models.py`) -- the LLM's own
+ * `grade` is never edited in place, so both stay available.
  */
 export function effectiveGrade(answer: AnsweredQuestion): Grade | null {
   return answer.manual_grade ?? answer.grade ?? null
@@ -38,14 +38,17 @@ export type ReasoningEffort = NonNullable<LlmModel['reasoning_effort']>
 export const REASONING_EFFORTS: ReasoningEffort[] = ['low', 'medium', 'high']
 
 /**
- * `{level_id: description}`, worst -> best -- see `Rubric.grading_scale`'s
- * docstring (`documents/rubric.py`) for why order matters (it's not just a
- * display detail: `GradeBadge` colors by position, and the backend's
- * blank-answer short-circuit picks the first key). `Grade.level` (and thus
- * `AnsweredQuestion.grade.level`) is a plain `string`, not a fixed union --
- * which values are valid depends on which rubric produced the grade.
+ * One level of a rubric's grading scale: `id` (what a `Grade.level` holds),
+ * the `description` the LLM grades against, and a numeric `score`.
  */
-export type GradingScale = Record<string, string>
+export type GradingLevel = components['schemas']['GradingLevel']
+/**
+ * A rubric's levels. Exactly one level scores 0 -- the one a blank answer
+ * gets -- and levels are ranked by score (lowest = worst), never by list
+ * position: see `lib/gradingScale.ts`. `Grade.level` is a plain `string`,
+ * not a fixed union -- which values are valid depends on the rubric.
+ */
+export type GradingScale = GradingLevel[]
 
 /**
  * Per-format file-picker metadata, kept next to the backend's own
@@ -98,125 +101,40 @@ export const STUDENT_IMPORT_FORMAT_LABELS: Record<StudentImportFormat, string> =
 
 /**
  * Human labels for `BatchType`, kept next to the backend's own enum
- * (`documents/batch.py`'s `BatchType`) so the two don't drift -- add a
- * label here whenever a new batch zip layout is registered there.
+ * (`db/models.py`'s `BatchType`) so the two don't drift -- add a label here
+ * whenever a new batch zip layout is registered there.
  */
 export const BATCH_TYPE_LABELS: Record<BatchType, string> = {
   atenea: 'Atenea (per-assignment submissions export)',
 }
 
-export type Course = components['schemas']['Course']
+export type Course = components['schemas']['CourseOut']
 
 /**
  * Global -- a term like "2026/27", shared across every course taught that
- * term. Deliberately has no `course` field: an edition used to belong to
- * exactly one course, which meant the same term name had to be recreated
- * once per course and then looked like unrelated, identically-named
- * editions everywhere in the UI. Which course(s) an edition actually
- * applies to is derived, not stored -- `EditionsPage.tsx`/`CoursesPage.tsx`
- * both compute it by scanning `Rubric.course`/`.edition` (a rubric is the
- * one place a course and an edition are actually tied together).
+ * term. Which course(s) an edition applies to is derived, not stored --
+ * `EditionsPage.tsx`/`CoursesPage.tsx` compute it from rubrics (a rubric is
+ * the one place a course and an edition are tied together).
  */
-export interface Edition {
-  _id: string
-  name: string
-  slug: string
-  created_at: string
-}
+export type Edition = components['schemas']['EditionOut']
+
+/** A rubric with its course and edition. */
+export type Rubric = components['schemas']['RubricOut']
+
+/** A rubric nested in a submission or batch: course/edition by id only. */
+export type SubmissionRubric = components['schemas']['RubricSummaryOut']
 
 /**
- * A `Course`/`Edition` *nested* inside a `Rubric` (`.course`/`.edition`) --
- * unlike the top-level `GET /courses`/`GET /editions` list responses, a
- * resolved Link embedded inside another document does NOT get the `_id`
- * alias (AGENTS.md's Mongo-driver sharp edge #7: "only the outer,
- * top-level response document gets the `_id` alias"). It comes back as
- * `id` instead, same set of other fields otherwise. Comparing/keying by
- * `_id` on `rubric.course`/`rubric.edition` is always `undefined` -- use
- * `.id`. (`RubricForm.tsx`'s course/edition prefill on edit, and
- * `lib/editions.ts`'s course/edition derivation, both depend on this.)
+ * One zip upload (`api/routers/batches.py`) -- see AGENTS.md's "Batch
+ * submission import" for the zip layout this produces submissions from.
  */
-export type NestedCourse = Omit<Course, '_id'> & { id: string }
-export type NestedEdition = Omit<Edition, '_id'> & { id: string }
-
-export interface Rubric {
-  _id: string
-  slug: string
-  title: string
-  course: NestedCourse
-  edition: NestedEdition | null
-  format: SubmissionFormat
-  grading_scale: GradingScale
-  /** Rubric-wide background shared by every question's grading prompt. */
-  context?: string | null
-  questions: Question[]
-  created_at: string
-  updated_at: string
-}
+export type Batch = components['schemas']['BatchOut']
 
 /**
- * `Submission.rubric`/`Batch.rubric` are narrower than the standalone
- * `Rubric` above: the backend caps their fetch_links depth to 1
- * (`_SHALLOW_LINKS` in api/routers/submissions.py, `_BATCH_SHALLOW_LINKS`
- * in api/routers/batches.py) since these views never use
- * rubric.course/rubric.edition, only rubric.slug/title/questions.
+ * `student` is null for a labelled submission or a batch item not matched
+ * to a roster student yet; `batch_id` is null unless it came from a batch.
  */
-export type SubmissionRubric = Omit<Rubric, 'course' | 'edition'>
-
-/**
- * One zip upload (`api/routers/batches.py`) -- see its docstring and
- * AGENTS.md's "Batch submission import" for the zip layout this produces
- * submissions from.
- */
-export interface Batch {
-  _id: string
-  rubric: SubmissionRubric
-  edition: Edition
-  type: BatchType
-  original_filename: string | null
-  item_count: number
-  created_at: string
-}
-
-/**
- * The generated `Submission.student`/`.rubric`/`.edition`/`.batch` types
- * are a leaky union in the raw OpenAPI schema -- Beanie's `Link[T]` schema
- * can't statically express "this is either an unresolved reference or a
- * fully resolved document." Every submissions endpoint used here calls
- * Mongo with `fetch_links=True`, so at runtime these are always full
- * embedded documents (modulo the narrower `SubmissionRubric` shape noted
- * above) -- this type reflects that actual shape. `student` and `batch`
- * are nullable: a submission created by a batch upload has no matched
- * student yet (see `Submission.student`'s docstring, `documents/
- * submission.py`), while one created through the single-file upload flow
- * has no batch at all.
- */
-export interface Submission {
-  _id: string
-  student: Student | null
-  rubric: SubmissionRubric
-  edition: Edition
-  batch: Batch | null
-  batch_internal_id: string | null
-  /** Labelled submissions only (no `student`, e.g. a group project): the
-   * free-form identifier given at upload time. */
-  label?: string | null
-  file_object_key: string
-  /** Uploaded file's name (null for submissions predating it). */
-  original_filename?: string | null
-  /** Set only when the upload was converted before storing (e.g. `.docx` ->
-   * PDF): the untouched upload, served by `GET /submissions/{id}/original`. */
-  original_object_key?: string | null
-  status: SubmissionStatus
-  answers: AnsweredQuestion[]
-  error?: string | null
-  /** Generic documents only (see `SEGMENTED_FORMATS`). */
-  document?: ConvertedDocument | null
-  segments?: AnswerSegment[] | null
-  segmentation_source?: 'llm' | 'manual' | null
-  segmented_at?: string | null
-  created_at: string
-  updated_at: string
-}
+export type Submission = components['schemas']['SubmissionOut']
 
 /** Who/what a submission is, for display -- same fallback chain as the
  * backend's `Submission.display_name`: student, label, batch
@@ -226,15 +144,9 @@ export function submissionName(s: Pick<Submission, 'student' | 'label' | 'batch_
 }
 
 /** Response of `POST /batches` -- mirrors `StudentImportResult`'s shape. */
-export interface BatchUploadResult {
-  batch: Batch
-  created: number
-  submissions: Submission[]
-}
+export type BatchUploadResult = components['schemas']['BatchUploadResult']
 
 /** Response of `POST /submissions/regrade` (and `POST /batches/{batch_id}/regrade`). */
-export interface RegradeResult {
-  regraded: number
-}
+export type RegradeResult = components['schemas']['BulkRegradeResult']
 
 export const IN_PROGRESS_STATUSES: SubmissionStatus[] = ['pending', 'converting', 'segmenting', 'extracting', 'grading']

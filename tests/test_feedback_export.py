@@ -1,13 +1,10 @@
 """Unit tests for feedback_export.render_feedback_html/feedback_filename --
-constructing `Document`s directly (never inserted) since these only render
-already-in-memory data. `mongo_db` is still required as a fixture: Beanie's
-`Document.__init__` looks up collection settings that only exist once
-`init_beanie` has run, even for a document that's never saved.
+building ORM objects in memory (never inserted), since these only render
+already-loaded data.
 """
 
 from aitana.api.feedback_export import feedback_filename, render_feedback_html
-from aitana.documents import Batch, BatchType, Course, Edition, Rubric, Student, Submission, SubmissionStatus
-from aitana.documents.submission import AnsweredQuestion
+from aitana.db import AnsweredQuestion, Batch, BatchType, Course, Edition, Rubric, Student, Submission, SubmissionStatus
 from aitana.grading.models import Grade, Question, SubmissionFormat
 
 
@@ -41,7 +38,7 @@ def _submission(**overrides) -> Submission:
     return Submission(**defaults)
 
 
-async def test_render_feedback_html_includes_answer_and_grade(mongo_db):
+async def test_render_feedback_html_includes_answer_and_grade():
     html_out = render_feedback_html(_submission())
 
     assert "Ada Lovelace" in html_out
@@ -55,7 +52,7 @@ async def test_render_feedback_html_includes_answer_and_grade(mongo_db):
     assert "<script" not in html_out
 
 
-async def test_render_feedback_html_escapes_untrusted_content(mongo_db):
+async def test_render_feedback_html_escapes_untrusted_content():
     submission = _submission(
         answers=[
             AnsweredQuestion(
@@ -70,7 +67,7 @@ async def test_render_feedback_html_escapes_untrusted_content(mongo_db):
     assert "&lt;script&gt;" in html_out
 
 
-async def test_render_feedback_html_unmatched_batch_submission_uses_folder_name(mongo_db):
+async def test_render_feedback_html_unmatched_batch_submission_uses_folder_name():
     batch = Batch(rubric=_rubric(), edition=Edition(name="2026/27", slug="2026-27"), type=BatchType.ATENEA)
     submission = _submission(
         student=None,
@@ -81,32 +78,32 @@ async def test_render_feedback_html_unmatched_batch_submission_uses_folder_name(
     assert "Lovelace Ada_1001_assignsubmission_file" in html_out
 
 
-async def test_render_feedback_html_no_answers_says_so(mongo_db):
+async def test_render_feedback_html_no_answers_says_so():
     submission = _submission(answers=[], status=SubmissionStatus.GRADED)
     html_out = render_feedback_html(submission)
     assert "No answers extracted yet." in html_out
 
 
-async def test_render_feedback_html_in_progress_shows_notice_not_empty_message(mongo_db):
+async def test_render_feedback_html_in_progress_shows_notice_not_empty_message():
     submission = _submission(answers=[], status=SubmissionStatus.PENDING)
     html_out = render_feedback_html(submission)
     assert "still in progress" in html_out
     assert "No answers extracted yet." not in html_out
 
 
-async def test_render_feedback_html_failed_shows_error(mongo_db):
+async def test_render_feedback_html_failed_shows_error():
     submission = _submission(answers=[], status=SubmissionStatus.FAILED, error="Missing credentials")
     html_out = render_feedback_html(submission)
     assert "Grading failed" in html_out
     assert "Missing credentials" in html_out
 
 
-async def test_feedback_filename_prefers_student_id_over_batch_folder(mongo_db):
+async def test_feedback_filename_prefers_student_id_over_batch_folder():
     submission = _submission()
     assert feedback_filename(submission) == "s1_containers_feedback.html"
 
 
-async def test_render_feedback_html_prefers_manual_grade(mongo_db):
+async def test_render_feedback_html_prefers_manual_grade():
     submission = _submission(
         answers=[
             AnsweredQuestion(
@@ -124,7 +121,7 @@ async def test_render_feedback_html_prefers_manual_grade(mongo_db):
     assert "LLM feedback text." not in html_out
 
 
-async def test_render_feedback_html_embeds_images_as_data_uris(mongo_db):
+async def test_render_feedback_html_embeds_images_as_data_uris():
     from aitana.grading.models import ExtractedImage
 
     images = {"answer1": [ExtractedImage(mime_type="image/png", data="iVBORw0KGgo=")]}
@@ -134,13 +131,13 @@ async def test_render_feedback_html_embeds_images_as_data_uris(mongo_db):
     assert '<div class="figures">' not in render_feedback_html(_submission())
 
 
-async def test_render_feedback_html_includes_text_outputs(mongo_db):
+async def test_render_feedback_html_includes_text_outputs():
     answer = AnsweredQuestion(question_id="answer1", student_answer="print(1)\n--- output ---\n1")
     html_out = render_feedback_html(_submission(answers=[answer]))
     assert "--- output ---\n1" in html_out
 
 
-async def test_load_answer_images_only_extracts_when_needed(mongo_db, monkeypatch):
+async def test_load_answer_images_only_extracts_when_needed(monkeypatch):
     from aitana.api import feedback_export
     from aitana.grading.models import ExtractedImage, ExtractionResult
 
@@ -166,7 +163,7 @@ async def test_load_answer_images_only_extracts_when_needed(mongo_db, monkeypatc
     assert feedback_export.load_answer_images(_submission(rubric=rubric, answers=[answer])) == {"answer1": [image]}
 
 
-async def test_load_answer_images_failure_returns_empty(mongo_db, monkeypatch):
+async def test_load_answer_images_failure_returns_empty(monkeypatch):
     from aitana.api import feedback_export
 
     def _boom(submission):
@@ -181,18 +178,21 @@ async def test_load_answer_images_failure_returns_empty(mongo_db, monkeypatch):
     assert feedback_export.load_answer_images(_submission(rubric=rubric, answers=[answer])) == {}
 
 
-async def test_render_feedback_html_header_shows_course(mongo_db):
+async def test_render_feedback_html_header_shows_course():
     html_out = render_feedback_html(_submission(), course="BDM")
     assert "s1 &middot; BDM &middot; 2026/27" in html_out
 
 
-async def test_course_name_resolved_document(mongo_db):
+async def test_course_name(db):
     from aitana.api.feedback_export import course_name
 
-    assert await course_name(_rubric()) == "BDM"
+    rubric = _rubric()
+    db.add(rubric)
+    await db.flush()
+    assert await course_name(db, rubric) == "BDM"
 
 
-async def test_render_feedback_html_shows_question_and_labels(mongo_db):
+async def test_render_feedback_html_shows_question_and_labels():
     html_out = render_feedback_html(_submission())
     question = html_out.index('<p class="question-text">What happened?</p>')
     answer = html_out.index("Answer:")

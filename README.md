@@ -3,7 +3,7 @@
 Automatic first-pass grading of hands-on lab/exam answer sheets. Extracts
 `answer1`, `answer2`, ... answers from a submitted file, grades each one
 against a rubric using an LLM (via LangChain), and stores the result --
-student answer plus feedback -- as a **submission** document, so a TA can
+student answer plus feedback -- as a **submission**, so a TA can
 review it and later analyze results across students/rubrics.
 
 The submission format is pluggable per rubric (`Rubric.format`): a filled-in
@@ -11,27 +11,26 @@ PDF form with named AcroForm text fields, a Jupyter notebook with answer
 cells tagged `aitana:answer`, or a generic document (any PDF, or a Word
 `.docx`) split into answers by the professor (optionally LLM-assisted) -- see "Submission formats" below.
 
-**Status: WIP.** A FastAPI + MongoDB + MinIO + Celery service with a React
+**Status: WIP.** A FastAPI + PostgreSQL + MinIO + Celery service with a React
 frontend. See [`AGENTS.md`](AGENTS.md) for implementation details, known
 gotchas, and conventions worth knowing before changing the code.
 
 ## Architecture
 
 ```
-React (Vite) --> FastAPI --> MongoDB (students, courses, editions, rubrics, submissions)
+React (Vite) --> FastAPI --> PostgreSQL (students, courses, editions, rubrics, submissions)
                           --> MinIO (raw submission files)
                           --> Gotenberg (.docx -> PDF, LibreOffice)
                           --> enqueues grading on Redis/Celery
-                 Celery worker --> MongoDB / MinIO / the LLM provider
+                 Celery worker --> PostgreSQL / MinIO / the LLM provider
 ```
 
 - **courses** -- a subject, e.g. "BDM". Reused across years.
 - **editions** -- a term, e.g. "2026/27" -- **global**, shared by every
   course taught that term, not owned by any one of them. Create "2026/27"
   once and reference it from as many courses' rubrics as need it, rather
-  than recreating an identically-named edition per course. Students enroll
-  in editions directly (a student can be in several); which course(s) an
-  edition applies to is derived from rubrics (see "Creating a rubric"
+  than recreating an identically-named edition per course. Which course(s)
+  an edition applies to is derived from rubrics (see "Creating a rubric"
   below), not stored on the edition itself.
 - **students** -- the roster, managed via the API.
 - **rubrics** -- one per gradable deliverable (a lab, an exam -- not
@@ -57,7 +56,7 @@ React (Vite) --> FastAPI --> MongoDB (students, courses, editions, rubrics, subm
 Grading is asynchronous: uploading a submission returns immediately
 (`status=pending`), and a Celery worker extracts answers from the raw file
 (using whichever extractor the rubric's format selects) and grades each
-question in the background, updating the same document as it goes
+question in the background, updating the same submission as it goes
 (`extracting` -> `grading` -> `graded`, or `failed` with an error).
 Generic documents (`generic_document`) first go `converting` -> (`segmenting`) ->
 `awaiting_segmentation`, and only get graded once a professor confirms
@@ -110,9 +109,7 @@ A rubric fixes one `format` at creation time (default `pdf_form`):
 
 A question's `field` (defaults to `id`) is the answer-slot name under
 whichever format the rubric uses -- the PDF field name or the notebook tag
-suffix (or, for `generic_document`, the segmentation hint above). Rubrics created before the format rename stored `pdf`/`pdf_generic`; those
-values are still accepted everywhere (YAML, API) and stored rubrics are
-rewritten to `pdf_form`/`generic_document` on API startup.
+suffix (or, for `generic_document`, the segmentation hint above).
 Adding another format means writing one extractor function in
 `src/aitana/grading/extraction/` and registering it there; see
 `AGENTS.md`'s "Pluggable submission formats" section for the full shape.
@@ -128,18 +125,12 @@ given edition, and which editions a given course's rubrics use, are both
 computed from that rubric data and shown on the Editions and Courses pages
 respectively -- neither is a separate thing you manage directly.
 
-This replaced an earlier design where an edition belonged to exactly one
-course, which meant creating "2026/27" once per course produced multiple,
-identically-named, unrelated editions -- confusing everywhere an edition
-picker showed up (e.g. uploading a submission). See `AGENTS.md`'s "Data
-model" section for the full history.
-
 ## Setup
 
 ```bash
 uv sync --group dev
 cp .env.example .env   # fill in the LLM provider key(s) you'll use
-docker compose up -d mongo minio redis gotenberg
+docker compose up -d postgres minio redis gotenberg
 ```
 
 (`gotenberg` converts `.docx` uploads to PDF with LibreOffice. Leaving
@@ -148,11 +139,16 @@ docker compose up -d mongo minio redis gotenberg
 Run the API and worker (either via Docker or locally):
 
 ```bash
-docker compose up api worker
-# or, locally:
+docker compose up api worker   # the api container runs `alembic upgrade head` first
+# or, locally (see AGENTS.md "Environment variables" for the host-side URLs):
+uv run alembic upgrade head
 uv run uvicorn aitana.api.main:app --reload --port 8080
 uv run celery -A aitana.worker.celery_app.celery_app worker --loglevel=info
 ```
+
+The database schema is managed by Alembic migrations
+(`src/aitana/migrations/`); the API never creates tables itself. A database
+GUI (DbGate) is at http://localhost:8081 with `docker compose up`.
 
 And the frontend:
 
@@ -168,24 +164,24 @@ Kustomize manifests are in `deploy/` (a `base/` plus an `overlays/example/` to
 copy per environment). Multi-arch (amd64/arm64) images are built by GitHub
 Actions (`.github/workflows/images.yml`) and pushed to
 `ghcr.io/alexbarcelo/aitana-api` and `ghcr.io/alexbarcelo/aitana-frontend`.
-MongoDB, S3-compatible object storage and the `aitana-secrets` Secret come from
-outside the manifests. See [`deploy/README.md`](deploy/README.md).
+PostgreSQL, S3-compatible object storage and the `aitana-secrets` Secret come
+from outside the manifests; the example overlay shows an in-cluster PostgreSQL
+run by the CloudNativePG operator. See [`deploy/README.md`](deploy/README.md).
 
 ## Repository layout
 
 ```
 src/aitana/
   settings.py    pydantic-settings config, read from the environment/.env
-  db.py          Beanie/PyMongo initialization (shared by API + worker)
   storage.py     MinIO wrapper (upload/download bytes)
   slugify.py     shared slug-from-text helper (rubrics, courses, editions)
-  documents/     Beanie documents: Student, Course, Edition, Rubric, Submission
+  db/            SQLAlchemy models (Course, Edition, Student, Rubric, Batch,
+                 Submission, GradingTrace, LlmModel), engine/session setup
+  migrations/    Alembic migrations (the database schema)
   grading/       extraction/ (pluggable per-format answer extraction: pdf_form,
-                 notebook, generic_document), prompt building, LLM provider factory --
-                 mostly carried over from the original CLI PoC as-is
-  api/           FastAPI app + routers (students, courses, editions, rubrics,
-                 submissions)
-  worker/        Celery app + the grade_submission background task
+                 notebook, generic_document), prompt building, LLM provider factory
+  api/           FastAPI app, routers and request/response schemas
+  worker/        Celery app + the background tasks (conversion, grading)
 frontend/        React + TypeScript + Vite app (nginx/ = production proxy config)
 deploy/          Kustomize manifests (base + example overlay)
 tests/           pytest suite (API routers + grading logic)
@@ -228,11 +224,14 @@ curl -X POST http://localhost:8080/rubrics -H 'Content-Type: application/json' -
 title: Containers lab    # optional; falls back to a title-cased slug
 course_slug: containers  # optional alternative to the course_id form field
 format: pdf_form         # optional, defaults to pdf_form; also notebook, generic_document
-grading_scale:           # optional; {level_id: description}, worst -> best; defaults to the 4-level scale below
-  not_attempted: Blank, off-topic, or shows no understanding of the question.
-  some_effort: On-topic but misses most key points or has major misconceptions.
-  almost_there: Covers most key points with minor gaps or imprecision.
-  solid: Covers the key points correctly and shows clear understanding.
+grading_scale:           # optional; defaults to the 4-level scale below
+  # Each level: an id (what the LLM answers), a description (what it grades
+  # against) and a score. Exactly one level must score 0: it's what a blank
+  # answer gets. Levels rank by score, so list order doesn't matter.
+  - {id: not_attempted, score: 0, description: Blank, off-topic, or shows no understanding of the question.}
+  - {id: some_effort,   score: 1, description: On-topic but misses most key points or has major misconceptions.}
+  - {id: almost_there,  score: 2, description: Covers most key points with minor gaps or imprecision.}
+  - {id: solid,         score: 3, description: Covers the key points correctly and shows clear understanding.}
 context: |               # optional -- background shared by every question (lab setup, dataset...)
   What the whole lab/exam is about, sent with every question's grading prompt.
 questions:
@@ -257,6 +256,9 @@ filename with `_questions` stripped and slugified (e.g.
 Its course (required) comes from, in order: the `course_id` form field, or
 a top-level `course_slug:` key in the YAML -- matching an existing course's
 slug (`GET /courses` to look one up); uploading without either is a `422`.
+(When *updating* a rubric from YAML, `course_slug:`/`edition_slug:` are
+ignored and the course/edition stay as they are unless the form fields say
+otherwise.)
 Its edition (optional) works the same way via `edition_id`/`edition_slug:`
 (quote the slug if it looks like a number, e.g. `"2026_27"`).
 Its format (optional, defaults to `pdf_form`) works the same way via a `format`
@@ -282,7 +284,7 @@ rubric's wording directly: open a rubric's detail page, expand "Test this
 question" under any question, type a sample answer, and grade it. This
 calls the exact same `grade_answer` prompt/grading-scale logic a real
 submission would go through, but synchronously and with nothing persisted
--- no `Submission`, no file, no MinIO, no Celery job. It's the fastest way
+-- no submission, no file, no MinIO, no Celery job. It's the fastest way
 to check whether a rubric's `question`/`rubric`/`expected_points`/
 `grading_scale` actually produce the grade you expect before pointing a
 real exam at it.
@@ -293,8 +295,8 @@ For each question in the rubric:
 - the rubric's own `context` (optional, shared by every question) +
   `question` (the task as posed) + `context` (optional environment/state
   info for this question) + `rubric` (grading instructions) + `expected_points` + the
-  rubric's `grading_scale` (level ids and descriptions, see above) become
-  the LLM's **system prompt**.
+  rubric's `grading_scale` (level ids and descriptions, worst to best by
+  score -- the scores themselves aren't sent) become the LLM's **system prompt**.
 - The student's extracted answer text is the **user/human message**.
 - The LLM returns a structured grade (`src/aitana/grading/models.py`): one
   of that rubric's `grading_scale` level ids (the default scale's four are
@@ -304,8 +306,9 @@ For each question in the rubric:
   each rubric can define its own scale (see `AGENTS.md`'s "Pluggable
   grading scales").
 
-Blank answers are graded as the rubric's `grading_scale`'s first (worst)
-level without an LLM call -- `not_attempted` for the default scale.
+Blank answers get the rubric's score-0 level without an LLM call --
+`not_attempted` for the default scale. The grading overview's **Score** is
+the graded answers' total score over the best possible total.
 
 Grading models are managed in the web UI: the **Model** picker (top right)
 selects the *active* model this browser grades with, and **Manage models...**
@@ -324,22 +327,22 @@ in `.env` only seed the first default model.
 uv run pytest
 ```
 
-Router tests run against an in-memory Mongo double (`mongomock-motor`) with
-MinIO/Celery swapped for in-process fakes -- no live services needed. One
-known gap: `mongomock`'s aggregation emulation doesn't fully support the
-`$lookup`-based queries Beanie's `fetch_links=True` compiles to, so
-full-document resolution of a Link field (a submission's `student`/
-`rubric`/`edition`, a rubric's `course`/`edition`) is only exercised against
-a real MongoDB (verified manually; see AGENTS.md and the comments in
-`tests/test_submissions_api.py`/`tests/test_rubrics_api.py`).
+The suite runs against a real PostgreSQL: by default a throwaway
+`postgres:17-alpine` container started through testcontainers (needs Docker),
+or any empty database you point `TEST_DATABASE_URL` at. The schema comes from
+the Alembic migrations, and each test is rolled back at the end. MinIO and
+Celery are in-process fakes.
+
+```bash
+TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/aitana_test uv run pytest
+```
 
 ## Known limitations / TODO
 
 - No authentication/authorization -- anyone who can reach the API can read
   or create anything. Fine for a trusted local/testing deployment, not for
   a public one.
-- No *editing* of rubrics, courses, or editions -- creation only; a
-  duplicate slug is rejected (`409`) rather than updating the existing
-  document.
+- No *editing* of courses or editions -- creation only; a duplicate slug is
+  rejected (`409`) rather than updating the existing row.
 - `with_structured_output` needs tool-calling support; not verified against
   small/local Ollama models. May need a manual JSON-parsing fallback.

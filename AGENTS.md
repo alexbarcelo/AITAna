@@ -12,81 +12,92 @@ otherwise rediscover the hard way.
 
 ## Data model
 
-Five Beanie documents (`src/aitana/documents/`). Read
-this section before touching any of `Course`, `Edition`, `Rubric.course`/
-`.edition`, or `Submission.edition`:
+PostgreSQL, through SQLAlchemy 2.0 (async, asyncpg). The models are in
+`src/aitana/db/models.py`; the schema itself is owned by Alembic migrations
+(see "Database migrations"). Every table has a `BIGINT GENERATED ALWAYS AS
+IDENTITY` primary key `id`, which the API exposes as is (`id: int`, and
+`{..._id}` path/query parameters are ints).
 
-- **`Course`** -- a subject, e.g. "BDM". `slug` (unique); same creation
-  shape/helper (`slugify`, `src/aitana/slugify.py`, shared with `Rubric` and
-  `Edition`) throughout. Reused across years -- it does not itself carry a
-  term/year.
-- **`Edition`** -- a term, e.g. "2026/27". **Global -- no `course` field.**
-  An edition is just `{name, slug, created_at}`, created once
-  (`POST /editions`, no course involved at all) and referenced from as many
-  courses as actually use that term. Which course(s) an edition applies to
-  is derived, never stored: a `Rubric` pins one course *and* (optionally)
-  one edition (see below) -- that's the only place the two are actually
+Relations are foreign keys. Nested data that always belongs to one row and is
+read and written as a whole (a rubric's questions and grading scale, a
+submission's answers, a grading trace) lives in JSONB columns, typed by the
+Pydantic models in `grading/models.py` through `PydanticJSONB`
+(`db/types.py`) -- so ORM attributes are real `Question`/`AnsweredQuestion`/...
+instances, never raw dicts. Read "Database layer rules" below before writing
+code that touches either.
+
+- **`Course`** (`courses`) -- a subject, e.g. "BDM". `slug` is unique, derived
+  with `slugify` (`src/aitana/slugify.py`, shared with rubrics and editions).
+  Reused across years -- it carries no term/year.
+- **`Edition`** (`editions`) -- a term, e.g. "2026/27". **Global -- no course
+  column.** Just `{name, slug, created_at}`, created once (`POST /editions`)
+  and referenced from as many courses' rubrics as use that term. Which
+  course(s) an edition applies to is derived, never stored: a `Rubric` pins
+  one course *and* (optionally) one edition -- the only place the two are
   tied together. The frontend computes "editions used by this course" /
-  "courses using this edition" by scanning rubrics for matching
-  `course`/`edition` pairs (`frontend/src/lib/editions.ts`), shown on the
-  Courses and Editions pages respectively.
-- **`Student`** -- roster entry. Unique index on `student_id` (the
-  institutional id, not the Mongo `_id`).
-- **`Rubric`** -- one per lab/exam. `slug` (unique) identifies it; see
-  "Creating rubrics" below for how it's derived. `course: Link[Course]`
-  (**required** -- every rubric belongs to a course) and `edition:
-  Link[Edition] | None` (**optional** -- a lab is often unchanged between
-  editions, left unset and reused as-is across years; an exam is typically
-  unique to one edition, set it). `created_at`/`updated_at` (not a version
-  field) are how a TA recognizes "this is an updated version" of a reused
-  rubric across years. `format: SubmissionFormat` (default `pdf_form`) fixes
-  which file format this rubric's submissions must be uploaded as -- see
-  "Pluggable submission formats" below for why this lives on the rubric, not
-  the submission. `grading_scale: dict[str, str]` (default the original
-  4-level scale) is the `{level_id: description}` the LLM grades against --
-  see "Pluggable grading scales" below. `context: str | None` is optional
-  rubric-wide background shared by every question (see "Grading
-  internals"). `questions: list[Question]` is embedded, not referenced.
-- **`Submission`** -- normally one per student x rubric. `student`,
-  `rubric`, `edition`, and `batch` are all Beanie `Link` fields; `student`
-  and `batch` are the only optional ones. `edition` is set on *every*
-  submission, even when its rubric has no fixed edition of its own -- see
-  "Creating a submission" below for exactly how it's resolved; this is what
-  makes `edition_id` filtering direct (sharp edge #3). `file_object_key`
-  points at the raw uploaded
-  file in MinIO (name is format-agnostic on purpose -- not `pdf_object_key`
-  -- since it might be a notebook; see "Pluggable submission formats"
-  below). `answers: list[AnsweredQuestion]` is embedded and grows/fills in
-  as grading progresses (each one carries the LLM's `grade` plus an optional
-  TA `manual_grade` override -- see "Manual grade overrides" below),
-  `status` drives the frontend's polling. `student`
-  is unset for a submission created by a batch upload (see `Batch` below
-  and "Batch submission import"): the zip's per-item folder name isn't
-  necessarily identifiable against the roster at upload time, and grading
-  doesn't need `student` at all, so this doesn't block it. `batch: Link[
-  Batch] | None` and `batch_internal_id: str | None` are set together, only
-  for a batch-created submission -- `batch_internal_id` is that item's
-  per-student folder name from the zip, kept verbatim (e.g., for an Atenea
-  batch, `<surname(s)> <name>_<internal_id>_assignsubmission_file`) for a
-  later feedback-export feature to key off of when writing grades back into
-  the originating LMS.
-- **`Batch`** -- one per zip upload (`api/routers/batches.py`). `rubric:
-  Link[Rubric]` and `edition: Link[Edition]` are both required, resolved
-  the same way a single submission's are (see "Batch submission import"
-  below) -- no `course` field, same reasoning as `Rubric`/`Submission`
-  never storing one either (always derivable via `rubric.course`). `type:
-  BatchType` records which zip layout was used (`atenea` today).
-  `item_count` is set once, at creation, from however many submissions the
-  zip actually produced.
+  "courses using this edition" by scanning rubrics
+  (`frontend/src/lib/editions.ts`), shown on the Courses and Editions pages.
+- **`Student`** (`students`) -- roster entry. `student_id` (the institutional
+  id, not the primary key) is unique.
+- **`Rubric`** (`rubrics`) -- one per lab/exam. `slug` is unique; see
+  "Creating rubrics" for how it's derived. `course_id` is a **required** FK
+  (every rubric belongs to a course); `edition_id` is an **optional** FK (a
+  lab is often unchanged between editions, left unset and reused as is; an
+  exam is typically unique to one edition, set it). `created_at`/`updated_at`
+  (not a version number) are how a TA recognizes "this is an updated version"
+  of a reused rubric. `format: SubmissionFormat` (default `pdf_form`) fixes
+  which file format this rubric's submissions are uploaded as -- see
+  "Pluggable submission formats" for why it lives on the rubric, not the
+  submission. `grading_scale` (JSONB, a list of `GradingLevel`) is what the
+  LLM grades against -- see "Pluggable grading scales". `context` is
+  optional rubric-wide background shared by every question (see "Grading
+  internals"). `questions` is a JSONB list of `Question`.
+- **`Batch`** (`batches`) -- one per zip upload (`api/routers/batches.py`).
+  `rubric_id` and `edition_id` are both required FKs, resolved the same way a
+  single submission's are (see "Batch submission import"). No course column,
+  same as rubrics/submissions never storing one either (always derivable
+  through the rubric). `type: BatchType` records which zip layout was used
+  (`atenea` today). `item_count` is set once, at creation.
+- **`Submission`** (`submissions`) -- normally one per student x rubric.
+  `rubric_id` and `edition_id` are required FKs, `student_id` and `batch_id`
+  optional ones. `edition_id` is set on *every* submission, even when its
+  rubric has no fixed edition -- see "Creating a submission" for how it's
+  resolved; this is what makes `edition_id` filtering direct.
+  `file_object_key` points at the stored file in MinIO (format-agnostic name,
+  since it might be a notebook; see "Pluggable submission formats").
+  `answers` (JSONB list of `AnsweredQuestion`) fills in as grading
+  progresses (each one carries the LLM's `grade` plus an optional TA
+  `manual_grade` -- see "Manual grade overrides"), and `status` drives the
+  frontend's polling. `student_id` is unset for a batch item not matched to
+  the roster (yet) and for a labelled submission (see "Labelled
+  submissions"); grading doesn't need a student at all. `batch_id` and
+  `batch_internal_id` are set together, only for a batch-created submission
+  -- `batch_internal_id` is that item's per-student folder name from the zip,
+  kept verbatim (e.g., for an Atenea batch, `<surname(s)>
+  <name>_<internal_id>_assignsubmission_file`), so the feedback zip export
+  can write each file back under the folder name the LMS expects.
+- **`GradingTrace`** (`grading_traces`) -- one per real LLM grading call; see
+  "Grading traces".
+- **`LlmModel`** / **`FavoriteLlmModel`** (`llm_models`,
+  `favorite_llm_models`) -- see "Choosing the grading model".
 
-`Question` and `Grade` live in `src/aitana/grading/models.py`, *not* in
-`documents/`, on purpose: they're plain Pydantic models (not Beanie
-Documents) reused in two places -- as the grading-time input/output
-(`grading/grading.py`'s `grade_answer`) and embedded verbatim inside
-`Rubric` and `Submission`. Keeping them DB-agnostic means `grading/` has
-zero Beanie dependency and could be unit-tested (or reused) without a
-database at all. Don't move grading logic to depend on `documents/` -- it
-would tangle a pure function with ODM state for no benefit.
+**Deletes.** Foreign keys are `ON DELETE RESTRICT`, except
+`grading_traces.submission_id` and `favorite_llm_models.llm_model_id`
+(`CASCADE`: traces go with their submission, favorites with their model).
+Endpoints that refuse a delete because something still references the row
+(a rubric with submissions/batches, a student with submissions) check first
+and answer `409` naming what's in the way; the FK is only the backstop.
+
+`AnsweredQuestion` lives in `db/models.py` (it only ever exists inside a
+submission's `answers`). `Question`, `Grade`, `GradingLevel`, `GradeTrace`
+and the other grading-time shapes live in `src/aitana/grading/models.py`,
+*not* in `db/`, on purpose: they're plain Pydantic models reused in two
+places -- as the grading-time input/output (`grading/grading.py`'s
+`grade_answer`) and stored verbatim in JSONB columns. Keeping them
+DB-agnostic means `grading/` has zero database dependency and can be
+unit-tested (or reused) without a database at all. Don't make grading logic
+depend on `db/` -- it would tangle a pure function with ORM state for no
+benefit.
 
 `Question` has both a `title` (short label, UI-only -- lists/headers) and a
 `question` (the actual task text sent to the LLM) -- don't conflate them;
@@ -97,11 +108,47 @@ when set. `model_answer` is likewise optional: a worked/canonical answer,
 for the subset of questions that actually have one (e.g. "what command
 fixes this") as opposed to an open-ended one -- also included in the prompt
 only when set. See "Grading internals" below for exactly how these compose
-into the system prompt.
+into the system prompt. `Question.field` (exposed as the `answer_key`
+property, `field or id`) names the answer slot under the rubric's format --
+see "Pluggable submission formats".
 
-`Question.field` (exposed as the `answer_key` property, `field or id`) used
-to be called `pdf_field` -- renamed because it no longer means "PDF AcroForm
-field name" specifically, see "Pluggable submission formats" below.
+**API shapes** are in `api/schemas.py`: `*Out` response models read straight
+off the ORM objects (`from_attributes`), plus `RubricIn` (the rubric body
+every create/edit path validates through). Nested objects in a response are
+exactly what the endpoint eager-loaded (the `*_LOADS` tuples in
+`db/models.py`):
+
+- `RubricOut`: the rubric with its `course` and `edition` objects.
+- `SubmissionOut`: `student`, `edition`, and `rubric` as a `RubricSummaryOut`
+  (the rubric with `course_id`/`edition_id`, no nested objects -- no
+  submission view needs them), plus `batch_id`.
+- `BatchOut`: `rubric` (summary) and `edition`.
+
+## Database migrations (`src/aitana/migrations/`, `alembic.ini`)
+
+The schema is created and changed only by Alembic, never by the app at
+startup (no `create_all`). `alembic upgrade head` runs before the API
+starts: the compose `api` service runs it in its command, and the
+Kubernetes api Deployment in a `migrate` initContainer. The worker never
+migrates.
+
+- **Changing a model means adding a revision**: `uv run alembic revision
+  --autogenerate -m "..."` against a database at `head`, then read and fix
+  the generated file (autogenerate misses renames, and data migrations are
+  hand-written). Never edit a revision that has been applied anywhere.
+  `alembic check` fails when the models and the migrations disagree -- the
+  test suite's migrated schema is what the tests run against, so a forgotten
+  revision shows up there too.
+- `migrations/env.py` reads `DATABASE_URL` through the app settings (tests
+  pass a URL through `config.attributes["database_url"]` instead), and holds
+  a PostgreSQL advisory lock for the whole run, so several api replicas
+  starting at once migrate one at a time instead of racing.
+- Its `render_item` hook makes autogenerate write `PydanticJSONB` columns as
+  plain `postgresql.JSONB()`: revisions never import app code, so an old
+  revision keeps working whatever happens to the models later.
+- Enums (`format`, `status`, ...) are stored as plain strings (VARCHAR, no
+  native PostgreSQL enum, no CHECK constraint -- `_str_enum` in
+  `db/models.py`), so adding a member needs no migration.
 
 ## Pluggable submission formats
 
@@ -112,7 +159,7 @@ conditions the extraction step.
 
 - **`SubmissionFormat`** (`grading/models.py`) is the enum of supported
   formats -- currently `pdf_form`, `notebook` and `generic_document`. It lives in `grading/models.py`
-  next to `Question`/`Grade`, not in `documents/`, for the same
+  next to `Question`/`Grade`, not in `db/`, for the same
   DB-agnostic-reuse reason those do (see above).
 - **Format lives on the `Rubric`, not the `Submission`.** A rubric's
   `questions[].field` values only make sense under one format (a PDF
@@ -123,8 +170,7 @@ conditions the extraction step.
   rubric-creation time (`POST /rubrics`'s JSON body, or `POST
   /rubrics/upload`'s `format` form field / top-level `format:` YAML key,
   same precedence order as `course_slug`/`edition_slug`), and defaults to
-  `pdf_form` so every rubric created before this existed keeps working
-  unchanged. Editable via the edit endpoints (see
+  `pdf_form`. Editable via the edit endpoints (see
   "Editing rubrics" below), but changing `format` on a rubric that already
   has submissions against it is rejected with `409` (`_guard_format_change`)
   -- a submission doesn't record its own format, only `rubric.format` at
@@ -194,17 +240,7 @@ conditions the extraction step.
 
 ## Generic-document submissions (`generic_document`, "segmentation")
 
-"Generic document" in the UI (it used to be "free-form PDF", value
-`pdf_generic`; `pdf_form` used to be plain `pdf`). **Format rename**: the old
-values live on only as aliases -- `SubmissionFormat._missing_` maps
-`LEGACY_FORMAT_VALUES` (`grading/models.py`) to the current members, so
-unmigrated rubrics, old YAML files and API callers keep working, while
-serialization and the OpenAPI schema only ever show the new values.
-`migrate_legacy_formats` (`documents/rubric.py`, run in the API's
-`lifespan`) rewrites stored rubrics once. The worker doesn't run it but
-doesn't need to: it reads legacy values through the alias.
-
-A PDF with no form fields (or a `.docx`, see below): nothing in the file says which part answers
+"Generic document" in the UI. A PDF with no form fields (or a `.docx`, see below): nothing in the file says which part answers
 which question, so a professor has to say it -- **segmentation** (each
 answer's span is a **segment**). Code: `grading/extraction/generic_document.py`
 (pure: conversion, segment validation/slicing), `grading/segmentation.py`
@@ -231,7 +267,6 @@ answer's span is a **segment**). Code: `grading/extraction/generic_document.py`
   on the submission page. Nothing else reads it.
   `Submission.original_filename` (the uploaded name; for a batch item, its
   name inside the zip folder) is set for *every* upload, converted or not.
-  Submissions uploaded before this have neither (`/original` is `404`).
 - **LibreOffice does the `.docx` layout, via a Gotenberg sidecar**
   (`gotenberg` compose service, `POST /forms/libreoffice/convert`;
   `GOTENBERG_URL`/`GOTENBERG_TIMEOUT` settings, read by the router and passed
@@ -283,8 +318,8 @@ answer's span is a **segment**). Code: `grading/extraction/generic_document.py`
   `generic_document` is in `IMAGE_FORMATS`, not in `OUTPUT_FORMATS`.
 - **Storage split**: Markdown + images in MinIO; only metadata
   (`Submission.document: ConvertedDocument`, `segments`,
-  `segmentation_source`, `segmented_at`) in Mongo -- `Submission` is
-  re-serialized on every grading save (sharp edge #1), keep it small.
+  `segmentation_source`, `segmented_at`) in PostgreSQL -- the submission row
+  is rewritten on every grading commit, keep it small.
 - **Not in `_EXTRACTORS`**: those are `(raw file path) -> ExtractionResult`;
   this format's answers come from stored Markdown + segments instead.
   `extract_submission_file` branches on `SEGMENTED_FORMATS`
@@ -302,7 +337,7 @@ answer's span is a **segment**). Code: `grading/extraction/generic_document.py`
 - **Model use**: LLM-assisted segmentation (`llm_segmentation` form field
   on `POST /submissions`/`POST /batches`, default `true`) uses the active
   model; with it off, an upload against a `generic_document` rubric needs no
-  model at all (`_upload_model`). The suggestion sanitizes the LLM output
+  model at all (`upload_model`). The suggestion sanitizes the LLM output
   (out-of-range or duplicate lines become `None`) so it always validates.
 - **OCR fallback**: PyMuPDF OCRs pages that look scanned when it finds
   Tesseract. A half-installed Tesseract (binary, no language data) makes
@@ -322,63 +357,56 @@ answer's span is a **segment**). Code: `grading/extraction/generic_document.py`
 ## Pluggable grading scales
 
 A rubric can define its own scale entirely, or use one of the provided ones
-out-of-the-box.
+out of the box.
 
-- **`Rubric.grading_scale: dict[str, str]`** (`documents/rubric.py`) is
-  `{level_id: description}`, e.g. `{"fail": "...", "pass": "..."}`.
-  Defaults to `DEFAULT_GRADING_SCALE` (`grading/models.py` -- a
-  4-level scale). A `field_validator` rejects an empty dict (a
-  rubric with zero valid levels can't grade anything, and the blank-answer
-  short-circuit below would `StopIteration` on `next(iter({}))`).
-- **Order matters and is a documented convention, not incidental**: entries
-  run worst -> best.
-  - `grade_answer` (`grading/grading.py`) uses the *first* key verbatim as
-    the level for a blank answer -- no LLM call needed to know a blank
-    answer is the worst case, and this works for any scale (even one with
-    no level literally named `not_attempted`, e.g. a pass/fail scale) precisely
-    because it never hardcodes the identifier, just "whichever key is
-    first."
-  - The frontend's `GradeBadge` colors levels along a single-hue ordinal
-    ramp by this same position (lightest = first/worst, darkest =
-    last/best) -- see its own comment for the specific palette steps and
-    why a single hue, not a red-to-green rainbow (per the dataviz skill's
-    color-formula: this is an **ordinal** job -- "position in a sequence,"
-    monotone lightness on one hue -- not a **status** job, which would
-    assume a small fixed vocabulary this data deliberately doesn't have).
+- **`Rubric.grading_scale`** is a list of **`GradingLevel`**
+  (`grading/models.py`): `{id, description, score}`. `id` is what the LLM
+  answers with and what a `Grade.level` holds; `description` is what the LLM
+  grades against; `score` is a number. Defaults to `DEFAULT_GRADING_SCALE`
+  (4 levels, scored 0-3).
+- **Rules** (the `GradingScale` annotated type, enforced on every rubric
+  create/edit through `RubricIn`, so the JSON body and the YAML upload paths
+  `422` alike): at least one level, unique ids, and **exactly one level with
+  `score == 0`**. Scores are otherwise unconstrained.
+- **The score-0 level is what a blank answer gets.** `grade_answer`
+  (`grading/grading.py`) short-circuits a blank answer (no text, no images)
+  to `blank_level(grading_scale)` without calling the LLM -- no level id is
+  hardcoded, so this works for any scale.
+- **Levels are ranked by score, never by list position**
+  (`ordered_levels`): the prompt lists them worst to best, the
+  structured-output `Literal[...]` follows the same order, and the
+  frontend's `GradeBadge` colors them along a single-hue ordinal ramp by
+  that rank (lightest = lowest score; see its own comment for the palette
+  and why a single hue -- an **ordinal** job per the dataviz skill's color
+  formula, not a status one). The frontend mirrors these helpers in
+  `lib/gradingScale.ts`.
+- **Scores never reach the LLM.** The `# Grading` section of the prompt
+  (`build_grading_section`) is `- id: description` lines only; the LLM picks
+  a level by its description.
 - **`Grade.level` is a plain `str`**, not an `Enum` -- which identifiers are
-  valid depends on which rubric graded the answer, so it can't be a fixed
-  type. Validation that an LLM call actually returned one of *this* rubric's
-  configured levels happens per-call instead, via
-  `grade_schema_for_scale(grading_scale)` (`grading/models.py`): a
-  `pydantic.create_model()`-built one-off schema whose `level` field is a
-  `Literal[...]` over that scale's keys, passed to
-  `chat_model.with_structured_output(...)`. `grade_answer` then normalizes
-  whatever comes back into a real `Grade` instance (`Grade(level=raw.level,
-  feedback=raw.feedback)`) -- the dynamic schema instance is never stored or
-  passed around beyond that one call, so nothing downstream needs to know
-  it existed.
-- **The prompt's grading-levels list is built, not hardcoded**:
-  `build_grading_section(grading_scale)` renders `{level_id: description}`
-  as a `- level_id: description` list, interpolated into
-  `SYSTEM_PROMPT_TEMPLATE`'s new `# Grading` section (previously this text
-  was a literal, unchangeable part of the template).
+  valid depends on which rubric graded the answer. Validation that an LLM
+  call returned one of *this* rubric's levels happens per call instead, via
+  `grade_schema_for_scale(grading_scale)`: a `pydantic.create_model()`-built
+  one-off schema whose `level` field is a `Literal[...]` over the scale's
+  ids, passed to the structured-output call. `grade_answer` then normalizes
+  the result into a real `Grade` -- the one-off schema never leaves that
+  call.
 - This is deliberately *not* a `grading/scales/` plugin package the way
   `grading/extraction/` is for submission formats -- there's no per-scale
-  *code* to dispatch to, just data (an ordered dict) that flows through the
-  same prompt-building and structured-output-schema logic regardless of its
-  contents. Don't add a scales-registry abstraction unless a genuinely
-  different *mechanism* (not just different level names) shows up.
-- **Frontend presets, not a fixed list.** Any `{id: description}` dict is a
-  valid `grading_scale` -- there's no server-side enum of "allowed" scales.
+  *code* to dispatch to, just data that flows through the same
+  prompt-building and structured-output logic regardless of its contents.
+  Don't add a scales registry unless a genuinely different *mechanism*
+  shows up.
+- **Frontend presets, not a fixed list.**
   `frontend/src/api/gradingScalePresets.ts` offers a few starting points
-  (including the original 4-level one, kept in sync with
-  `DEFAULT_GRADING_SCALE` by hand -- there's no shared source of truth
-  across the language boundary) in the "Build manually" rubric form's
-  quick-pick dropdown, which then loads into a free-form, fully editable
-  id/description list (`GradingScaleEditor` in `NewRubricForm.tsx`) -- picking
-  a preset is a convenience starting point, not a constraint.
-- No form-field equivalent on `POST /rubrics/upload` the way `format` has
-  one (a dict doesn't fit a multipart field cleanly) -- only the YAML body's
+  (the first mirrors `DEFAULT_GRADING_SCALE`, kept in sync by hand -- there's
+  no shared source of truth across the language boundary) in the rubric
+  form's quick-pick dropdown, which loads into a fully editable
+  id/score/description list (`GradingScaleEditor` in `RubricForm.tsx`). The
+  editor shows the rules' violations (`gradingScaleProblem`) and disables
+  saving until they're fixed.
+- No form-field equivalent on `POST /rubrics/upload` the way `format` has one
+  (a list of objects doesn't fit a multipart field) -- only the YAML body's
   top-level `grading_scale:` key, or omit it for the default.
 
 ## Python sandbox for grading
@@ -482,16 +510,15 @@ extra there: they're already part of `student_answer`.
 
 The export picks which answers get figures from the rubric's *current*
 `include_images`, not the stored `image_count` -- that count is a
-grading-time snapshot, 0 for any answer graded before the toggle was on (or
-by a worker still running pre-feature code; the `worker` container has no
-`--reload`). The UI thumbnails still go by `image_count`, so they only
-appear after a re-grade in that situation.
+grading-time snapshot, 0 for any answer graded before the toggle was turned
+on. The UI thumbnails go by `image_count`, so they only appear after a
+re-grade in that situation.
 
-## Grading traces (`documents/grading_trace.py`, `api/routers/grading_traces.py`)
+## Grading traces (`GradingTrace`, `api/routers/grading_traces.py`)
 
-Diagnostic record of every real `grade_answer()` call, kept for later
-"why did the LLM grade this the way it did" investigation -- backend only so
-far, no frontend consumes it yet.
+Diagnostic record of every real `grade_answer()` call made by the worker,
+kept for later "why did the LLM grade this the way it did" investigation --
+backend only so far, no frontend consumes it yet.
 
 - **`GradeTrace`** (`grading/models.py`, next to `Grade`/`Question` for the
   same DB-agnostic-reuse reason) is the transport shape: `provider`, `model`,
@@ -499,71 +526,51 @@ far, no frontend consumes it yet.
   resulting `grade`, `blank_short_circuit` (true when `grade_answer` never
   called the LLM at all -- see "Pluggable grading scales"), best-effort
   `thinking`, `tool_calls`, token usage, and `elapsed_seconds`. `grade_answer`
-  (`grading/grading.py`) builds one and hands it to an optional, keyword-only
-  `on_trace` callback -- both `provider`/`model` and `on_trace` default to
-  `None`/not-called, so every pre-existing call site (notably `POST
-  /rubrics/{id}/test-answer`) is unaffected and still persists nothing, per
-  that endpoint's existing docstring promise. `worker/tasks.py`'s
-  `_grade_answers` is the only caller that passes `on_trace` today.
+  builds one and hands it to an optional, keyword-only `on_trace` callback;
+  `POST /rubrics/{id}/test-answer` passes none, so nothing is persisted
+  there, per that endpoint's promise. `worker/tasks.py`'s `_grade_answers`
+  is the only caller that passes it.
 - **`thinking` is best-effort and `None` unless reasoning was explicitly
   requested.** None of this project's four providers exposes reasoning
   content unless the request asks for it -- see "Reasoning/thinking capture
-  across providers" below for exactly how `llm.py`'s `get_chat_model` turns
-  it on, and exactly what shape each provider sends back that
-  `_extract_thinking` (`grading.py`) then normalizes into one flat string.
-  `None` means "this provider/model/call didn't expose anything
-  recognizable" (including simply "reasoning wasn't requested at all," the
-  default), not a bug. `_extract_tool_calls` and `_extract_usage` do the
-  equivalent extraction for a `needs_python_sandbox` question's tool-call
-  transcript and LangChain's own standardized `usage_metadata` -- both are
-  already provider-agnostic *without* needing per-provider handling, since
-  `tool_calls`/`usage_metadata` are shapes every LangChain chat-model
-  integration normalizes to the same TypedDicts regardless of provider,
-  unlike reasoning content (no such standardization exists for that). All
-  three read off `result["messages"]`, the full `agent.invoke(...)` result
-  `grade_answer` keeps around instead of discarding everything but
-  `structured_response` (`_grade_with_tools`'s return type is the whole
-  result dict, not just the structured output).
-- **`GradingTrace`** (`documents/grading_trace.py`) is the persisted Beanie
-  Document: `submission: Link[Submission]`, `question_id`, `trace:
-  GradeTrace` (embedded, not flattened -- same has-a composition style as
-  `AnsweredQuestion.grade: Grade`), `created_at`. **Deliberately its own
-  collection, not embedded in `Submission`/`AnsweredQuestion`** -- this data
-  (full prompts, tool-call transcripts) is much larger than a `Grade` and
-  has no reason to ride along on every `Submission.save()`/serialization
-  the way an embedded field would (`Submission` already gets re-serialized
-  on every grading step, see sharp edge #1). `_grade_answers` inserts one
-  per question, right after `grade_answer` returns and *before*
-  `submission.save()` for that question -- so a trace survives even if
-  something about the submission save itself goes wrong.
-- **No TTL, by design** -- traceability is the point, so nothing expires on
-  its own (unlike, say, a cache). Cleanup is a deliberate, explicit action
-  instead: `DELETE /grading-traces` (`api/routers/grading_traces.py`) bulk-
-  deletes by `submission_id` and/or `before` (a cutoff datetime), ANDed
-  together when both are given, same as every other multi-filter list
-  endpoint in this app. It refuses to run with **no** filter at all unless
-  `all=true` is also passed -- a bare `DELETE /grading-traces` silently
-  wiping the whole collection would be an easy mistake otherwise. `GET
-  /grading-traces` (optionally filtered by `submission_id`/`question_id`)
-  and `GET /grading-traces/{id}` exist alongside it for inspecting what's
-  there before deciding what to prune -- both diagnostic-only, no frontend
-  page for either yet.
-- **`regrade_submission` does not clean up a submission's previous traces**
-  before re-grading -- old and new traces for the same submission/question
-  coexist, distinguishable by `created_at`. This is deliberate (comparing
-  "what did the LLM see before we fixed the rubric" against "what does it
-  see now" is exactly the kind of thing traceability is for), but does mean
-  a repeatedly-regraded submission accumulates traces until `DELETE
-  /grading-traces` is used deliberately.
-- Same "Beanie Link query, verified against real MongoDB" situation as
-  everywhere else Link-field filtering shows up (sharp edge #3):
-  `GradingTrace.submission.id == ...` (used by both the `GET` and `DELETE`
-  endpoints' `submission_id` filter) isn't exercised as a positive match
-  under `mongomock` in `tests/test_grading_traces_api.py` -- only the
-  "no/all matches" shapes are.
-- `GradingTrace` is registered in `documents.DOCUMENT_MODELS` like every
-  other Document -- if you add a new format/scale/whatever that touches the
-  documents package, remember this one exists too.
+  across providers" below for how `llm.py`'s `get_chat_model` turns it on,
+  and what shape each provider sends back that `_extract_thinking`
+  (`grading.py`) normalizes into one flat string. `None` means "this
+  provider/model/call didn't expose anything recognizable" (including simply
+  "reasoning wasn't requested at all," the default), not a bug.
+  `_extract_tool_calls` and `_extract_usage` do the equivalent extraction for
+  a `needs_python_sandbox` question's tool-call transcript and LangChain's
+  standardized `usage_metadata` -- both provider-agnostic without
+  per-provider handling, since `tool_calls`/`usage_metadata` are shapes every
+  LangChain chat-model integration normalizes the same way, unlike reasoning
+  content. All three read off `result["messages"]`, the full
+  `agent.invoke(...)` result `grade_answer` keeps instead of discarding
+  everything but `structured_response`.
+- **`GradingTrace`** (`db/models.py`, table `grading_traces`):
+  `submission_id` (FK, `ON DELETE CASCADE`), `question_id`, `trace`
+  (JSONB, the whole `GradeTrace`), `created_at`. **Deliberately its own table,
+  not part of `Submission.answers`** -- this data (full prompts, tool-call
+  transcripts) is much larger than a `Grade` and has no reason to be
+  rewritten with the submission's `answers` on every grading commit.
+  `_grade_answers` adds one per question and commits it together with that
+  question's grade.
+- **No expiry, by design** -- traceability is the point, so nothing expires
+  on its own. Cleanup is a deliberate action instead: `DELETE
+  /grading-traces` bulk-deletes by `submission_id` and/or `before` (a cutoff
+  datetime; a naive one is read as UTC), ANDed together when both are given,
+  same as every other multi-filter endpoint in this app. It refuses to run
+  with **no** filter at all unless `all=true` is passed -- a bare `DELETE
+  /grading-traces` silently wiping the whole table would be an easy mistake
+  otherwise. `GET /grading-traces` (optionally filtered by
+  `submission_id`/`question_id`, most recent first) and `GET
+  /grading-traces/{id}` exist for inspecting what's there before pruning.
+  Deleting a submission deletes its traces (the cascading FK).
+- **A re-grade doesn't clean up a submission's previous traces** -- old and
+  new traces for the same submission/question coexist, distinguishable by
+  `created_at`. Deliberate (comparing "what did the LLM see before we fixed
+  the rubric" against "what does it see now" is exactly what traceability is
+  for), but a repeatedly-regraded submission accumulates traces until
+  `DELETE /grading-traces` is used.
 
 ## Per-answer grading info (audit tooltip)
 
@@ -580,14 +587,14 @@ carried on `GradeTrace.info`, copied onto the answer by `_grade_answers`.
 
 - **Sparse and schemaless on purpose**: a key is only present when the
   provider reported it (exception: `reasoning_effort`, always recorded from
-  the grading `LlmModel` -- `null` means "provider default", while an absent
-  key means the answer predates it); nothing queries or indexes it. Adding a key needs no
+  the grading `LlmModel` -- `null` means "provider default"); nothing
+  queries or indexes it. Adding a key needs no
   frontend change -- `components/GradingInfo.tsx` renders known keys with
   labels and anything unknown under "Other".
 - The full prompt/thinking/tool transcript stays in `GradingTrace`; this is
   just what fits in a tooltip (per answer, plus header totals on the
-  submission page). Answers graded before this existed have no info: the
-  icon still shows on them, saying so.
+  submission page). An answer without info still shows the icon, saying
+  so.
 - Kept for untouched answers on a single-question regrade, alongside
   `grade` (`_rebuild_answers`).
 
@@ -601,7 +608,7 @@ refetches `['submissions']`) is reflected without closing it.
 
 - **Stored next to, not instead of, the LLM's grade**:
   `AnsweredQuestion.manual_grade: Grade | None` + `manual_graded_at`
-  (`documents/submission.py`). `grade` is only ever written by the worker.
+  (`db/models.py`). `grade` is only ever written by the worker.
   What the student sees is `effective_grade` (`manual_grade or grade`) -- a
   plain Python `@property`, not a `computed_field`, so it's never persisted;
   the frontend has its own `effectiveGrade()` (`api/types.ts`) for the same
@@ -609,10 +616,10 @@ refetches `['submissions']`) is reflected without closing it.
   `SubmissionDetailPage`) must go through it, not read `.grade` directly.
 - **`PUT`/`DELETE /submissions/{id}/answers/{question_id}/grade`**
   (`api/routers/submissions.py`) set/clear it. `level` must be one of the
-  rubric's `grading_scale` keys (`422` otherwise). **`409` while the
-  submission is `pending`/`extracting`/`grading`**: the worker holds its own
-  in-memory copy and saves the whole document after every question, so an
-  edit made mid-run would just be overwritten.
+  rubric's `grading_scale` level ids (`422` otherwise). **`409` while the
+  submission is being processed**: the worker holds its own copy of
+  `answers` and writes the whole list after every question, so an edit made
+  mid-run would just be overwritten.
 - **Overrides survive a re-grade**: `worker/tasks.py`'s `_rebuild_answers`
   carries `manual_grade`/`manual_graded_at` over by `question_id` when the
   answers list is rebuilt (dropped if the question left the rubric). The UI
@@ -626,39 +633,38 @@ grid (`components/GradeStats.tsx`), a sortable per-student "Score" column, a
 per-question footer row. All are computed client-side from the listed
 submissions (no stats endpoint), always from `effectiveGrade`.
 
-- **"Score" is the mean *position* in the rubric's `grading_scale`** (0% =
-  first/worst level, 100% = last/best; `levelScore` in
-  `lib/gradeStats.ts`), not a mark: levels are ordinal labels with no
-  numeric value (see "Pluggable grading scales"), so position is the only
-  average that works for any scale. It's only comparable within one rubric.
-  If rubrics ever get real per-level points, replace `levelScore`, not the
-  views.
+- **"Score" is the graded answers' total score over the best possible
+  total** (every one of those answers at the scale's highest-scoring level),
+  from the rubric's `GradingLevel.score`s (`gradeStats` in
+  `lib/gradeStats.ts`). 100% = all top marks. With negative-scoring levels it
+  can go below 0% (the histogram clamps that into its lowest bin). Only
+  comparable within one rubric.
 - Ungraded answers and levels no longer in the scale are left out of the
-  mean, but ungraded answers still show as a neutral segment in the
-  distribution bars.
+  score, but ungraded answers still show as a neutral segment in the
+  distribution bars. Distribution bars and legends list levels in score
+  order.
 
 ## Choosing the grading model (`api/routers/llm.py`)
 
 Which model grades is runtime data, not config: provider credentials stay in
 the environment, but the models themselves are registered from the UI.
 
-- **`LlmModel`** (`documents/llm_model.py`): `{provider, model}` (unique
-  pair; `model` is the provider's own identifier string) plus
-  `reasoning_effort` and `is_default`. Effort is a setting of the model, not
-  part of its identity -- one entry per model, not one per effort (that
-  would need a different unique index, and Beanie never drops an old one
-  without the global `allow_index_dropping`). It's the only field
-  editable after creation (`PATCH /llm/models/{id}`, body field required
-  since `null` is a real value) -- provider/identifier changes mean
-  registering a new model.
-  At most one default, enforced by the router (`_make_default` unsets the
-  others), not the database. No secrets stored -- a model whose provider
+- **`LlmModel`** (`llm_models`): `{provider, model}` (a unique pair; `model`
+  is the provider's own identifier string) plus `reasoning_effort` and
+  `is_default`. Effort is a setting of the model, not part of its identity --
+  one row per model, not one per effort. It's the only field editable after
+  creation (`PATCH /llm/models/{id}`, body field required since `null` is a
+  real value: "provider default") -- provider/identifier changes mean
+  registering a new model. **At most one default**, enforced by a partial
+  unique index (`uq_llm_models_single_default`, `WHERE is_default`);
+  `_make_default` unsets the previous default and flushes before setting the
+  new one, in one transaction. No secrets stored -- a model whose provider
   later loses its key stays listed, flagged unavailable.
-- **`UserSettings`** (`documents/user_settings.py`) holds
-  `favorite_model_ids`. There are no users yet, so it's a single document
-  with `key="global"`, always read through `get_user_settings()` -- the
-  future per-user migration keys it by user id instead. Default is
-  deliberately *not* here: it's deployment-wide.
+- **Favorites** are rows of `favorite_llm_models` (`user_key`,
+  `llm_model_id`). There are no users yet, so every row uses
+  `GLOBAL_USER_KEY` (`"global"`); a per-user version keys by user id
+  instead. Deleting a model removes it from favorites (cascading FK). The
+  default is deliberately *not* a per-user setting: it's deployment-wide.
 - **Provider availability** (`llm.py`'s `PROVIDER_REQUIREMENTS` /
   `provider_unavailable_reason`): the provider's optional package installed
   (`importlib.util.find_spec`, no actual import) *and* its env var set --
@@ -669,25 +675,26 @@ the environment, but the models themselves are registered from the UI.
 - **Active vs. default**: the *active* model is a per-browser choice
   (`frontend/src/lib/activeModel.ts`, localStorage), falling back to the
   default. Every grading-triggering endpoint (`POST /submissions`, `POST
-  /batches`, the three regrade endpoints, `POST /rubrics/{id}/test-answer`)
-  takes `?model_id=` (a query param so multipart and JSON endpoints share
-  one shape, `MODEL_ID_QUERY`), and the frontend hooks attach the active
-  one themselves (`useActiveModelId`) -- callers never pass it.
+  /batches`, the three regrade endpoints, the segmentation suggestion
+  endpoints, `POST /rubrics/{id}/test-answer`) takes `?model_id=` (a query
+  param so multipart and JSON endpoints share one shape, `MODEL_ID_QUERY`),
+  and the frontend hooks attach the active one themselves
+  (`useActiveModelId`) -- callers never pass it.
 - **Resolved at enqueue time**: `require_llm_model` resolves `model_id` (or
   the default) in the request and fails it there (`404` unknown id, `422`
   no default / provider unavailable), then passes the concrete id to the
-  Celery task. The worker re-resolves it (`resolve_llm_model`; `None` ->
-  default, only for tasks queued before this existed); a model deleted in
-  between fails that submission with a clear error. Which model graded
-  each answer is already in `AnsweredQuestion.grading_info`.
+  Celery task. The worker re-reads that model when the task runs
+  (`resolve_llm_model`), so an effort change made in between applies; a
+  model deleted in between fails that submission with a clear error. Which
+  model graded each answer is in `AnsweredQuestion.grading_info`.
 - `DELETE /llm/models/{id}` refuses (`409`) to delete the default while
   other models exist; the first model ever added becomes default
   automatically -- grading always has a fallback once any model exists.
-- **Upgrade path**: `LLM_PROVIDER`/`LLM_MODEL` are now optional (no
-  built-in default) and, with `LLM_REASONING_EFFORT`, only seed the first
-  default model on API startup if the collection is empty
-  (`seed_llm_models_from_env`; an invalid effort is logged and dropped).
-  None of the three affects grading otherwise.
+- **Seeding**: `LLM_PROVIDER`/`LLM_MODEL` (optional, no built-in default)
+  and `LLM_REASONING_EFFORT` only register the first default model on API
+  startup when the table is empty (`seed_llm_models_from_env`; an invalid
+  effort is logged and dropped). None of the three affects grading
+  otherwise.
 - Tests: the `client` fixture seeds a default `openai/gpt-4o-mini` model
   with a fake `OPENAI_API_KEY`, so every grading endpoint test has
   something to resolve; `client.delayed_model_ids` records what was
@@ -718,21 +725,15 @@ an opaque `ImportError` surfacing from deep inside a grading task or the
   stock `docker compose up`. Wanting Anthropic in a real deployment means
   adding `--extra anthropic` to both `uv sync` lines there (or a separate
   image) -- setting `ANTHROPIC_API_KEY` alone is not enough.
-- **`pydantic`'s floor moved from `>=2.13.4` to `>=2.11.2`** to make
-  `aitana[openrouter]` installable at all: the `openrouter` SDK
+- **`pydantic`'s floor is `>=2.11.2`**, low on purpose, to keep
+  `aitana[openrouter]` installable: the `openrouter` SDK
   (`langchain-openrouter`'s own dependency) caps at `pydantic<2.13` in its
-  newest releases. `2.13.4` was never a deliberate requirement -- nothing in
-  this dependency tree actually needs it (`langchain-core` itself only needs
-  `>=2.7.4`) -- so this is a genuine floor correction, not a forced
-  downgrade: a plain `pip install aitana` (no extras) still resolves the
-  newest compatible pydantic (2.13+) exactly as before; only environments
-  that request `[openrouter]` are affected, and even then, `uv`'s resolver
-  currently picks an older `openrouter` release (0.10.x, capped only at
-  `pydantic>=2.11.2` with no upper bound) that satisfies everything at
-  pydantic 2.13+ anyway -- verified by actually running `uv sync` and
-  checking the installed version, not assumed. If a future `openrouter`
-  release drops that unbounded option, this floor is what keeps the install
-  from being flatly unsatisfiable; it doesn't guarantee no downgrade forever.
+  newest releases. Nothing in this dependency tree needs a newer floor
+  (`langchain-core` itself only needs `>=2.7.4`), and a plain `pip install
+  aitana` (no extras) still resolves the newest compatible pydantic. With
+  `[openrouter]`, `uv`'s resolver picks an `openrouter` release without that
+  cap where one exists; the low floor is what keeps the install satisfiable
+  if none does.
 - **The dev dependency group installs all four extras**
   (`aitana[openai,ollama,anthropic,openrouter]`) so `tests/test_llm.py` can
   exercise every provider's actual *construction* path (right kwargs, right
@@ -763,11 +764,8 @@ either doesn't have to redo that reading:
   `output_version="responses/v1"` are set. The response then carries a
   `{"type": "reasoning", "summary": [{"text": ...}, ...]}` block inside
   `message.content` (a list of blocks) -- the text is nested under
-  `summary`, not directly on the block. (An earlier version of
-  `_extract_thinking` checked `block["text"]` directly, which would have
-  silently found nothing for this exact case -- caught by reading
-  `langchain-openai`'s own documented example before shipping it, not by a
-  live call.) `temperature` is passed through unchanged regardless --
+  `summary`, not directly on the block, which is where `_extract_thinking`
+  looks. `temperature` is passed through unchanged regardless --
   `ChatOpenAI`'s own `validate_temperature` already drops/normalizes it for
   the specific model families (o1, non-chat gpt-5) that reject a non-default
   value once reasoning is active, so `get_chat_model` doesn't special-case it.
@@ -814,12 +812,11 @@ either doesn't have to redo that reading:
   would silently drop them: its own docstring says non-standard
   third-party response fields like these "are not extracted or preserved"),
   which is the whole reason `openrouter` is its own provider/extra rather
-  than "point `ChatOpenAI` at OpenRouter's base_url", which the codebase
-  briefly did in an earlier iteration.
+  than "point `ChatOpenAI` at OpenRouter's base_url".
 
 `_extract_thinking` normalizes all of the above into one flat string (or
 `None`) regardless of provider -- `GradeTrace.thinking` is meant to be
-provider-agnostic; a reader of a `GradingTrace` document shouldn't need to
+provider-agnostic; a reader of a `GradingTrace` row shouldn't need to
 know which of the four produced it to make sense of the `thinking` field.
 `tool_calls`/token usage need no equivalent per-provider handling: LangChain
 already normalizes `AIMessage.tool_calls`/`.usage_metadata` to the same
@@ -827,145 +824,112 @@ shape across every provider's integration.
 
 ## Creating rubrics (`api/routers/rubrics.py`)
 
-Two creation paths, both creation-only (no update/edit endpoint; a duplicate
-`slug` is rejected with `409` via the shared `_insert_rubric` helper):
+Two creation paths; a duplicate `slug` is `409` on both:
 
-- **`POST /rubrics`** -- JSON body (`RubricCreate`: `title`, optional
-  `slug`, `course_id` **required**, optional `edition_id`, optional
+- **`POST /rubrics`** -- JSON body (`RubricIn`: `title`, optional `slug`,
+  `course_id` **required**, optional `edition_id`, optional
   `format`/`grading_scale` (default `pdf_form`/the 4-level scale, see
-  "Pluggable submission formats"/"Pluggable grading scales" below),
-  `questions: list[Question]`). This is the frontend's "Build manually" form
-  (`frontend/src/components/NewRubricForm.tsx`).
+  "Pluggable submission formats"/"Pluggable grading scales"), optional
+  `context`, `questions: list[Question]`). This is the frontend's "Build
+  manually" form (`frontend/src/components/RubricForm.tsx`).
 - **`POST /rubrics/upload`** -- multipart (`yaml_file`, optional `slug`/
   `course_id`/`edition_id`/`format` form fields). Parses the rubric YAML
-  shape (`grading_scale` has no form-field equivalent, YAML key only). This
-  is the frontend's "Upload YAML" form (same component).
+  shape (`grading_scale` and `context` are YAML keys only). This is the
+  frontend's "Upload YAML" form (same component).
+
+Both end in the same validation: the YAML path builds a `RubricIn` from the
+file and form fields (`_parse_rubric_yaml`), so every rule -- question shape,
+grading-scale rules, `include_outputs`/`include_images` against the format --
+is checked once, in one place, and a bad file is a `422`, not a `500`
+(malformed YAML or a missing top-level `questions` key included).
 
 Slug resolution order (`upload_rubric_yaml`): the `slug` form field, then a
 top-level `slug:` key in the YAML body, then the uploaded filename with
 `_questions` stripped and slugified (`slugify()`, a simple
-lowercase-and-underscore regex, `src/aitana/slugify.py` -- not the same
-thing as a MongoDB/Beanie feature). `create_rubric` (the JSON path) uses
-`slug` if given, else slugifies `title`. Malformed YAML or a YAML missing
-the top-level `questions` key returns `422`, not `500` -- see the
-`try`/`except` around `yaml.safe_load` and `Question(**q)` construction in
-`upload_rubric_yaml`.
+lowercase-and-underscore regex, `src/aitana/slugify.py`). `create_rubric`
+(the JSON path) uses `slug` if given, else slugifies `title`.
 
 Course resolution order (`upload_rubric_yaml`): the `course_id` form field,
-then a top-level `course_slug:` key in the YAML body (looked up via
-`Course.find_one(Course.slug == ...)`); if neither resolves, `422` (course
-is required, unlike edition). Edition resolution is the same shape via
-`edition_id`/`edition_slug:`, but optional -- no match found because
-neither was given is fine, a matched-but-unknown value is still `404`.
-`_require_yaml_string` guards both `course_slug` and `edition_slug` (and
-the top-level `slug`) against a real YAML footgun: an unquoted scalar like
+then a top-level `course_slug:` key in the YAML body; if neither resolves,
+`422` (course is required, unlike edition). Edition resolution is the same
+shape via `edition_id`/`edition_slug:`, but optional -- no match because
+neither was given is fine, a given-but-unknown value is `404`.
+`_require_yaml_string` guards `course_slug`, `edition_slug` and the
+top-level `slug` against a real YAML footgun: an unquoted scalar like
 `2026_27` parses under PyYAML's default (YAML 1.1) resolver as the
 *integer* `202627`, not the string `"2026_27"` -- underscores inside a
 number are digit separators, same as Python's `1_000_000` literal. That's
-exactly the shape `slugify("2026/27")` produces now that edition slugs no
-longer have a course prefix to save them from looking numeric (see
-"Creating courses and editions" above). Without the guard this fails at the
-`Edition.find_one(...)` lookup with a baffling
+exactly the shape `slugify("2026/27")` produces for an edition. Without the
+guard this fails at the edition lookup with a baffling
 `Edition 202627 not found` 404; with it, a `422` names the field and tells
-you to quote it. `create_rubric` (the JSON path) just takes
-`course_id`/`edition_id` directly -- untouched by this, since a JSON body
-has no such ambiguity for numeric-looking strings. All paths pass the
-resolved `Course`/`Edition` documents (or
-`None` for edition) straight into `Rubric(course=..., edition=...)` --
-since these are the in-memory objects from `await Course.get(...)`/
-`find_one(...)`, not re-fetched ones, the API response's `course`/`edition`
-fields come back fully resolved (name, slug, etc.) even though `mongomock`
-can't resolve them on a subsequent *read* (sharp edge #5) -- see the
-rubric-creation tests in `tests/test_rubrics_api.py` for why they can
-assert `resp.json()["course"]["name"]` directly.
+you to quote it. The JSON path takes `course_id`/`edition_id` directly and
+has no such ambiguity.
 
 ## Listing/filtering rubrics (`api/routers/rubrics.py`)
 
 `GET /rubrics` takes optional `course_id`/`edition_id` query params, ANDed
-together when both are given. Unlike `Submission`'s `course_id` filter
-(which goes via the submission's rubric -- see "Filtering submissions by
-course vs. by edition" above), no indirection is needed here: `Rubric.course`
-and `Rubric.edition` *are* the relationship being filtered, so both are a
-direct `Rubric.course.id == course_id` / `Rubric.edition.id == edition_id`.
-Same "Beanie Link query, verified against real MongoDB" pattern as
-everywhere else in this codebase (sharp edge #3) -- a positive match isn't
-exercised under `mongomock`, only the "no match -> empty list" case (see
-`tests/test_rubrics_api.py`'s filter tests). The frontend's `RubricsPage.tsx`
-uses this to filter by course/edition, and it's how `CoursesPage.tsx`'s
-"See rubrics" link and `EditionsPage.tsx`'s "See rubrics" link work.
+together when both are given -- plain column filters on `rubrics.course_id`
+/ `rubrics.edition_id`. The frontend's `RubricsPage.tsx` uses this to filter
+by course/edition, and it's how `CoursesPage.tsx`'s and `EditionsPage.tsx`'s
+"See rubrics" links work.
 
 ## Editing rubrics (`api/routers/rubrics.py`)
 
 A separate `PUT`, not an upsert on the creation endpoints: `POST /rubrics`
 and `POST /rubrics/upload` stay creation-only (a duplicate `slug` is still a
 plain `409` there, unconditionally). Two edit paths, mirroring the two
-creation paths and the frontend's two `NewRubricForm.tsx` modes:
+creation paths and the frontend's two `RubricForm.tsx` modes:
 
-- **`PUT /rubrics/{rubric_id}`** -- JSON body, same shape as `RubricCreate`.
-  The "Build manually" edit path.
+- **`PUT /rubrics/{rubric_id}`** -- JSON body, same `RubricIn` shape as
+  creation. The "Build manually" edit path.
 - **`PUT /rubrics/{rubric_id}/upload`** -- multipart, same fields as `POST
-  /rubrics/upload`. The "upload updated version" edit path: the YAML
-  file's contents *replace* the rubric's `title`/`course`/`edition`/
-  `format`/`grading_scale`/`questions` wholesale, the same as re-running
-  "Build manually" with every field repopulated from the file. Unlike
-  creation, the slug (absent a form field or YAML `slug:` key) defaults to
-  the rubric's *current* slug, not one derived from the uploaded filename --
-  the point of this flow is updating an existing rubric's content, not
-  accidentally renaming it because the new file happens to be named
-  differently.
+  /rubrics/upload`. The "upload updated version" edit path: the YAML file's
+  contents *replace* the rubric's `title`/`format`/`grading_scale`/
+  `context`/`questions` wholesale. Unlike creation:
+  - the slug (absent a form field or YAML `slug:` key) defaults to the
+    rubric's *current* slug, not one derived from the uploaded filename --
+    the point of this flow is updating an existing rubric's content, not
+    accidentally renaming it because the new file is named differently.
+  - `course_slug:`/`edition_slug:` keys in the file are ignored, and the
+    course/edition stay as they are unless the `course_id`/`edition_id` form
+    fields say otherwise -- re-uploading a file must never move a rubric to
+    another course or edition as a side effect.
 
-Both share `_apply_rubric_update` (mirrors `_insert_rubric`): it mutates the
-existing `Rubric` document's fields directly and calls `.save()`, which
-re-validates the whole document the same way `.insert()` does (`ValidationError`
--> `422`, same as creation) -- see `Document.save()`'s `validate_on_save`
-behavior, already relied on by `worker/tasks.py`'s `_grade_answers`.
-`updated_at` is bumped explicitly (unlike `created_at`, nothing does this
-for you on a plain attribute-assignment + `save()`).
-
-Two things an edit does differently from creation:
+Both share `_update_rubric` (mirrors `_insert_rubric`): validate through
+`RubricIn`, check the slug and the format change, assign, bump
+`updated_at`, commit. Two things an edit does differently from creation:
 
 - **Slug conflicts only 409 against a *different* rubric**
   (`_check_slug_available(slug, exclude_id=rubric.id)`) -- saving a rubric
-  back with its own unchanged slug, or changing every field except the
-  slug, isn't a conflict with itself the way it would be during creation.
-- **Format changes are guarded** (`_guard_format_change`) -- see
-  `Rubric.format`'s docstring / "Pluggable submission formats" above for
-  why: `409` if the rubric already has any `Submission` against it and the
-  edit tries to change `format`. A rubric with zero submissions yet (still
-  being drafted) can change format freely.
+  back with its own unchanged slug isn't a conflict with itself.
+- **Format changes are guarded** (`_guard_format_change`): `409` if the
+  rubric already has any submission and the edit changes `format` (see
+  "Pluggable submission formats" for why). A rubric with zero submissions
+  (still being drafted) can change format freely.
 
 Nothing about `slug`/`course_id`/`edition_id` is protected from being
-changed on edit *at the API level* -- `PUT /rubrics/{id}` still takes all
-three in the body, same shape as creation, and `PUT /rubrics/{id}/upload`
-still takes `course_id`/`edition_id` form fields (just not `course_slug:`/
-`edition_slug:` YAML keys, see above) and a `slug` form field. The
-*frontend* (`RubricForm.tsx`) locks all three to the rubric's current values
-during edit -- greyed-out `<select>`s for course/edition, a disabled slug
-input pre-filled with the current slug rather than left blank -- deliberately,
-not because the API enforces it: changing a rubric's course/edition
-mid-life is a bigger structural move than "edit this rubric's content," and
-changing `slug` changes which rubric a future re-upload of the same YAML
-file is expected to match. If a script/API caller genuinely needs to
-move a rubric to a different course or rename its slug, `PUT /rubrics/{id}`
-still allows it directly -- only the UI's manual/YAML edit forms don't
-expose it.
+changed on edit *at the API level* -- `PUT /rubrics/{id}` takes all three,
+same shape as creation. The *frontend* (`RubricForm.tsx`) locks all three to
+the rubric's current values during edit -- greyed-out `<select>`s for
+course/edition, a disabled slug input pre-filled with the current slug --
+deliberately: moving a rubric to another course/edition mid-life is a
+bigger structural move than "edit this rubric's content," and changing
+`slug` changes which rubric a future re-upload of the same YAML file is
+expected to match. A script or API caller that genuinely needs to move or
+rename a rubric can still do it through `PUT /rubrics/{id}`.
 
 ## Deleting rubrics
 
 `DELETE /rubrics/{rubric_id}` (`delete_rubric`) -- `204` on success, `404`
-if the rubric doesn't exist. Blocked with `409` if any `Submission` or
-`Batch` already references it (`Submission.rubric`/`Batch.rubric` are both
-required `Link[Rubric]` fields that every submission/batch view resolves to
-render `rubric.slug`/`.title`/`.questions` -- deleting out from under them
-would leave dangling references, not just remove an unused definition). A
-rubric nobody has submitted anything against yet (still being drafted, or
-created and abandoned) deletes freely. Same `Link.id == ...` query shape
-(and the same "can't positively unit-test this under mongomock" situation,
-sharp edge #3) as `_guard_format_change`.
+if the rubric doesn't exist. Blocked with `409` if any submission or batch
+references it: their history would be left without the rubric every
+submission/batch view renders from (the `RESTRICT` foreign keys would refuse
+anyway; the check exists to say why). A rubric nobody has submitted
+anything against yet (still being drafted, or created and abandoned)
+deletes freely.
 
-`GET /rubrics/submission-counts` returns `{rubric_id: count}` (one
-`$group` on the whole `rubric` DBRef -- a `$rubric.$id` path is invalid in
-aggregation expressions), shown on the rubric list/detail pages as a link to
+`GET /rubrics/submission-counts` returns `{rubric_id: count}` (one `GROUP BY
+rubric_id`), shown on the rubric list/detail pages as a link to
 `/?rubric_id=...`.
 
 The frontend (`RubricDetailPage.tsx`) exposes this as a "Delete" button next
@@ -975,7 +939,7 @@ means "go deal with the submissions/batches first," not "retry."
 ### Interactively testing a rubric (`POST /rubrics/{id}/test-answer`)
 
 A "try it before you upload a real exam" endpoint: `{question_id, answer}`
-in, a `Grade` (level + feedback) out, synchronously. No `Submission` is
+in, a `Grade` (level + feedback) out, synchronously. No submission is
 created, nothing touches MinIO or Celery, and nothing is persisted at all --
 it just runs `grade_answer(chat_model, question, answer, rubric.grading_scale)`
 against one of the rubric's existing `questions` and returns the result
@@ -1003,23 +967,24 @@ Two things worth knowing if you touch this:
 
 All behind a native `confirm()` naming what's deleted, same as rubrics.
 
-- **`DELETE /students/{id}`**: `409` if any `Submission.student` links to
-  it. MongoDB has no referential integrity (a `Link` is just a stored
-  DBRef, nothing rejects a dangling one), so this is an explicit count, not
-  a propagated DB error. Not positively testable under mongomock (sharp
-  edge #3).
-- **`DELETE /submissions/{id}`** removes the document, its
-  `GradingTrace`s and its MinIO objects (raw file plus the generic-document
-  derived folder, `storage.delete_submission_files`). Mongo first, storage
-  after and best-effort (logged): a failure there only orphans objects.
-  **`409` while in progress unless `?force=true`**: the worker's `save()` is
-  an upsert, so deleting mid-run would resurrect the document pointing at a
-  deleted file. `force` exists for lost jobs; the UI (`DeleteSubmissionButton.tsx`)
-  sends it when the user confirms deleting an in-progress submission.
+- **`DELETE /students/{id}`**: `409` if any submission is linked to the
+  student (counted first, for the message; the FK would refuse anyway).
+- **`DELETE /submissions/{id}`** removes the row (its grading traces go
+  with it, cascading FK) and then its MinIO objects (stored file plus the
+  generic-document derived folder, `storage.delete_submission_files`). The
+  database commit goes first and storage after, best-effort (logged): a
+  failure there only orphans objects, never leaves a submission pointing at
+  a missing file. **`409` while in progress unless `?force=true`**: the
+  worker would otherwise keep working on a submission whose file is gone.
+  `force` exists for lost jobs; a worker still running on a force-deleted
+  submission notices on its next commit and stops (see "Database layer
+  rules"). The UI (`DeleteSubmissionButton.tsx`) sends `force` when the
+  user confirms deleting an in-progress submission.
 - **`DELETE /batches/{id}`** deletes the batch *and* all its submissions
-  (same helpers, `delete_submissions`/`guard_not_in_progress`), all-or-nothing
-  on the in-progress check. The UI tries without `force` and, on `409`,
-  asks again before retrying with it (`ApiError.status` in `hooks.ts`).
+  (same helpers, `delete_submissions`/`guard_not_in_progress`),
+  all-or-nothing on the in-progress check. The UI tries without `force` and,
+  on `409`, asks again before retrying with it (`ApiError.status` in
+  `hooks.ts`).
 
 ## Batch student import (`api/routers/students.py`)
 
@@ -1066,16 +1031,16 @@ time `POST /students`.
   name` is present, else just `First name` (the task that requested this
   format specifically wanted `First name` to work alone when `Last name` is
   blank).
-- **`username: str | None`** (`documents/student.py`) is purely
+- **`username: str | None`** (`db/models.py`) is purely
   informational metadata -- not a lookup key (`student_id` fills that
   role). A `Group` column in the CSV, if present, is silently ignored --
   there is no `Student.group` field to put it in.
 - **Existing-student handling is upsert-by-`student_id`, and it's a full
-  overwrite, not a merge**: `name`/`username`/`email` are all set to
-  whatever the row says, including clearing a field the row leaves blank. A
-  re-export is expected to be the current source of truth for the roster,
-  not something to be reconciled field-by-field against what's already
-  there.
+  overwrite, not a merge**: one `INSERT ... ON CONFLICT (student_id) DO
+  UPDATE` sets `name`/`username`/`email` to whatever the row says, including
+  clearing a field the row leaves blank. A re-export is expected to be the
+  current source of truth for the roster, not something to be reconciled
+  field-by-field against what's already there.
 - Response (`StudentImportResult`: `created`, `updated`, `students`) lets
   the frontend show a plain "N created, M updated" summary
   (`StudentsPage.tsx`).
@@ -1092,7 +1057,7 @@ per subfolder in the zip, each enqueued for grading immediately, same as
   lab's worth of hand-ins), same as a single `POST /submissions` call. The
   course is implied by `rubric.course`, same as everywhere else in this
   data model. `edition_id` is resolved via the exact same
-  `_resolve_edition` helper `create_submission` uses (the rubric's own
+  `resolve_edition` helper `create_submission` uses (the rubric's own
   edition if it has one, else the uploader must supply one) -- imported
   from `submissions.py` rather than duplicated.
 - **`BatchType`** is the enum of supported zip layouts -- currently just
@@ -1120,11 +1085,13 @@ per subfolder in the zip, each enqueued for grading immediately, same as
 - Each item's filename extension is checked against the rubric's expected
   one (`FORMAT_FILE_INFO[rubric.format]`), the same early check
   `create_submission` does for a single file, catching an obviously wrong
-  zip before grading starts on every item.
-- Created submissions have **no `student`** by default -- see
-  `Submission.student`'s docstring in "Data model" above. Grading runs
-  anyway (`worker/tasks.py` never touches `submission.student`); only
-  per-student attribution is deferred.
+  zip before grading starts on every item. All rows are flushed (for their
+  ids, which the storage keys contain), every file is stored, and only then
+  is everything committed and enqueued -- a storage failure leaves no
+  half-created batch behind.
+- Created submissions have **no student** unless `_match_student` finds
+  one (below). Grading runs anyway (`worker/tasks.py` never touches
+  `submission.student`); only per-student attribution is deferred.
 - **`_match_student`** makes a best-effort auto-match right at upload time,
   so most items don't stay unmatched: it strips Atenea's fixed `_<internal_
   id>_assignsubmission_file` suffix off the folder name, tokenizes what's
@@ -1136,8 +1103,7 @@ per subfolder in the zip, each enqueued for grading immediately, same as
   token *content* doesn't. Only commits when **exactly one** student's
   tokens match; zero or more-than-one (e.g. two students sharing a name)
   is left `None` rather than risk a wrong guess. The whole roster is loaded
-  once (`Student.find_all()`) and matched in memory against every item,
-  not queried per item.
+  once and matched in memory against every item, not queried per item.
 - Batch items are stored under `storage.batch_object_key(rubric_slug,
   submission_id, extension)` (`f"{rubric_slug}/_batch/{submission_id}
   {extension}"`) rather than `storage.object_key`, since there's no student
@@ -1146,23 +1112,12 @@ per subfolder in the zip, each enqueued for grading immediately, same as
   `StudentImportResult`'s shape.
 - Whatever `_match_student` couldn't resolve (or got wrong) is fixed up
   through `PUT /submissions/{submission_id}/student` (`api/routers/
-  submissions.py`, body `{student_id}`) -- works on any submission, not
-  just a batch-created one. It fetches the submission once with
-  `fetch_links=True` (same `_SHALLOW_LINKS` cap as every other submissions
-  endpoint), overwrites `.student` with the freshly-`Student.get()`-fetched
-  document, and returns that same in-memory object rather than re-fetching
-  afterwards -- a second `Submission.get(..., fetch_links=True)` right
-  after `.save()` is exactly the nested-`$lookup`-under-mongomock gap
-  (sharp edge #6) again, and re-fetching buys nothing a plain in-memory
-  assignment doesn't already give for free.
+  submissions.py`, body `{student_id}` -- the student's database id) --
+  works on any submission, not just a batch-created one.
 - `POST /batches/{batch_id}/regrade` is the bulk version of `POST
   /submissions/{id}/regrade` -- same per-submission reset (`status` back to
-  `pending`, `error` cleared, re-enqueued), just applied to every submission
-  `Submission.find(Submission.batch.id == batch_id)` returns instead of
-  one. Response is `{regraded: <count>}`. This is the same Beanie Link-query
-  pattern as the `batch_id` filter on `GET /submissions` above (verified
-  against real MongoDB, not exercised end-to-end under mongomock -- see
-  `test_regrade_batch` in `tests/test_batches_api.py`).
+  `pending`, `error` cleared, committed, then re-enqueued), applied to every
+  submission of the batch. Response is `{regraded: <count>}`.
   Optional `?question_id=` re-grades only that question (`422` if not in the
   rubric): the worker still re-extracts, but `_rebuild_answers`
   (`keep_grades_except`) keeps every other answer's previous LLM grade and
@@ -1173,39 +1128,33 @@ per subfolder in the zip, each enqueued for grading immediately, same as
   bar, shown whenever the submissions list is filtered to a single rubric
   (batch or rubric filter), regrading exactly the listed submissions.
 
-Both are creation-only, same `409`-on-duplicate-slug shape as rubrics.
-`POST /courses` takes just `name` (+ optional `slug`). `POST /editions`
-takes only `name` (+ optional `slug`, defaulting to `slugify(name)`) --
-**no `course_id`**, since editions are global (see "Data model" above).
-Note the slug default changed shape along with this: it used to be
-`slugify(f"{course.slug}_{name}")` (e.g. `bdm_2026_27`), which was
-incidentally never ambiguous to YAML. A bare `slugify(name)` for something
-named "2026/27" produces `2026_27` -- a YAML footgun waiting to happen, see
-`_require_yaml_string` in "Creating rubrics" below.
+## Courses, editions and filtering submissions
 
-**Filtering submissions by course vs. by edition are genuinely different
-relationships -- don't conflate them:**
+Courses and editions are creation-only, same `409`-on-duplicate-slug shape
+as rubrics. `POST /courses` takes just `name` (+ optional `slug`). `POST
+/editions` takes only `name` (+ optional `slug`, defaulting to
+`slugify(name)`) -- **no `course_id`**, since editions are global (see "Data
+model" above). `slugify("2026/27")` is `2026_27`, a YAML footgun -- see
+`_require_yaml_string` in "Creating rubrics".
 
-- `course_id` filters via the **rubric's** course:
-  `Rubric.find(Rubric.course.id == course_id)` -> rubric ids ->
-  `In(Submission.rubric.id, rubric_ids)`. "Show me all BDM submissions"
-  means "submissions whose rubric belongs to BDM," regardless of who
-  submitted them or which edition it was submitted under.
-- `edition_id` filters **directly** on the submission's own `edition`
-  field: `Submission.find(Submission.edition.id == edition_id)` -- every
-  submission carries its own definitive edition (see "Creating a
-  submission" below for how that's decided at creation time).
+`GET /submissions` filters (`student_id`, `rubric_id`, `course_id`,
+`edition_id`, `batch_id`, `status`) all AND together. **Filtering by course
+vs. by edition are genuinely different relationships -- don't conflate
+them:**
 
-Both `course_id`'s two-step lookup and the `edition_id` `==` are the same
-"Beanie Link query, verified against real MongoDB" pattern (see sharp edge
-#3). Passing both `course_id` and `edition_id` together ANDs them, which
-only returns results where the rubric's course and the submission's
-edition *happen* to line up (the normal case, but not a foreign-key-enforced
-one -- nothing stops a BDM rubric from being submitted under an edition no
-BDM rubric otherwise uses, if the uploader picks it explicitly; this was
-already true before editions became global, and is *more* clearly
-by-design now that an edition never claimed to belong to one course in the
-first place).
+- `course_id` filters via the **rubric's** course (a join on `rubrics`).
+  "Show me all BDM submissions" means "submissions whose rubric belongs to
+  BDM," regardless of who submitted them or which edition it was submitted
+  under.
+- `edition_id` filters **directly** on the submission's own `edition_id` --
+  every submission carries its own definitive edition (see "Creating a
+  submission" for how that's decided).
+
+Passing both ANDs them, which only returns results where the rubric's
+course and the submission's edition line up -- the normal case, but not one
+the schema enforces: nothing stops a BDM rubric from being submitted under
+an edition no other BDM rubric uses, if the uploader picks it explicitly
+(editions don't belong to a course).
 
 ## Labelled submissions
 
@@ -1244,60 +1193,55 @@ distinct from "Unmatched" (a batch item not linked to a student *yet*).
 
 ## Creating a submission (`api/routers/submissions.py`)
 
-`POST /submissions` needs a definite `edition`, but not every rubric fixes
-one (see "Data model" above). `_resolve_edition` decides it:
+`POST /submissions` needs a definite edition, but not every rubric fixes
+one (see "Data model" above). `resolve_edition` decides it:
 
-- If the rubric has a fixed `edition`, that edition is used, full stop --
-  any `edition_id` the client sent is ignored. `rubric` is fetched without
-  `fetch_links` here (`Rubric.get(rubric_id)`, no aggregation), so a set
-  `rubric.edition` is an unresolved `Link` -- `.fetch()` on it does a plain
-  get-by-id (no `$lookup`, so none of the sharp-edge-#6 nested-pipeline
-  concerns apply here regardless).
-- If the rubric has no fixed edition, the client's `edition_id` is
-  required -- `422` if missing, `404` if it doesn't resolve.
+- If the rubric has a fixed edition, that edition is used, full stop -- any
+  `edition_id` the client sent is ignored.
+- If the rubric has no fixed edition, the client's `edition_id` is required
+  -- `422` if missing, `404` if it doesn't resolve.
 
 The frontend mirrors this exactly (`UploadSubmissionPage.tsx`): picking a
 rubric with a fixed edition shows it read-only; picking one without shows
 an editable, required dropdown listing every edition (global, not scoped to
 the rubric's course -- see "Data model" above).
 
-`POST /submissions` does the fast part synchronously (validate student/
-rubric exist, resolve the edition, upload the raw file to MinIO, insert a
-`Submission` with `status=pending`) and enqueues
-`grade_submission.delay(id)`. The Celery task does the slow part:
+`POST /submissions` does the fast part synchronously (validate
+student/rubric, resolve the edition, flush the new row to get its id, upload
+the file to MinIO under a key containing that id, commit with
+`status=pending`) and only then enqueues `grade_submission.delay(id)` --
+after the commit, so the worker never looks for a row that isn't visible
+yet. A storage failure before the commit leaves no row behind. The Celery
+task does the slow part:
 
 ```
 pending -> extracting (raw file -> {answer_key: text}, via whichever
                         extractor rubric.format selects)
         -> grading (answers populated with student_answer, grade=None;
-                     saved BEFORE the LLM client is constructed, so a
+                     committed BEFORE the LLM client is constructed, so a
                      missing API key / bad provider config still leaves the
                      extracted answers visible, not just an opaque failure)
         -> graded (each answer's grade filled in one LLM call at a time via
-                    `_grade_answers`, saved after every single question --
-                    not batched -- so polling clients see partial progress;
-                    see sharp edge #1 below for a real bug this hit)
-   or -> failed (error message captured on the document)
+                    `_grade_answers`, committed after every single question
+                    so polling clients see partial progress)
+   or -> failed (error message captured on the row)
 ```
 
 Generic documents (`generic_document`) have extra states before `pending` ->
 `extracting`: see "Generic-document submissions" above.
 
-If you change this flow, preserve the "persist extracted answers before the
-LLM step" ordering -- it was deliberately reordered during development after
-noticing a missing-API-key failure left `answers: []` even though extraction
-had already succeeded.
+If you change this flow, preserve the "commit extracted answers before the
+LLM step" ordering -- otherwise a provider misconfiguration hides the
+extraction result too.
 
-Beanie/PyMongo are async; Celery tasks are sync. Each task does
-`asyncio.run(_grade_submission(...))` and calls `init_db()` (which creates a
-*new* `pymongo.AsyncMongoClient` and re-runs `init_beanie`) fresh every
-invocation, because an async Mongo client is bound to the event loop that
-created it, and each `asyncio.run()` call gets a new loop. This means no
-connection pooling across tasks -- acceptable for this app's volume, but if
-grading throughput ever becomes a bottleneck, look here first (e.g. a
-long-lived worker-process event loop via `celery_app.py`'s
-`worker_process_init`/`worker_process_shutdown` signals, instead of
-`asyncio.run` per task).
+Celery tasks are sync and the database layer is async, so each task runs
+`asyncio.run(...)` around its body with its own short-lived, unpooled engine
+(`db.session.task_session`, `NullPool`): asyncpg connections belong to the
+event loop that opened them, and each `asyncio.run()` gets a new loop. One
+connection per task, no pooling across tasks -- fine for this app's volume;
+if grading throughput ever becomes a bottleneck, look here first (e.g. a
+long-lived per-worker-process event loop and engine via `celery_app.py`'s
+`worker_process_init`/`worker_process_shutdown` signals).
 
 ## Downloading the original file
 
@@ -1318,234 +1262,93 @@ large files or high download volume, revisit with a properly
 externally-reachable MinIO/S3 endpoint and use presigned URLs or
 similar feature to lighten the load.
 
-## Known-sharp-edges in the Mongo driver stack
+## Database layer rules
 
-These cost real debugging time once; if something in this area breaks again
-after a dependency bump, start here.
+The handful of things about SQLAlchemy + asyncpg + JSONB that will bite if
+ignored. Each one has a test that fails when it's broken.
 
-**1. `Document.save()` replaces embedded list items with new objects --
-never hold a reference into `submission.answers` across a `save()` call.**
-This one actually shipped and was caught by a user report: every question
-after the first came back with `grade: null` even though the worker's logs
-showed the LLM was called and graded all of them correctly. Root cause:
-Beanie's `save()` is decorated with `@validate_self_before`, which (when
-`Settings.validate_on_save` is on, the default) does `new_model =
-parse_model(self.__class__, get_model_dump(self)); merge_models(self,
-new_model)` -- i.e. it re-serializes the whole document and re-parses it
-into brand-new model instances, then swaps them into `self`, on *every*
-`save()` call. `worker/tasks.py`'s original grading loop did:
+**1. In-place changes to a JSONB value are invisible to the ORM -- call
+`flag_modified`.** `PydanticJSONB` columns (`Submission.answers`,
+`.document`, `.segments`, `Rubric.questions`, `.grading_scale`,
+`GradingTrace.trace`) hold Pydantic objects. Assigning a new value to the
+attribute (`submission.answers = [...]`) is always written. Mutating what's
+already there (`submission.answers[i].grade = grade`) is *not*: the ORM
+never sees it and the commit silently writes nothing. After an in-place
+change, call `sqlalchemy.orm.attributes.flag_modified(obj, "answers")`
+before committing -- as `_grade_answers` (worker) and the manual-grade
+endpoints do. `tests/test_worker_tasks.py`'s
+`test_grade_answers_persists_every_question` fails if the worker's call is
+removed.
 
-```python
-for question, answer in zip(rubric.questions, submission.answers, strict=True):
-    answer.grade = grade_answer(chat_model, question, answer.student_answer)
-    await submission.save()
-```
+**2. Nothing is loaded lazily -- say what you need.** Every relationship is
+`lazy="raise"`: touching `submission.rubric` without having loaded it raises
+instead of quietly issuing a query (which async SQLAlchemy can't do
+implicitly anyway -- you'd get a `MissingGreenlet` error from deep inside
+serialization). Load relationships explicitly with
+`options=(selectinload(...),)`; the `RUBRIC_LOADS`/`BATCH_LOADS`/
+`SUBMISSION_LOADS` tuples in `db/models.py` are the shapes the response
+schemas need. A new endpoint returning a `*Out` model must load what that
+model nests, or the response serialization raises.
 
-`zip(...)` binds to the `submission.answers` list object *once*, before the
-loop starts. After the first `save()`, `submission.answers` is silently
-swapped for a list of new `AnsweredQuestion` instances (same values, new
-identity) -- but the loop's `answer` variable for later iterations still
-points at the *old*, now-orphaned objects. Mutating `answer.grade` on
-iteration 2+ does nothing to what actually gets saved. The fix
-(`_grade_answers` in `worker/tasks.py`) re-indexes into
-`submission.answers[i]` fresh on every iteration instead of reusing a
-captured reference. **The general rule: after any `await doc.save()`, treat
-every previously-held reference into that document's nested
-lists/sub-models as potentially stale -- re-fetch it from `doc` again.**
-`tests/test_worker_tasks.py` regression-tests this against `mongomock`
-(confirmed to fail with the old `zip()` loop and pass with the fix -- this
-bug reproduces under `mongomock` too, since it's pure Pydantic/Beanie
-behavior, not a driver quirk).
+**3. New objects get their defaults at construction.** `Base.__init__`
+(`db/models.py`) fills every column the caller didn't pass with its Python
+default (or `None`) immediately, not at INSERT time. Otherwise a column left
+unset would be loaded lazily on first access after the flush -- point 2
+again. Keep column defaults Python-side (`default=...`), not
+`server_default`, unless you also refresh the object after inserting.
 
-**2. Beanie + Motor is broken with current PyMongo -- use PyMongo's native
-async client instead.** `src/aitana/db.py` uses `pymongo.AsyncMongoClient`,
-not `motor.motor_asyncio.AsyncIOMotorClient`. Beanie's `init_beanie()` does
-a driver-metadata handshake (`if callable(database.client.append_metadata):
-database.client.append_metadata(...)`, gated on a PyMongo >=4.14 feature).
-Motor's classic client `__getattr__` treats *any* unknown attribute access
-as "give me a database with this name" (`client.append_metadata` silently
-returns a `MotorDatabase` instead of raising `AttributeError`), and
-`MotorDatabase` happens to define `__call__` (to raise a friendly error if
-you try to invoke a database like a function) -- so `callable(...)`
-evaluates `True`, Beanie calls it, and it crashes with `TypeError:
-MotorDatabase object is not callable`. Verified against a real `mongod`
-that swapping to `pymongo.AsyncMongoClient` (whose `.append_metadata` is a
-real method) avoids this entirely. **If you ever see that exact error
-message, this is why** -- don't chase it as a new bug, and don't switch back
-to Motor without re-verifying against a real MongoDB first.
+**4. Sessions don't expire on commit.** `expire_on_commit=False`
+(`db/session.py`): endpoints commit and then serialize the objects they just
+wrote, and the worker keeps using the same objects across its per-question
+commits. A *rollback* still expires everything in the session -- after one,
+don't read attributes of objects from before it (the worker's `_mark` writes
+a failure with a fresh `UPDATE` for this reason).
 
-**3. Query a Document's Link fields with Beanie's query sugar, not raw
-dicts.** Link fields (e.g. `Submission.student`/`.rubric`/`.edition`) are
-stored as Mongo `DBRef`s. To filter by the referenced id, use
-`Submission.find(Submission.edition.id == some_id)` (see
-`api/routers/submissions.py::list_submissions`) -- not
-`Submission.find({"edition.$id": some_id})`. The raw-dict form looks like
-valid MongoDB DBRef query syntax and is *documented* as such, but it was
-tried first here and silently returned zero results against `mongomock`
-(and wasn't re-verified against real Mongo before being replaced, so treat
-it as suspect there too). Beanie's `Link.id ==` form is verified working
-against real MongoDB, including combined with `fetch_links=True`. The same
-goes for `In(Submission.rubric.id, [id1, id2, ...])`
-(`beanie.operators.In`, used by `list_submissions`' `course_id` filter --
-see "Creating courses and editions") -- also verified against real
-MongoDB, same field-path mechanics as `==`, just `$in` instead of an
-implicit equality. Not exercised under `mongomock` for the same reason
-`==` isn't (see the `course_id`/`edition_id` tests in
-`tests/test_submissions_api.py`, which only assert the "no matches -> empty
-list" case). Confirmed hands-on while building rubric editing's
-`_guard_format_change` (`api/routers/rubrics.py`): even the exact filter
-dict Beanie builds for `Submission.rubric.id == some_id`
-(`{"rubric.$id": ObjectId(...)}`) returns zero rows against `mongomock` when
-run as a raw `collection.find(...)`, for a document that demonstrably
-matches it -- this is `mongomock` failing to match inside a stored `DBRef`,
-not a Beanie translation bug. Same story for `fetch_links=True` combined
-with `nesting_depths_per_field` capping (`sharp edge #6`'s workaround
-doesn't help here either). If you add another endpoint that needs to check
-"does any X reference this Y" via a Link filter, expect the same
-can't-positively-unit-test-it-under-mongomock situation `_guard_format_change`
-is in.
+**5. A row deleted under the worker.** The worker commits after every step;
+if the submission was force-deleted meanwhile, that commit's `UPDATE`
+matches no row and SQLAlchemy raises `StaleDataError`. `_commit`
+(`worker/tasks.py`) turns that into `SubmissionGone`, which the task entry
+points log and stop on -- nothing is recreated or marked failed.
 
-**4. `mongomock`/`mongomock-motor` need three test-only compatibility
-shims** (`tests/conftest.py`, module-level, applied once on import):
-   - `mongomock.Database.list_collection_names` doesn't accept the
-     `authorizedCollections`/`nameOnly` kwargs current PyMongo passes
-     through, which Beanie's startup collection scan needs.
-   - `mongomock_motor.AsyncMongoMockCollection.aggregate` is a plain sync
-     method; real Motor/PyMongo's `aggregate()` is awaitable. Beanie's
-     `fetch_links=True` compiles to a `$lookup` aggregation and does `await
-     collection.aggregate(...)`, which breaks without this shim.
-   - `mongomock`'s `$lookup` handler hard-rejects a `pipeline` key even
-     when it's an empty list (see sharp edge #6 below for why one shows up
-     at all).
-
-   These only patch the mongomock/mongomock-motor packages, never
-   production code paths. If tests start failing after bumping
-   `mongomock`/`mongomock-motor`/`pymongo` versions, check whether these
-   shims are still needed (the upstream bug might be fixed) or need
-   adjusting (the upstream signature might have changed again).
-
-**5. Even with the shims above, `mongomock`'s `$lookup` emulation doesn't
-actually resolve DBRefs.** `fetch_links=True` under `mongomock` runs
-without crashing but leaves e.g. `submission.student`/`.rubric`/`.edition`
-as unresolved `Link` objects (their JSON serializes back to the `{id,
-collection}` reference shape) rather than the full document. This was
-confirmed correct against a real `mongod` (full nested documents come back
-as expected) and is a `mongomock` limitation, not a Beanie or app bug.
-Tests in `tests/test_submissions_api.py`, `tests/test_rubrics_api.py`, and
-`tests/test_editions_api.py` are written to only assert what `mongomock`
-can actually exercise, with a comment explaining the gap. **Don't "fix"
-this by weakening `fetch_links` in production code to work around a test
-double's limitation** -- if you need to actually verify Link resolution,
-spin up a real `mongo:7` container (`docker run --rm -p <port>:27017
-mongo:7`) the way this was originally verified, rather than fighting
-`mongomock` further.
-
-**6. A Link field whose target type *itself* has a Link field makes
-`mongomock` hard-crash, not just silently fail to resolve -- cap
-`nesting_depths_per_field` on it.** This surfaced the moment `Rubric`
-gained `course: Link[Course]`: every `fetch_links=True` query on
-`Submission` (which links to `Rubric`, and separately to `Edition`, both of
-which have their own `course: Link[Course]`) started raising
-`NotImplementedError: Although 'pipeline' is a valid lookup operator... not
-implemented in Mongomock`. Root cause, in `beanie/odm/utils/find.py`'s
-`construct_query`: when the *target* of a Link field has Link fields of its
-own (`link_info.nested_links is not None`), Beanie unconditionally adds a
-`"pipeline": [...]` key to that `$lookup` stage to resolve the nested link
-too, at unlimited depth by default -- `mongomock`'s lookup handler rejects
-the mere *presence* of a `pipeline` key outright, even an empty one, real
-or not. This is unrelated to sharp edge #5 above (that one fails to
-resolve silently; this one crashes), and depth-limiting alone doesn't
-dodge it -- an empty `pipeline: []` still has the key present.
-
-The fix has two parts, and you need **both**:
-- Production code caps the depth on any field whose target has nested
-  links, wherever it isn't needed: `api/routers/submissions.py`'s
-  `_SHALLOW_LINKS = {"rubric": 1}`, passed as `nesting_depths_per_field` to
-  every `Submission.find(...)`/`.get(...)` call (and the same in
-  `worker/tasks.py`'s `_grade_submission`). Depth 1 resolves `rubric` itself
-  fully but stops before touching *its* nested `course`/`edition` links --
-  which no submission view here needs anyway, so this is a genuine (if
-  minor) production improvement, not just a test workaround. If you add
-  another Link field whose target itself has Links, and you fetch it
-  through a third document, give it the same treatment.
-- `tests/conftest.py` has a matching test-only shim (`mongomock.aggregate.
-  _handle_lookup_stage`) that strips a `pipeline` key *only when it's an
-  empty list* before delegating to mongomock's real handler -- it still
-  raises for a genuinely non-empty pipeline (i.e. an actual attempt to
-  resolve nested links at real depth), which mongomock truly can't do.
-  Depth-limiting in production is what makes the pipeline mongomock sees
-  empty in the first place; the shim alone wouldn't be enough.
-
-**Don't "fix" this by removing a nested Link (`Rubric.course`,
-`Rubric.edition`) or by avoiding `fetch_links` -- fix the depth, as above.**
-If you add a *new* Link field whose target type has its own Links and hit
-this again, the fix is the same shape: `nesting_depths_per_field={"<field>":
-<depth that stops before the nested link>}` on every fetch of it.
-
-**7. A resolved Link's embedded document serializes its id as `id`, not
-`_id` -- only the outer, top-level response document gets the `_id` alias.**
-Verified directly: `POST /submissions`' response has `_id` at the top level
-(`response_model=Submission`, FastAPI applies the alias there), but its
-nested `student` object -- a real `Student` instance assigned straight to
-the Link field, not fetched via `$lookup` -- comes back as `{"id": ...,
-"student_id": ..., "name": ..., ...}`. This isn't a `mongomock`-only quirk
-(sharp edge #5 above): it's the same whether the nested document came from
-a direct in-memory assignment (`create_submission`, `_match_student` in
-`batches.py`) or a resolved `fetch_links` Link. Nothing in this app relied
-on a nested id before `_match_student`/`set_submission_student` -- every
-existing frontend page reads `.name`/`.title`/`.student_id`/... off a
-nested `student`/`rubric`, never `.student._id`. If you need to compare or
-key by a nested document's id, use a business key that's unambiguous either
-way (`Student.student_id`, `Rubric.slug`) rather than `_id`/`id`.
-
+**6. Commit before enqueueing.** An endpoint that resets a submission and
+enqueues a task (`enqueue_regrades`, `enqueue_segment_suggestions`,
+`create_submission`) commits first: a task enqueued before the commit could
+run against the old row.
 
 ## Frontend/backend contract
 
 - `frontend/src/api/schema.ts` is generated from the backend's own OpenAPI
   schema via `openapi-typescript` -- see `frontend/README.md` for the exact
   command. It is **not** regenerated automatically; if you add/change an API
-  route or a Pydantic response model, regenerate it or the frontend's types
-  will silently drift from reality.
+  route or a request/response schema (`api/schemas.py`, or a router's own
+  models), regenerate it or the frontend's types will silently drift from
+  reality.
 - `openapi-typescript` is deliberately **not** a `package.json`
   dependency -- it's invoked via `npx openapi-typescript@latest` at codegen
   time only. It has a peer dependency on TypeScript ^5.x that conflicts with
   this project's TypeScript ^6.x; since it's never imported at runtime or
   build time, keeping it out of `package.json` sidesteps that conflict
   entirely rather than forcing `--legacy-peer-deps`.
-- `frontend/src/api/types.ts` hand-declares `Edition`, `Rubric`, and
-  `Submission` interfaces (plus the narrower `SubmissionRubric`) that
-  override the generated ones. Reason: Beanie's `Link[T]` Pydantic schema
-  can't statically express "this is either an unresolved reference or a
-  fully resolved document," so `openapi-typescript` emits every Link field
-  (`Rubric.course`/`.edition`, `Submission.student`/`.rubric`/`.edition`) as
-  a leaky union (`{id, collection} | {[key: string]: unknown}`).
-  Editions/rubrics endpoints always call Mongo with `fetch_links=True` (or,
-  for rubric-creation endpoints, return the in-memory object that was never
-  unresolved to begin with -- see "Creating rubrics"), so at runtime these
-  fields are always the full document *at whatever depth the backend
-  fetched them* -- the hand-written types encode that actual guarantee, no
-  more and no less. If you ever add an endpoint with different resolution
-  behavior, don't assume an existing type still holds for it; give it its
-  own.
-- `Edition` carries no Link field (see "Data model" above),
-  so the hand-declared `Edition` interface is just
-  its plain shape (`_id`, `name`, `slug`, `created_at`).
-  Omitting fields (rather than typing
-  them as the leaky union) means accessing e.g. `submission.rubric.course`
-  from TypeScript is a compile error instead of a silent runtime
-  `undefined`. If a backend depth cap ever changes, update the matching
-  type -- don't leave it lying about what's actually available.
-- `frontend/src/api/types.ts`'s `IN_PROGRESS_STATUSES` constant is a
-  hand-maintained subset of the backend's `SubmissionStatus` enum
-  (it includes `converting`/`segmenting`, but *not*
-  `awaiting_segmentation`, which waits on a human, not a worker) (used to
-  decide whether `useSubmission` should keep polling). It's small and
-  unlikely to change, but it *is* a second place that knows what "still
-  running" means -- if you add a new in-progress status server-side
-  (`documents/submission.py`'s `SubmissionStatus`), update this too --
+- `frontend/src/api/types.ts` names the generated schemas the app uses
+  (`Rubric` = `RubricOut`, `Submission` = `SubmissionOut`, ...) -- the
+  generated types describe the real responses exactly, nested objects
+  included, so there are no hand-written overrides of their shape. Since
+  every nested object is typed as what the endpoint actually loads,
+  reaching for something it doesn't load (e.g. `submission.rubric.course`)
+  is a compile error, not a silent runtime `undefined`.
+- **Ids are numbers.** URL params, search params and `<select>` values carry
+  them as strings; convert at that boundary with `parseId`
+  (`frontend/src/lib/ids.ts`) or `Number(...)`, never by comparing a string
+  to an id.
+- `types.ts`'s `IN_PROGRESS_STATUSES` is a hand-maintained subset of the
+  backend's `SubmissionStatus` (`db/models.py`; it includes
+  `converting`/`segmenting`, but *not* `awaiting_segmentation`, which waits
+  on a human, not a worker), used to decide whether `useSubmission` keeps
+  polling. If you add an in-progress status server-side, update this too --
   and `_IN_PROGRESS_STATUSES` in `api/routers/submissions.py`. Same for
-  `SEGMENTED_FORMATS`/`IMAGE_FORMATS`/`OUTPUT_FORMATS`, mirrored by hand
-  in `types.ts`.
+  `SEGMENTED_FORMATS`/`IMAGE_FORMATS`/`OUTPUT_FORMATS`, mirrored by hand in
+  `types.ts`, and the grading-scale helpers in `lib/gradingScale.ts`
+  (mirroring `grading/models.py`'s).
 
 ## Grading internals (`src/aitana/grading/`)
 
@@ -1580,19 +1383,24 @@ already-formatted chunk, don't try to make the template itself branch.
 `.env.example` (backend) and `frontend/.env.example` list what's read.
 `pydantic-settings` (`settings.py`) is case-insensitive, so `.env`
 conventionally uses `UPPER_SNAKE_CASE` while `Settings` fields are
-`lower_snake_case`. The **hostnames differ between Docker and local runs**:
-`.env.example`'s defaults (`mongo`, `minio`, `redis`) are the docker-compose
+`lower_snake_case`. `DATABASE_URL` accepts any `postgres://`/`postgresql://`
+URI and rewrites it to the asyncpg driver (`postgresql+asyncpg://`), so an
+operator-generated URI (e.g. a CloudNativePG secret's `uri`) works verbatim.
+
+The **hostnames differ between Docker and local runs**: `.env.example`'s
+defaults (`postgres`, `minio`, `redis`, `gotenberg`) are the docker-compose
 service names, correct for the `api`/`worker` containers but wrong if you
-run `uvicorn`/`celery` directly on the host -- override
-`MONGO_URI`/`MINIO_ENDPOINT`/`REDIS_URL` to `localhost:<published-port>` in
-that case, e.g. with `docker compose up -d mongo minio redis gotenberg` (which
-publishes 27017/9000/6379/3000 on localhost):
+run `uvicorn`/`celery` directly on the host. The compose file doesn't
+publish those services' ports, so for a host run add a `ports:` mapping
+locally (or use a `docker-compose.override.yml`) and point the URLs at
+`localhost`, e.g.:
 
 ```bash
-export MONGO_URI=mongodb://localhost:27017
+export DATABASE_URL=postgresql://aitana:aitana@localhost:5432/aitana
 export MINIO_ENDPOINT=localhost:9000
 export REDIS_URL=redis://localhost:6379/0
 export GOTENBERG_URL=http://localhost:3000   # or blank: MuPDF fallback
+uv run alembic upgrade head
 uv run uvicorn aitana.api.main:app --reload --port 8080
 ```
 
@@ -1605,75 +1413,62 @@ anthropic` yourself if you want Anthropic models available locally.
 
 **If you ever test `POST /submissions` (or anything else that calls a
 Celery task's `.delay()`) against an isolated setup, that setup needs an
-isolated Redis too**, not just Mongo/MinIO -- `.delay()` tries to connect
-to `settings.redis_url`, which defaults to `redis://localhost:6379/0`.
-Without an isolated Redis, the request either hangs (nothing listening) or,
-worse, silently reaches whatever real Redis happens to be on that port (see
+isolated Redis too**, not just PostgreSQL/MinIO -- `.delay()` connects to
+`settings.redis_url`, which defaults to `redis://localhost:6379/0`. Without
+an isolated Redis, the request either hangs (nothing listening) or, worse,
+silently reaches whatever real Redis happens to be on that port (see
 "Verifying manually" below). `docker run -d --rm --name aitana-scratch-redis
 -p <port>:6379 redis:7-alpine` plus `REDIS_URL=redis://localhost:<port>/0`
 covers it.
 
 ## Testing strategy
 
-`uv run pytest` -- everything runs against `mongomock`/`mongomock-motor`
-plus in-process fakes for MinIO (`monkeypatch` on `storage.upload_file`/
-`download_to_path`) and Celery (`monkeypatch` on
-`submissions.grade_submission.delay`), so the suite needs no live services
-and runs in well under a second. `tests/conftest.py` carries three
-mongomock-compatibility shims for this (list_collection_names kwargs,
-awaitable aggregate, tolerating an empty `$lookup` pipeline -- see sharp
-edges #2/#4/#6 respectively). See "Known-sharp-edges" above for what this
-setup still can't exercise even with the shims (actual Link *resolution*
-via `fetch_links`, sharp edge #5) and why that's an accepted, documented gap
-rather than an oversight.
+`uv run pytest` runs against a **real PostgreSQL** -- the same database
+engine as production, so filters, joins, constraints, cascades and JSONB
+behave in tests exactly as they do deployed:
 
-`tests/test_worker_tasks.py` covers `_grade_answers` (the per-question
-grade-and-save loop extracted out of `_grade_submission`, see sharp edge #1)
-directly against `mongomock`, with a fake chat model in the same style as
-`tests/test_grading.py`'s `_FakeChatModel`/`_FakeStructuredModel` -- but note
-its `with_structured_output()` must return an object sharing the *same*
-underlying grade queue across calls (`grade_answer` calls
-`with_structured_output()` fresh per question), not a fresh
-`iter(grades)` each time, or every question grades identically instead of in
-sequence. `_grade_submission` itself (the outer function: raw file download +
-extraction + status transitions + error handling) is still only verified
-manually end-to-end against real Mongo/MinIO/Redis -- it wasn't brought
-under `mongomock` because it depends on `fetch_links` resolving
-`submission.rubric` (sharp edge #5), which `mongomock` can't do regardless
-of the sharp-edge-#6 depth-limiting (that fix only stops the crash; it
-doesn't make mongomock actually resolve anything). If you touch the outer
-function, consider giving it the same real-`mongod` treatment described in
-sharp edge #5 rather than fighting `mongomock`.
+- `TEST_DATABASE_URL`, if set, points at an empty database to use. Otherwise
+  `tests/conftest.py` starts a throwaway `postgres:17-alpine` container
+  through testcontainers for the session (needs a Docker daemon), and stops
+  it at the end.
+- The schema comes from the real Alembic migrations (`alembic upgrade head`
+  once per session), not from the models -- a model change without a
+  revision breaks the suite.
+- **Isolation by rollback.** The `db` fixture opens one connection and one
+  outer transaction per test and binds an `AsyncSession` to it with
+  `join_transaction_mode="create_savepoint"`: every `commit()` the app (or a
+  test) makes becomes a savepoint, and the whole transaction is rolled back
+  at teardown. Nothing is truncated or recreated between tests. (Identity
+  sequences aren't transactional, so ids keep growing across tests -- never
+  assert a literal id.)
+- The `client` fixture overrides the app's `get_session` dependency with
+  that same session, so data a test inserts directly is what endpoints see
+  and vice versa. Each request starts with `expunge_all()`, like a fresh
+  per-request session in production. `tests/factories.py` has the setup
+  helpers (`add`, `make_rubric`, `make_submission`, `save` -- which also
+  flags JSONB columns, see "Database layer rules" -- and `reload`).
+- MinIO and Celery are in-process fakes (`monkeypatch` on `storage.*` and
+  on the tasks' `.delay`), recorded on the client
+  (`client.fake_objects`, `client.delayed_submission_ids`, ...).
+- `tests/test_worker_tasks.py` drives the worker's task bodies
+  (`_grade_submission`, `_grade_answers`, `_prepare`) against the test
+  database with a fake chat model in the same style as
+  `tests/test_grading.py`'s -- its `create_agent` replacement must share
+  *one* grade queue across calls (`grade_answer` builds a fresh agent per
+  question), or every question grades identically instead of in sequence.
+  This includes the failure path (extracted answers survive a broken
+  provider) and a submission deleted mid-run.
 
-`tests/test_courses_api.py`, `tests/test_editions_api.py`, and the
-edition-assignment tests in `tests/test_students_api.py` follow the same
-`client`-fixture pattern as everything else. The `course_id`/`edition_id`
-submission filters, `Edition`/`Rubric` course-filtering-by-id, and the file
-download endpoint all depend on `fetch_links`/Link-query machinery
-`mongomock` can't fully exercise (sharp edges #3 and #5), so only their
-"empty/not-found" paths are asserted under `mongomock`; the positive-match
-cases (a course/edition filter actually returning the right submissions; a
-downloaded file's bytes/content-type/filename; `Rubric.course`/`.edition` resolving
-on a fresh fetch; a rubric's own fixed edition being picked up
-automatically at submission-creation time) were verified manually against
-an isolated real Mongo+MinIO(+Redis, for the submission-creation path --
-see "Environment variables" above) (see the next section for why
-"isolated"). Rubric/course/edition-*creation* endpoints are the
-exception -- since they return the in-memory object rather than
-re-fetching, `resp.json()["course"]["name"]` **is** asserted directly in
-`tests/test_rubrics_api.py`, no real-Mongo verification needed for those.
-
-`tests/test_llm.py` is the exception to "no live services needed": it needs
-no live *services*, but it does need all four provider packages actually
-installed (the dev dependency group's job, see "Pluggable LLM providers"
-above) to construct real `ChatOpenAI`/`ChatAnthropic`/`ChatOllama`/
-`ChatOpenRouter` instances -- no network call is made (a fake API key is
-enough to get past each client's own credential-presence check at
-construction time), so it needs no keys either. This is deliberately a
-stronger guarantee than mocking `get_chat_model` out entirely (as
-`tests/test_rubrics_api.py`/`test_grading.py` do for everything downstream
-of it): it catches a real kwarg/class mismatch against the actual installed
-client, which a mock can't.
+`tests/test_llm.py` needs no live services, but does need all four
+provider packages installed (the dev dependency group's job, see
+"Pluggable LLM providers") to construct real `ChatOpenAI`/`ChatAnthropic`/
+`ChatOllama`/`ChatOpenRouter` instances -- no network call is made (a fake
+API key is enough to get past each client's credential check at
+construction time). This is deliberately a stronger guarantee than mocking
+`get_chat_model` out entirely (as `tests/test_rubrics_api.py`/
+`test_grading.py` do for everything downstream of it): it catches a real
+kwarg/class mismatch against the actual installed client, which a mock
+can't.
 
 ## Kubernetes deployment and image builds (`deploy/`, `.github/workflows/images.yml`)
 
@@ -1681,11 +1476,23 @@ client, which a mock can't.
 
 - **Kustomize, not Helm.** There's one app with a handful of settings and no
   third-party consumers of a chart. A `base/` plus per-environment overlays
-  covers it without a templating language. MongoDB, the S3 store and the
-  `aitana-secrets` Secret belong to DevOps and are only *referenced*. Redis
-  (just a broker) and Gotenberg (stateless) ship in the base. MinIO doesn't:
-  in the cluster, the object store is whatever S3 endpoint the `MINIO_*`
-  settings point at.
+  covers it without a templating language. PostgreSQL, the S3 store and
+  the `aitana-secrets` Secret belong to DevOps and are only *referenced*.
+  Redis (just a broker) and Gotenberg (stateless) ship in the base. MinIO
+  doesn't: in the cluster, the object store is whatever S3 endpoint the
+  `MINIO_*` settings point at.
+- **The base needs only a `DATABASE_URL`.** `overlays/example/` adds an
+  in-cluster PostgreSQL run by CloudNativePG as an *example*
+  (`postgres-cluster.yaml`), plus a patch (`database-url.yaml`) feeding the
+  operator-generated `aitana-db-app` Secret's `uri` key to the api, its
+  `migrate` initContainer and the worker as `DATABASE_URL` (an explicit
+  `env` entry wins over `envFrom`). The app accepts that `postgresql://`
+  URI as is. No PgBouncer `Pooler`: connection counts are tiny, and asyncpg's
+  prepared statements need session pooling if one is ever added.
+- **Migrations run in an initContainer** (`migrate`, same image, `alembic
+  upgrade head`) on the api Deployment, so a pod only serves on the schema
+  its code expects; concurrent replicas serialize on the advisory lock in
+  `migrations/env.py`.
 - **The frontend image proxies `/api/`.** In production the frontend is nginx
   (`frontend/nginx/default.conf.template`). It serves `dist/` and
   reverse-proxies `/api/` to `aitana-api` with the prefix stripped, so FastAPI
@@ -1709,10 +1516,10 @@ client, which a mock can't.
   sandbox for grading"), and a recursive chown would copy the whole `.venv`
   into another layer. Because of that runtime write, the root filesystem
   can't be read-only.
-- **The root `.dockerignore` is a whitelist.** Before that, a local build
-  copied `.env` (API keys), `.venv`, `configs/` and the student files at the
-  repo root into the image. If the image needs a new top-level file, add an
-  `!` line for it.
+- **The root `.dockerignore` is a whitelist**, so a local build can never
+  copy `.env` (API keys), `.venv`, `configs/` or student files at the repo
+  root into the image. If the image needs a new top-level file (as
+  `alembic.ini` does), add an `!` line for it.
 - **Resource names are fixed** (`aitana-api`, `aitana-redis`, ...), with no
   `namePrefix`: nginx's `API_UPSTREAM` default and `base/config.env`'s
   `REDIS_URL`/`GOTENBERG_URL` are written against them.
@@ -1723,7 +1530,8 @@ client, which a mock can't.
   under QEMU are far too slow. PRs build both platforms and push nothing. If
   arm64 hosted runners become unavailable (e.g. the repo goes private), the
   workflow's comment says how to fall back to QEMU. A third job renders every
-  `deploy/overlays/*` and checks it with kubeconform.
+  `deploy/overlays/*` and checks it with kubeconform (custom resources such as
+  the CloudNativePG `Cluster` against the datreeio CRDs catalog).
 
 ## Verifying manually: never touch a stack you didn't start
 

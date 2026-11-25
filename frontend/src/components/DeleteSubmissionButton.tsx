@@ -30,7 +30,7 @@ export default function DeleteSubmissionButton({
       : `Delete ${what}? Its file and grades will be removed. This can't be undone.`
     if (!window.confirm(message)) return
     deleteSubmission.mutate(
-      { submissionId: submission._id, force: inProgress },
+      { submissionId: submission.id, force: inProgress },
       {
         onSuccess: () => onDeleted?.(),
         onError: (err) => window.alert(err.message || 'Failed to delete this submission.'),

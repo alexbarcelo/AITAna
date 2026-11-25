@@ -11,6 +11,7 @@ import { UntaggedCellsBadge, UntaggedCellsReport } from '../components/UntaggedC
 import { totalUntaggedCells } from '../lib/untaggedCells'
 import { BATCH_TYPE_LABELS, IN_PROGRESS_STATUSES, submissionName } from '../api/types'
 import { formatDateTime } from '../lib/date'
+import { parseId } from '../lib/ids'
 
 const FILTER_KEYS = ['student_id', 'rubric_id', 'course_id', 'edition_id', 'batch_id']
 
@@ -81,7 +82,7 @@ export default function SubmissionsPage() {
   const { data: courses } = useCourses()
   const { data: batches } = useBatches()
   const { data: editions } = useEditions()
-  const { data: batch } = useBatch(batchId || undefined)
+  const { data: batch } = useBatch(parseId(batchId))
   const regrade = useRegradeSubmissions()
   const [regradeQuestionId, setRegradeQuestionId] = useState('')
 
@@ -90,11 +91,11 @@ export default function SubmissionsPage() {
     isLoading,
     error,
   } = useSubmissions({
-    student_id: studentId || undefined,
-    rubric_id: rubricId || undefined,
-    course_id: courseId || undefined,
-    edition_id: editionId || undefined,
-    batch_id: batchId || undefined,
+    student_id: parseId(studentId),
+    rubric_id: parseId(rubricId),
+    course_id: parseId(courseId),
+    edition_id: parseId(editionId),
+    batch_id: parseId(batchId),
   })
 
   const singleRubric = singleRubricFilter && submissions && submissions.length > 0 ? submissions[0].rubric : undefined
@@ -129,7 +130,7 @@ export default function SubmissionsPage() {
           </div>
           <div className="flex items-center gap-3">
             <a
-              href={`${API_URL}/batches/${batch._id}/feedback.zip`}
+              href={`${API_URL}/batches/${batch.id}/feedback.zip`}
               title="Zip with one standalone feedback HTML per student, each inside that student's original submission folder"
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
             >
@@ -149,7 +150,7 @@ export default function SubmissionsPage() {
           >
             <option value="">All students</option>
             {students?.map((s) => (
-              <option key={s._id} value={s._id ?? ''}>
+              <option key={s.id} value={s.id ?? ''}>
                 {s.name}
               </option>
             ))}
@@ -165,7 +166,7 @@ export default function SubmissionsPage() {
             >
               <option value="">All rubrics</option>
               {rubrics?.map((rubric) => (
-                <option key={rubric._id} value={rubric._id ?? ''}>
+                <option key={rubric.id} value={rubric.id ?? ''}>
                   {rubric.title}
                 </option>
               ))}
@@ -181,7 +182,7 @@ export default function SubmissionsPage() {
           >
             <option value="">All courses</option>
             {courses?.map((course) => (
-              <option key={course._id} value={course._id ?? ''}>
+              <option key={course.id} value={course.id ?? ''}>
                 {course.name}
               </option>
             ))}
@@ -196,7 +197,7 @@ export default function SubmissionsPage() {
           >
             <option value="">All editions</option>
             {editions?.map((edition) => (
-              <option key={edition._id} value={edition._id ?? ''}>
+              <option key={edition.id} value={edition.id ?? ''}>
                 {edition.name}
               </option>
             ))}
@@ -211,7 +212,7 @@ export default function SubmissionsPage() {
           >
             <option value="">All batches</option>
             {batches?.map((b) => (
-              <option key={b._id} value={b._id}>
+              <option key={b.id} value={b.id}>
                 {b.rubric.title} ({formatDateTime(b.created_at)})
               </option>
             ))}
@@ -289,7 +290,7 @@ export default function SubmissionsPage() {
                 )
                   return
                 regrade.mutate({
-                  submissionIds: submissions.map((s) => s._id),
+                  submissionIds: submissions.map((s) => s.id),
                   questionId: regradeQuestion || undefined,
                 })
               }}
@@ -327,15 +328,15 @@ export default function SubmissionsPage() {
           </thead>
           <tbody>
             {submissions.map((s) => (
-              <tr key={s._id} className="border-t border-slate-100 hover:bg-slate-50">
+              <tr key={s.id} className="border-t border-slate-100 hover:bg-slate-50">
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-1">
-                    <Link to={`/submissions/${s._id}`} className="text-slate-900 hover:underline">
+                    <Link to={`/submissions/${s.id}`} className="text-slate-900 hover:underline">
                       {s.student || s.label ? submissionName(s) : <span className="text-slate-400">Unmatched</span>}
                     </Link>
-                    {s.label && !s.student && <RenameLabelDialog submissionId={s._id} currentLabel={s.label} />}
+                    {s.label && !s.student && <RenameLabelDialog submissionId={s.id} currentLabel={s.label} />}
                     {s.batch_internal_id && !s.label && (
-                      <MatchStudentDialog submissionId={s._id} currentStudentId={s.student?.student_id} />
+                      <MatchStudentDialog submissionId={s.id} currentStudentId={s.student?.student_id} />
                     )}
                   </div>
                 </td>
@@ -344,7 +345,7 @@ export default function SubmissionsPage() {
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-2">
                     {s.status === 'awaiting_segmentation' ? (
-                      <Link to={`/submissions/${s._id}/segments`} title="Open the segmentation editor">
+                      <Link to={`/submissions/${s.id}/segments`} title="Open the segmentation editor">
                         <StatusBadge status={s.status} />
                       </Link>
                     ) : (

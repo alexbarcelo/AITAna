@@ -3,12 +3,13 @@ import { useClearManualGrade, useSetManualGrade } from '../api/hooks'
 import { effectiveGrade, type AnsweredQuestion, type GradingScale } from '../api/types'
 import { prettifyLevel } from '../lib/gradeColor'
 import GradeBadge from './GradeBadge'
+import { findLevel, formatLevelScore, orderedLevels } from '../lib/gradingScale'
 
 /**
  * Feedback area of one answer card on the submission page, plus the TA's
  * manual override editor. An override is stored as `manual_grade` next to
  * the LLM's own `grade` (never replacing it -- see `AnsweredQuestion` in
- * `documents/submission.py`), so when one exists the LLM's suggestion is
+ * `db/models.py`), so when one exists the LLM's suggestion is
  * still shown underneath; after a re-grade that's how a TA notices the LLM
  * now disagrees with their override (overrides survive re-grading).
  */
@@ -18,7 +19,7 @@ export default function AnswerGradeEditor({
   scale,
   disabled,
 }: {
-  submissionId: string
+  submissionId: number
   answer: AnsweredQuestion
   scale: GradingScale
   disabled: boolean
@@ -72,14 +73,16 @@ function EditForm({
   scale,
   onDone,
 }: {
-  submissionId: string
+  submissionId: number
   answer: AnsweredQuestion
   scale: GradingScale
   onDone: () => void
 }) {
   const initial = effectiveGrade(answer)
-  const levels = Object.keys(scale)
-  const [level, setLevel] = useState(initial?.level && initial.level in scale ? initial.level : levels[0])
+  const levels = orderedLevels(scale)
+  const [level, setLevel] = useState(
+    initial?.level && findLevel(scale, initial.level) ? initial.level : (levels[0]?.id ?? ''),
+  )
   const [feedback, setFeedback] = useState(initial?.feedback ?? '')
   const save = useSetManualGrade()
 
@@ -99,9 +102,9 @@ function EditForm({
         onChange={(e) => setLevel(e.target.value)}
         className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
       >
-        {levels.map((id) => (
-          <option key={id} value={id}>
-            {prettifyLevel(id)} — {scale[id]}
+        {levels.map((l) => (
+          <option key={l.id} value={l.id}>
+            {prettifyLevel(l.id)} ({formatLevelScore(l.score)}) — {l.description}
           </option>
         ))}
       </select>

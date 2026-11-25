@@ -1,15 +1,18 @@
-from aitana.documents import Course, Edition, Rubric, Submission, SubmissionStatus
-from aitana.documents.submission import AnsweredQuestion
+from sqlalchemy import func, select
+
+from aitana.db import AnsweredQuestion, Course, Edition, Rubric, Submission, SubmissionStatus
 from aitana.grading.models import ConvertedDocument, Grade, Question, SubmissionFormat
 
+from .factories import add, reload, save
 
-async def _make_student(client) -> str:
+
+async def _make_student(client) -> int:
     resp = await client.post("/students", json={"student_id": "s1", "name": "Ada Lovelace"})
-    return resp.json()["_id"]
+    return resp.json()["id"]
 
 
-async def _make_course(client, name: str = "BDM") -> str:
-    return (await client.post("/courses", json={"name": name})).json()["_id"]
+async def _make_course(client, name: str = "BDM") -> int:
+    return (await client.post("/courses", json={"name": name})).json()["id"]
 
 
 def _question(**overrides) -> Question:
@@ -19,24 +22,23 @@ def _question(**overrides) -> Question:
 
 
 async def _make_rubric(
-    course_id: str, edition_id: str | None = None, fmt: SubmissionFormat = SubmissionFormat.PDF_FORM
-) -> str:
-    course = await Course.get(course_id)
-    edition = None
-    if edition_id is not None:
-        edition = await Edition.get(edition_id)
+    client, course_id: int, edition_id: int | None = None, fmt: SubmissionFormat = SubmissionFormat.PDF_FORM
+) -> int:
+    db = client.db
+    course = await db.get(Course, course_id)
+    edition = await db.get(Edition, edition_id) if edition_id is not None else None
     rubric = Rubric(
         slug="containers", title="Containers lab", course=course, edition=edition, format=fmt, questions=[_question()]
     )
-    await rubric.insert()
-    return str(rubric.id)
+    await add(db, rubric)
+    return rubric.id
 
 
 async def test_create_submission_uploads_file_and_enqueues_grading(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
 
     resp = await client.post(
         "/submissions",
@@ -48,15 +50,15 @@ async def test_create_submission_uploads_file_and_enqueues_grading(client):
     assert body["status"] == "pending"
     assert body["file_object_key"]
 
-    assert client.delayed_submission_ids == [body["_id"]]
+    assert client.delayed_submission_ids == [body["id"]]
     assert client.fake_objects[body["file_object_key"]] == b"%PDF-1.4 fake content"
 
 
 async def test_create_labelled_submission(client):
     """Group projects: no roster student, just a free-form label."""
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
 
     resp = await client.post(
         "/submissions",
@@ -69,36 +71,36 @@ async def test_create_labelled_submission(client):
     assert body["label"] == "Group 3"
     assert "/_labelled/" in body["file_object_key"]
     assert client.fake_objects[body["file_object_key"]] == b"%PDF-1.4 group"
-    assert client.delayed_submission_ids == [body["_id"]]
+    assert client.delayed_submission_ids == [body["id"]]
 
 
 async def test_rename_submission_label(client):
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
     submission_id = (
         await client.post(
             "/submissions",
             data={"label": "Grup 3", "rubric_id": rubric_id},
             files={"file": ("answers.pdf", b"%PDF-1.4", "application/pdf")},
         )
-    ).json()["_id"]
+    ).json()["id"]
 
     resp = await client.put(f"/submissions/{submission_id}/label", json={"label": " Group 3 "})
     assert resp.status_code == 200
     assert resp.json()["label"] == "Group 3"
-    assert (await Submission.get(submission_id)).label == "Group 3"
+    assert (await reload(client.db, Submission, submission_id)).label == "Group 3"
 
     assert (await client.put(f"/submissions/{submission_id}/label", json={"label": "  "})).status_code == 422
-    missing = "/submissions/507f1f77bcf86cd799439011/label"
+    missing = "/submissions/999999999/label"
     assert (await client.put(missing, json={"label": "x"})).status_code == 404
 
 
 async def test_create_submission_requires_exactly_one_of_student_or_label(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
 
     for data in (
         {"rubric_id": rubric_id},
@@ -117,8 +119,8 @@ async def test_create_submission_uses_rubrics_edition_automatically(client):
     explicit edition_id -- the rubric's own edition is used."""
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
 
     resp = await client.post(
         "/submissions",
@@ -131,7 +133,7 @@ async def test_create_submission_uses_rubrics_edition_automatically(client):
 async def test_create_submission_without_edition_requires_explicit_one(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    rubric_id = await _make_rubric(course_id)  # no fixed edition
+    rubric_id = await _make_rubric(client, course_id)  # no fixed edition
 
     resp = await client.post(
         "/submissions",
@@ -144,8 +146,8 @@ async def test_create_submission_without_edition_requires_explicit_one(client):
 async def test_create_submission_explicit_edition_for_edition_agnostic_rubric(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id)  # no fixed edition
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id)  # no fixed edition
 
     resp = await client.post(
         "/submissions",
@@ -157,11 +159,11 @@ async def test_create_submission_explicit_edition_for_edition_agnostic_rubric(cl
 
 async def test_create_submission_unknown_student_404(client):
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
     resp = await client.post(
         "/submissions",
-        data={"student_id": "000000000000000000000000", "rubric_id": rubric_id},
+        data={"student_id": "999999999", "rubric_id": rubric_id},
         files={"file": ("answers.pdf", b"data", "application/pdf")},
     )
     assert resp.status_code == 404
@@ -170,8 +172,8 @@ async def test_create_submission_unknown_student_404(client):
 async def test_create_submission_accepts_notebook_file_for_notebook_rubric(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.NOTEBOOK)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id, fmt=SubmissionFormat.NOTEBOOK)
 
     resp = await client.post(
         "/submissions",
@@ -188,8 +190,8 @@ async def test_create_submission_rejects_file_extension_mismatching_rubric_forma
     confusingly once grading starts."""
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)  # defaults to pdf
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)  # defaults to pdf
 
     resp = await client.post(
         "/submissions",
@@ -202,45 +204,38 @@ async def test_create_submission_rejects_file_extension_mismatching_rubric_forma
 async def test_list_submissions(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
     await client.post(
         "/submissions",
         data={"student_id": student_id, "rubric_id": rubric_id},
         files={"file": ("answers.pdf", b"data", "application/pdf")},
     )
 
-    # `fetch_links=True` resolves student/rubric/edition to full documents via
-    # a MongoDB $lookup aggregation on the underlying DBRef -- mongomock's
-    # aggregation emulation doesn't handle that, so under mongomock the
-    # response falls back to unresolved link references. Full-document
-    # resolution has been verified manually against a real mongod; here we
-    # only assert what mongomock can actually exercise.
     resp = await client.get("/submissions")
     assert resp.status_code == 200
     body = resp.json()
     assert len(body) == 1
     assert body[0]["file_object_key"]
+    # Nested objects come back resolved.
+    assert body[0]["student"]["name"] == "Ada Lovelace"
+    assert body[0]["rubric"]["slug"] == "containers"
+    assert body[0]["rubric"]["course_id"] == course_id
+    assert body[0]["edition"]["name"] == "2026/27"
+    assert body[0]["batch_id"] is None
 
 
 async def test_filter_submissions_by_status(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
     await client.post(
         "/submissions",
         data={"student_id": student_id, "rubric_id": rubric_id},
         files={"file": ("answers.pdf", b"data", "application/pdf")},
     )
 
-    # `status` is a plain field, so this filter is exercised end-to-end here.
-    # Filtering by student_id/rubric_id/edition_id goes through Beanie's Link
-    # query, which compiles to a MongoDB DBRef dotted-path match -- real
-    # MongoDB supports this natively (verified manually against a live
-    # mongod), but mongomock's pure-Python query matcher does not
-    # special-case DBRef fields for dotted access, so that path isn't
-    # exercised here.
     resp = await client.get("/submissions", params={"status": "graded"})
     assert resp.json() == []
 
@@ -251,8 +246,8 @@ async def test_filter_submissions_by_status(client):
 async def test_filter_submissions_by_course_with_no_matching_rubrics(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
     await client.post(
         "/submissions",
         data={"student_id": student_id, "rubric_id": rubric_id},
@@ -260,58 +255,16 @@ async def test_filter_submissions_by_course_with_no_matching_rubrics(client):
     )
     other_course = (await client.post("/courses", json={"name": "ML"})).json()
 
-    # No rubric belongs to this other course -- should safely come back
-    # empty rather than error. See test_filter_submissions_by_status for why
-    # a *matching* course_id/edition_id filter isn't exercised under
-    # mongomock (same Link-query gap; verified separately against real
-    # MongoDB, see AGENTS.md).
-    resp = await client.get("/submissions", params={"course_id": other_course["_id"]})
+    resp = await client.get("/submissions", params={"course_id": other_course["id"]})
     assert resp.status_code == 200
     assert resp.json() == []
 
 
-async def test_filter_submissions_by_unrelated_edition_is_empty(client):
+async def test_filter_submissions_by_matching_ids(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
-    await client.post(
-        "/submissions",
-        data={"student_id": student_id, "rubric_id": rubric_id},
-        files={"file": ("answers.pdf", b"data", "application/pdf")},
-    )
-    other_edition = (await client.post("/editions", json={"name": "2027/28"})).json()
-
-    resp = await client.get("/submissions", params={"edition_id": other_edition["_id"]})
-    assert resp.status_code == 200
-    assert resp.json() == []
-
-
-async def test_get_submission_not_found(client):
-    resp = await client.get("/submissions/000000000000000000000000")
-    assert resp.status_code == 404
-
-
-async def test_download_submission_file_not_found(client):
-    resp = await client.get("/submissions/000000000000000000000000/file")
-    assert resp.status_code == 404
-
-
-async def test_download_submission_feedback_html_not_found(client):
-    # The happy path needs `submission.rubric`/`.student`/`.edition` actually
-    # resolved (fetch_links=True) to render anything -- same
-    # can't-exercise-it-under-mongomock gap as `/file` above (see AGENTS.md
-    # sharp edge #5), verified instead via tests/test_feedback_export.py's
-    # direct, already-resolved-in-memory unit tests.
-    resp = await client.get("/submissions/000000000000000000000000/feedback.html")
-    assert resp.status_code == 404
-
-
-async def test_regrade_submission_resets_status_and_reenqueues(client):
-    student_id = await _make_student(client)
-    course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
     created = (
         await client.post(
             "/submissions",
@@ -319,13 +272,95 @@ async def test_regrade_submission_resets_status_and_reenqueues(client):
             files={"file": ("answers.pdf", b"data", "application/pdf")},
         )
     ).json()
-    submission_id = created["_id"]
+
+    for params in (
+        {"course_id": course_id},
+        {"edition_id": edition_id},
+        {"rubric_id": rubric_id},
+        {"student_id": student_id},
+        {"course_id": course_id, "edition_id": edition_id, "status": "pending"},
+    ):
+        resp = await client.get("/submissions", params=params)
+        assert [s["id"] for s in resp.json()] == [created["id"]], params
+
+
+async def test_filter_submissions_by_unrelated_edition_is_empty(client):
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
+    await client.post(
+        "/submissions",
+        data={"student_id": student_id, "rubric_id": rubric_id},
+        files={"file": ("answers.pdf", b"data", "application/pdf")},
+    )
+    other_edition = (await client.post("/editions", json={"name": "2027/28"})).json()
+
+    resp = await client.get("/submissions", params={"edition_id": other_edition["id"]})
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_get_submission_not_found(client):
+    resp = await client.get("/submissions/999999999")
+    assert resp.status_code == 404
+
+
+async def test_download_submission_file_not_found(client):
+    resp = await client.get("/submissions/999999999/file")
+    assert resp.status_code == 404
+
+
+async def test_download_submission_feedback_html_not_found(client):
+    resp = await client.get("/submissions/999999999/feedback.html")
+    assert resp.status_code == 404
+
+
+async def test_download_submission_file_and_feedback(client):
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
+    created = (
+        await client.post(
+            "/submissions",
+            data={"student_id": student_id, "rubric_id": rubric_id},
+            files={"file": ("answers.pdf", b"%PDF-data", "application/pdf")},
+        )
+    ).json()
+
+    resp = await client.get(f"/submissions/{created['id']}/file")
+    assert resp.status_code == 200
+    assert resp.content == b"%PDF-data"
+    assert resp.headers["content-type"] == "application/pdf"
+    assert 'filename="s1_containers.pdf"' in resp.headers["content-disposition"]
+
+    resp = await client.get(f"/submissions/{created['id']}/feedback.html")
+    assert resp.status_code == 200
+    assert "Ada Lovelace" in resp.text
+    assert "BDM" in resp.text  # the course name, looked up through the rubric
+    assert 'filename="s1_containers_feedback.html"' in resp.headers["content-disposition"]
+
+
+async def test_regrade_submission_resets_status_and_reenqueues(client):
+    student_id = await _make_student(client)
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
+    created = (
+        await client.post(
+            "/submissions",
+            data={"student_id": student_id, "rubric_id": rubric_id},
+            files={"file": ("answers.pdf", b"data", "application/pdf")},
+        )
+    ).json()
+    submission_id = created["id"]
 
     # Simulate a completed-but-failed run before forcing a re-grade.
-    submission = await Submission.get(submission_id)
+    submission = await reload(client.db, Submission, submission_id)
     submission.status = SubmissionStatus.FAILED
     submission.error = "Missing credentials"
-    await submission.save()
+    await save(client.db, submission)
 
     resp = await client.post(f"/submissions/{submission_id}/regrade")
     assert resp.status_code == 202
@@ -340,16 +375,16 @@ async def test_regrade_submission_resets_status_and_reenqueues(client):
 async def test_bulk_regrade_submissions(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
     submission_id = (
         await client.post(
             "/submissions",
             data={"student_id": student_id, "rubric_id": rubric_id},
             files={"file": ("answers.pdf", b"data", "application/pdf")},
         )
-    ).json()["_id"]
-    question_id = (await Rubric.get(rubric_id)).questions[0].id
+    ).json()["id"]
+    question_id = (await reload(client.db, Rubric, rubric_id)).questions[0].id
 
     resp = await client.post("/submissions/regrade", json={"submission_ids": [submission_id], "question_id": question_id})
     assert resp.status_code == 202
@@ -365,35 +400,34 @@ async def test_bulk_regrade_submissions(client):
 
 
 async def test_regrade_submission_not_found(client):
-    resp = await client.post("/submissions/000000000000000000000000/regrade")
+    resp = await client.post("/submissions/999999999/regrade")
     assert resp.status_code == 404
 
 
 async def test_set_submission_student(client):
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
     student_id = await _make_student(client)
 
     # A batch-created submission starts with no student -- simulate one
     # directly rather than going through /batches (covered in
     # test_batches_api.py).
-    rubric = await Rubric.get(rubric_id)
-    edition = await Edition.get(edition_id)
+    rubric = await reload(client.db, Rubric, rubric_id)
+    edition = await reload(client.db, Edition, edition_id)
     submission = Submission(rubric=rubric, edition=edition, student=None, file_object_key="k")
-    await submission.insert()
+    await add(client.db, submission)
 
     resp = await client.put(f"/submissions/{submission.id}/student", json={"student_id": student_id})
     assert resp.status_code == 200
-    # Nested Link resolution keys the embedded document by `id`, not `_id`
-    # -- compare on `student_id` instead, which is unambiguous either way.
+    assert resp.json()["student"]["id"] == student_id
     assert resp.json()["student"]["student_id"] == "s1"
 
 
 async def test_set_submission_student_not_found(client):
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
     student_id = await _make_student(client)
     created = (
         await client.post(
@@ -404,7 +438,7 @@ async def test_set_submission_student_not_found(client):
     ).json()
 
     resp = await client.put(
-        f"/submissions/{created['_id']}/student", json={"student_id": "000000000000000000000000"}
+        f"/submissions/{created['id']}/student", json={"student_id": "999999999"}
     )
     assert resp.status_code == 404
 
@@ -412,7 +446,7 @@ async def test_set_submission_student_not_found(client):
 async def test_set_submission_student_submission_not_found(client):
     student_id = await _make_student(client)
     resp = await client.put(
-        "/submissions/000000000000000000000000/student", json={"student_id": student_id}
+        "/submissions/999999999/student", json={"student_id": student_id}
     )
     assert resp.status_code == 404
 
@@ -420,23 +454,23 @@ async def test_set_submission_student_submission_not_found(client):
 async def _make_graded_submission(client) -> str:
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
     submission_id = (
         await client.post(
             "/submissions",
             data={"student_id": student_id, "rubric_id": rubric_id},
             files={"file": ("answers.pdf", b"data", "application/pdf")},
         )
-    ).json()["_id"]
-    submission = await Submission.get(submission_id)
+    ).json()["id"]
+    submission = await reload(client.db, Submission, submission_id)
     submission.status = SubmissionStatus.GRADED
     submission.answers = [
         AnsweredQuestion(
             question_id="answer1", student_answer="It crashed.", grade=Grade(level="some_effort", feedback="LLM says")
         )
     ]
-    await submission.save()
+    await save(client.db, submission)
     return submission_id
 
 
@@ -452,7 +486,7 @@ async def test_set_manual_grade_keeps_llm_grade(client):
     assert answer["manual_graded_at"] is not None
     assert answer["grade"] == {"level": "some_effort", "feedback": "LLM says"}
 
-    stored = (await Submission.get(submission_id)).answers[0]
+    stored = (await reload(client.db, Submission, submission_id)).answers[0]
     assert stored.manual_grade == Grade(level="solid", feedback="TA says")
     assert stored.effective_grade == stored.manual_grade
 
@@ -466,7 +500,7 @@ async def test_clear_manual_grade_reverts_to_llm(client):
     answer = resp.json()["answers"][0]
     assert answer["manual_grade"] is None
     assert answer["manual_graded_at"] is None
-    assert (await Submission.get(submission_id)).answers[0].effective_grade.level == "some_effort"
+    assert (await reload(client.db, Submission, submission_id)).answers[0].effective_grade.level == "some_effort"
 
 
 async def test_set_manual_grade_rejects_unknown_level(client):
@@ -485,16 +519,16 @@ async def test_set_manual_grade_unknown_question(client):
 
 async def test_set_manual_grade_not_found(client):
     resp = await client.put(
-        "/submissions/000000000000000000000000/answers/answer1/grade", json={"level": "solid", "feedback": "x"}
+        "/submissions/999999999/answers/answer1/grade", json={"level": "solid", "feedback": "x"}
     )
     assert resp.status_code == 404
 
 
 async def test_set_manual_grade_rejected_while_grading(client):
     submission_id = await _make_graded_submission(client)
-    submission = await Submission.get(submission_id)
+    submission = await reload(client.db, Submission, submission_id)
     submission.status = SubmissionStatus.GRADING
-    await submission.save()
+    await save(client.db, submission)
 
     resp = await client.put(
         f"/submissions/{submission_id}/answers/answer1/grade", json={"level": "solid", "feedback": "x"}
@@ -505,8 +539,7 @@ async def test_set_manual_grade_rejected_while_grading(client):
 
 
 async def test_answer_image_not_found(client):
-    # Positive path needs `submission.rubric` resolved via fetch_links (AGENTS.md sharp edge #5).
-    resp = await client.get("/submissions/000000000000000000000000/answers/answer1/images/0")
+    resp = await client.get("/submissions/999999999/answers/answer1/images/0")
     assert resp.status_code == 404
 
 
@@ -516,24 +549,24 @@ async def test_answer_image_not_found(client):
 async def _make_generic_submission(client, *, llm_segmentation: bool = True, converted: bool = True) -> str:
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
-    rubric = await Rubric.get(rubric_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
+    rubric = await reload(client.db, Rubric, rubric_id)
     rubric.questions = [_question(id="q1"), _question(id="q2")]
-    await rubric.save()
+    await save(client.db, rubric)
     resp = await client.post(
         "/submissions",
         data={"student_id": student_id, "rubric_id": rubric_id, "llm_segmentation": str(llm_segmentation).lower()},
         files={"file": ("answers.pdf", b"data", "application/pdf")},
     )
     assert resp.status_code == 202, resp.text
-    submission_id = resp.json()["_id"]
+    submission_id = resp.json()["id"]
     if converted:
         client.fake_objects["md-key"] = "# Ex 1\nfoo\n# Ex 2\nbar".encode()
-        submission = await Submission.get(submission_id)
+        submission = await reload(client.db, Submission, submission_id)
         submission.document = ConvertedDocument(markdown_object_key="md-key", line_count=4, page_start_lines=[1])
         submission.status = SubmissionStatus.AWAITING_SEGMENTATION
-        await submission.save()
+        await save(client.db, submission)
     return submission_id
 
 
@@ -549,8 +582,8 @@ async def test_create_generic_submission_converts_docx_to_pdf(client, minimal_do
     unchanged)."""
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
 
     resp = await client.post(
         "/submissions",
@@ -561,7 +594,7 @@ async def test_create_generic_submission_converts_docx_to_pdf(client, minimal_do
     key = resp.json()["file_object_key"]
     assert key.endswith(".pdf")
     assert client.fake_objects[key].startswith(b"%PDF")
-    assert client.delayed_prepares == [(resp.json()["_id"], client.default_llm_model_id)]
+    assert client.delayed_prepares == [(resp.json()["id"], client.default_llm_model_id)]
 
 
 async def test_converted_upload_keeps_original_for_provenance(client, minimal_docx):
@@ -570,8 +603,8 @@ async def test_converted_upload_keeps_original_for_provenance(client, minimal_do
     removes it with the rest."""
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
     docx = minimal_docx("My answer")
 
     resp = await client.post(
@@ -586,7 +619,7 @@ async def test_converted_upload_keeps_original_for_provenance(client, minimal_do
     assert original_key == body["file_object_key"].removesuffix(".pdf") + "/original.docx"
     assert client.fake_objects[original_key] == docx
 
-    resp = await client.get(f"/submissions/{body['_id']}/original")
+    resp = await client.get(f"/submissions/{body['id']}/original")
     assert resp.status_code == 200
     assert resp.content == docx
     assert resp.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument")
@@ -594,15 +627,15 @@ async def test_converted_upload_keeps_original_for_provenance(client, minimal_do
     assert disposition.startswith('attachment; filename="Resposta _lex.docx"')
     assert "filename*=UTF-8''Resposta%20%C3%80lex.docx" in disposition
 
-    assert (await client.delete(f"/submissions/{body['_id']}?force=true")).status_code == 204
+    assert (await client.delete(f"/submissions/{body['id']}?force=true")).status_code == 204
     assert original_key not in client.fake_objects
 
 
 async def test_unconverted_upload_has_no_separate_original(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
 
     resp = await client.post(
         "/submissions",
@@ -613,14 +646,14 @@ async def test_unconverted_upload_has_no_separate_original(client):
     assert resp.json()["original_filename"] == "answers.pdf"
     assert resp.json()["original_object_key"] is None
     assert len(client.fake_objects) == 1
-    assert (await client.get(f"/submissions/{resp.json()['_id']}/original")).status_code == 404
+    assert (await client.get(f"/submissions/{resp.json()['id']}/original")).status_code == 404
 
 
 async def test_create_generic_submission_rejects_unreadable_docx(client):
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id, fmt=SubmissionFormat.GENERIC_DOCUMENT)
 
     resp = await client.post(
         "/submissions",
@@ -629,15 +662,15 @@ async def test_create_generic_submission_rejects_unreadable_docx(client):
     )
     assert resp.status_code == 422
     assert "answers.docx" in resp.json()["detail"]
-    assert await Submission.find_all().count() == 0
+    assert await client.db.scalar(select(func.count()).select_from(Submission)) == 0
 
 
 async def test_create_submission_rejects_docx_for_form_pdf_rubric(client, minimal_docx):
     """Only generic-document rubrics convert; a form-PDF rubric still needs a PDF."""
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)  # pdf
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)  # pdf
 
     resp = await client.post(
         "/submissions",
@@ -711,9 +744,9 @@ async def test_set_segments_rejects_invalid_lines(client):
 
 async def test_set_segments_rejected_while_converting(client):
     submission_id = await _make_generic_submission(client)
-    submission = await Submission.get(submission_id)
+    submission = await reload(client.db, Submission, submission_id)
     submission.status = SubmissionStatus.CONVERTING
-    await submission.save()
+    await save(client.db, submission)
     resp = await client.put(f"/submissions/{submission_id}/segments", json={"segments": []})
     assert resp.status_code == 409
 
@@ -738,8 +771,8 @@ async def test_suggest_segments_enqueues(client):
 async def _make_uploaded_submission(client) -> dict:
     student_id = await _make_student(client)
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
-    rubric_id = await _make_rubric(course_id, edition_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric_id = await _make_rubric(client, course_id, edition_id)
     return (
         await client.post(
             "/submissions",
@@ -751,29 +784,29 @@ async def _make_uploaded_submission(client) -> dict:
 
 async def test_delete_submission_removes_document_and_file(client):
     created = await _make_uploaded_submission(client)
-    submission = await Submission.get(created["_id"])
+    submission = await reload(client.db, Submission, created["id"])
     submission.status = SubmissionStatus.GRADED
-    await submission.save()
+    await save(client.db, submission)
     client.fake_objects[created["file_object_key"].rsplit(".", 1)[0] + "/document.md"] = b"# derived"
 
-    resp = await client.delete(f"/submissions/{created['_id']}")
+    resp = await client.delete(f"/submissions/{created['id']}")
     assert resp.status_code == 204
-    assert await Submission.get(created["_id"]) is None
+    assert await reload(client.db, Submission, created["id"]) is None
     assert client.fake_objects == {}
 
 
 async def test_delete_submission_in_progress_needs_force(client):
     created = await _make_uploaded_submission(client)  # still `pending`
 
-    resp = await client.delete(f"/submissions/{created['_id']}")
+    resp = await client.delete(f"/submissions/{created['id']}")
     assert resp.status_code == 409
-    assert await Submission.get(created["_id"]) is not None
+    assert await reload(client.db, Submission, created["id"]) is not None
 
-    resp = await client.delete(f"/submissions/{created['_id']}?force=true")
+    resp = await client.delete(f"/submissions/{created['id']}?force=true")
     assert resp.status_code == 204
-    assert await Submission.get(created["_id"]) is None
+    assert await reload(client.db, Submission, created["id"]) is None
 
 
 async def test_delete_submission_not_found(client):
-    resp = await client.delete("/submissions/000000000000000000000000")
+    resp = await client.delete("/submissions/999999999")
     assert resp.status_code == 404

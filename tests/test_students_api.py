@@ -17,13 +17,13 @@ async def test_create_duplicate_student_conflicts(client):
 
 
 async def test_get_student_not_found(client):
-    resp = await client.get("/students/000000000000000000000000")
+    resp = await client.get("/students/999999999")
     assert resp.status_code == 404
 
 
 async def test_get_student_by_id(client):
     created = (await client.post("/students", json={"student_id": "s1", "name": "Ada Lovelace"})).json()
-    resp = await client.get(f"/students/{created['_id']}")
+    resp = await client.get(f"/students/{created['id']}")
     assert resp.status_code == 200
     assert resp.json()["student_id"] == "s1"
 
@@ -199,17 +199,23 @@ async def test_import_students_unknown_format(client):
 
 async def test_delete_student(client):
     created = (await client.post("/students", json={"student_id": "s1", "name": "Ada Lovelace"})).json()
-    resp = await client.delete(f"/students/{created['_id']}")
+    resp = await client.delete(f"/students/{created['id']}")
     assert resp.status_code == 204
-    assert (await client.get(f"/students/{created['_id']}")).status_code == 404
+    assert (await client.get(f"/students/{created['id']}")).status_code == 404
 
 
 async def test_delete_student_not_found(client):
-    resp = await client.delete("/students/000000000000000000000000")
+    resp = await client.delete("/students/999999999")
     assert resp.status_code == 404
 
 
-# No positive-match test for "delete is blocked while a submission links to
-# this student": the `Submission.student.id == ...` check can't match inside
-# a stored DBRef under mongomock (AGENTS.md sharp edge #3), same gap as
-# DELETE /rubrics/{id}'s guard.
+async def test_delete_student_blocked_by_submissions(client):
+    from aitana.db import Student
+
+    from .factories import make_submission
+
+    created = (await client.post("/students", json={"student_id": "s1", "name": "Ada Lovelace"})).json()
+    await make_submission(client.db, student=await client.db.get(Student, created["id"]))
+    resp = await client.delete(f"/students/{created['id']}")
+    assert resp.status_code == 409
+    assert "1 submission(s)" in resp.json()["detail"]

@@ -3,11 +3,15 @@ import io
 from collections.abc import Callable
 from enum import Enum
 
-from beanie import PydanticObjectId
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...documents import Student, Submission
+from ...db import Student, Submission
+from ...db.session import get_session
+from ..schemas import StudentOut
 
 router = APIRouter(prefix="/students", tags=["students"])
 
@@ -18,44 +22,45 @@ class StudentCreate(BaseModel):
     email: str | None = None
 
 
-@router.get("", response_model=list[Student])
-async def list_students() -> list[Student]:
-    return await Student.find_all().to_list()
+@router.get("", response_model=list[StudentOut])
+async def list_students(session: AsyncSession = Depends(get_session)) -> list[Student]:
+    return list(await session.scalars(select(Student).order_by(Student.id)))
 
 
-@router.post("", response_model=Student, status_code=201)
-async def create_student(payload: StudentCreate) -> Student:
-    if await Student.find_one(Student.student_id == payload.student_id):
+@router.post("", response_model=StudentOut, status_code=201)
+async def create_student(payload: StudentCreate, session: AsyncSession = Depends(get_session)) -> Student:
+    if await session.scalar(select(Student).where(Student.student_id == payload.student_id)):
         raise HTTPException(status_code=409, detail=f"Student {payload.student_id!r} already exists")
     student = Student(**payload.model_dump())
-    await student.insert()
+    session.add(student)
+    await session.commit()
     return student
 
 
-@router.get("/{student_id}", response_model=Student)
-async def get_student(student_id: PydanticObjectId) -> Student:
-    student = await Student.get(student_id)
+@router.get("/{student_id}", response_model=StudentOut)
+async def get_student(student_id: int, session: AsyncSession = Depends(get_session)) -> Student:
+    student = await session.get(Student, student_id)
     if student is None:
         raise HTTPException(status_code=404, detail="Student not found")
     return student
 
 
 @router.delete("/{student_id}", status_code=204)
-async def delete_student(student_id: PydanticObjectId) -> None:
-    """`409` if any submission is linked to this student. MongoDB has no
-    referential integrity (a Link is just a stored DBRef), so this has to be
-    an explicit check -- otherwise those submissions would be left pointing
-    at a missing student."""
-    student = await Student.get(student_id)
+async def delete_student(student_id: int, session: AsyncSession = Depends(get_session)) -> None:
+    """`409` if any submission is linked to this student. The foreign key
+    would refuse the delete anyway; counting first gives a message that says
+    why."""
+    student = await session.get(Student, student_id)
     if student is None:
         raise HTTPException(status_code=404, detail="Student not found")
-    linked = await Submission.find(Submission.student.id == student.id).count()
+    linked = await session.scalar(select(func.count()).where(Submission.student_id == student.id))
     if linked:
         raise HTTPException(
             status_code=409,
             detail=f"Cannot delete {student.name}: {linked} submission(s) are linked to this student.",
         )
-    await student.delete()
+    await session.delete(student)
+    await session.commit()
 
 
 class StudentImportFormat(str, Enum):
@@ -155,13 +160,14 @@ _IMPORT_PARSERS: dict[StudentImportFormat, Callable[[bytes], list[_ImportedStude
 class StudentImportResult(BaseModel):
     created: int
     updated: int
-    students: list[Student]
+    students: list[StudentOut]
 
 
 @router.post("/import", response_model=StudentImportResult)
 async def import_students(
     file: UploadFile = File(...),
     format: StudentImportFormat = Form(...),
+    session: AsyncSession = Depends(get_session),
 ) -> StudentImportResult:
     """Bulk-create/update students from an uploaded roster CSV.
 
@@ -188,22 +194,19 @@ async def import_students(
             )
         seen[row.student_id] = line_number
 
-    created = 0
-    updated = 0
-    students: list[Student] = []
-    for row in rows:
-        existing = await Student.find_one(Student.student_id == row.student_id)
-        if existing is None:
-            student = Student(student_id=row.student_id, name=row.name, username=row.username, email=row.email)
-            await student.insert()
-            created += 1
-        else:
-            existing.name = row.name
-            existing.username = row.username
-            existing.email = row.email
-            await existing.save()
-            student = existing
-            updated += 1
-        students.append(student)
+    existing = set(
+        await session.scalars(select(Student.student_id).where(Student.student_id.in_([row.student_id for row in rows])))
+    )
+    stmt = insert(Student).values([row.model_dump() for row in rows])
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[Student.student_id],
+        set_={"name": stmt.excluded.name, "username": stmt.excluded.username, "email": stmt.excluded.email},
+    ).returning(Student)
+    students = list(await session.scalars(stmt, execution_options={"populate_existing": True}))
+    await session.commit()
 
-    return StudentImportResult(created=created, updated=updated, students=students)
+    return StudentImportResult(
+        created=len(rows) - len(existing),
+        updated=len(existing),
+        students=[StudentOut.model_validate(s) for s in students],
+    )

@@ -2,7 +2,7 @@
 
 Prompt split:
   - SYSTEM message: grading instructions (rubric, expected points, grading
-    scale) -- comes from the YAML config / rubric document, same for every
+    scale) -- comes from the rubric, same for every
     student.
   - HUMAN message: the student's own answer text, verbatim -- plus, for a
     `Question.include_images` question, the images extracted from the
@@ -21,7 +21,16 @@ from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from .models import ExtractedImage, Grade, GradeTrace, Question, grade_schema_for_scale
+from .models import (
+    ExtractedImage,
+    Grade,
+    GradeTrace,
+    GradingLevel,
+    Question,
+    blank_level,
+    grade_schema_for_scale,
+    ordered_levels,
+)
 from .sandbox import get_python_sandbox_tool
 
 if TYPE_CHECKING:
@@ -87,16 +96,15 @@ This question expects figures, but none were found in the student's answer
 """
 
 
-def build_grading_section(grading_scale: dict[str, str]) -> str:
-    """Render a rubric's grading_scale as the prompt's level-id: description
-    list -- the part of the prompt that used to be a hardcoded 4-line block
-    in SYSTEM_PROMPT_TEMPLATE itself, before grading scales became
-    per-rubric (see Rubric.grading_scale's docstring)."""
-    return "\n".join(f"- {level}: {description}" for level, description in grading_scale.items())
+def build_grading_section(grading_scale: list[GradingLevel]) -> str:
+    """Render a rubric's grading_scale as the prompt's `- id: description`
+    list, worst to best. Scores are not part of the prompt: the LLM picks a
+    level by its description."""
+    return "\n".join(f"- {level.id}: {level.description}" for level in ordered_levels(grading_scale))
 
 
 def build_system_prompt(
-    question: Question, grading_scale: dict[str, str], image_count: int = 0, *, rubric_context: str | None = None
+    question: Question, grading_scale: list[GradingLevel], image_count: int = 0, *, rubric_context: str | None = None
 ) -> str:
     points = "\n".join(f"- {p}" for p in question.expected_points) or "(none specified)"
     # Rubric-wide background (Rubric.context), shared by every question --
@@ -383,7 +391,7 @@ def grade_answer(
     chat_model: BaseChatModel,
     question: Question,
     student_answer: str,
-    grading_scale: dict[str, str],
+    grading_scale: list[GradingLevel],
     *,
     provider: str | None = None,
     model: str | None = None,
@@ -392,16 +400,15 @@ def grade_answer(
     images: Sequence[ExtractedImage] = (),
     rubric_context: str | None = None,
 ) -> Grade:
-    """Grade one answer, returning just the `Grade` as before.
+    """Grade one answer, returning the `Grade`.
 
-    `provider`/`model` and `on_trace` are new, both optional and both
-    keyword-only, so every existing call site (including
-    `POST /rubrics/{id}/test-answer`, which doesn't pass either) keeps
-    working unchanged. When `on_trace` is given, it's called exactly once,
-    on both the blank-answer short-circuit and the real-LLM path, with a
+    `provider`/`model` and `on_trace` are optional and keyword-only
+    (`POST /rubrics/{id}/test-answer` passes neither). When `on_trace` is
+    given, it's called exactly once, on both the blank-answer short-circuit
+    and the real-LLM path, with a
     `GradeTrace` capturing everything about the call beyond the `Grade`
     itself -- see that class's docstring. `worker/tasks.py` is the only
-    current caller that passes it, to persist a `GradingTrace` document per
+    current caller that passes it, to persist a `GradingTrace` row per
     question graded.
 
     `images` are attached to the human message (see `build_human_message`);
@@ -458,12 +465,10 @@ def grade_answer(
 
     if not student_answer.strip() and not images:
         # Short-circuit blank answers instead of paying for an LLM call.
-        # `grading_scale`'s first entry is, by convention, the "worst/no
-        # answer" level -- see Rubric.grading_scale's docstring.
-        # TODO: revisit if we ever want LLM-phrased feedback for blanks too.
-        worst_level = next(iter(grading_scale))
+        # The scale's score-0 level is, by definition, what a blank answer
+        # gets (see `GradingScale`).
         logger.info("%s: blank answer, skipping LLM call", question.id)
-        grade = Grade(level=worst_level, feedback="No answer was provided for this question.")
+        grade = Grade(level=blank_level(grading_scale).id, feedback="No answer was provided for this question.")
         _emit(grade, blank_short_circuit=True, elapsed=0.0)
         return grade
 

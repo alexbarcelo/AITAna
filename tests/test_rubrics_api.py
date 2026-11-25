@@ -1,28 +1,38 @@
-from aitana.documents import Course, Rubric
-from aitana.grading.models import DEFAULT_GRADING_SCALE, Grade, Question, SubmissionFormat
+from aitana.db import Batch, BatchType, Course, Edition, Rubric
+from aitana.grading.models import DEFAULT_GRADING_SCALE, Grade, Question
+
+from .factories import add, make_submission
+
+DEFAULT_SCALE_JSON = [level.model_dump() for level in DEFAULT_GRADING_SCALE]
+PASS_FAIL_SCALE = [
+    {"id": "fail", "description": "Did not meet the bar.", "score": 0},
+    {"id": "pass", "description": "Met the bar.", "score": 1},
+]
 
 
-async def _make_course(client, name: str = "BDM") -> str:
-    return (await client.post("/courses", json={"name": name})).json()["_id"]
+async def _make_course(client, name: str = "BDM") -> int:
+    return (await client.post("/courses", json={"name": name})).json()["id"]
 
 
-async def _make_rubric(course_id: str) -> Rubric:
-    course = await Course.get(course_id)
-    rubric = Rubric(
-        slug="containers",
-        title="Containers lab",
-        course=course,
-        questions=[
-            Question(id="answer1", title="Q1", question="What happened?", rubric="Rubric", expected_points=["a point"])
-        ],
+async def _make_rubric(client, course_id: int, *, edition_id: int | None = None) -> Rubric:
+    db = client.db
+    return await add(
+        db,
+        Rubric(
+            slug="containers",
+            title="Containers lab",
+            course=await db.get(Course, course_id),
+            edition=await db.get(Edition, edition_id) if edition_id is not None else None,
+            questions=[
+                Question(id="answer1", title="Q1", question="What happened?", rubric="Rubric", expected_points=["a point"])
+            ],
+        ),
     )
-    await rubric.insert()
-    return rubric
 
 
 async def test_list_rubrics(client):
     course_id = await _make_course(client)
-    await _make_rubric(course_id)
+    await _make_rubric(client, course_id)
     resp = await client.get("/rubrics")
     assert resp.status_code == 200
     body = resp.json()
@@ -30,28 +40,36 @@ async def test_list_rubrics(client):
     assert body[0]["slug"] == "containers"
     assert len(body[0]["questions"]) == 1
     assert body[0]["format"] == "pdf_form"  # default, unchanged for existing PDF-based rubrics
-    assert body[0]["grading_scale"] == DEFAULT_GRADING_SCALE
+    assert body[0]["grading_scale"] == DEFAULT_SCALE_JSON
+    assert body[0]["course"]["name"] == "BDM"
+    assert body[0]["edition"] is None
 
 
-async def test_list_rubrics_filter_by_course_with_no_match(client):
+async def test_list_rubrics_filter_by_course(client):
     course_id = await _make_course(client)
-    await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     other_course_id = await _make_course(client, "ML")
 
-    # No rubric belongs to this other course -- should come back empty
-    # rather than error. A *matching* course_id/edition_id filter isn't
-    # exercised here since Beanie's `Link.id ==` query isn't matched by
-    # mongomock's pure-Python matcher (see AGENTS.md sharp edge #3);
-    # verified separately against real MongoDB.
+    resp = await client.get("/rubrics", params={"course_id": course_id})
+    assert [r["id"] for r in resp.json()] == [rubric.id]
     resp = await client.get("/rubrics", params={"course_id": other_course_id})
     assert resp.status_code == 200
     assert resp.json() == []
 
 
+async def test_list_rubrics_filter_by_edition(client):
+    course_id = await _make_course(client)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    with_edition = await _make_rubric(client, course_id, edition_id=edition_id)
+    resp = await client.get("/rubrics", params={"edition_id": edition_id, "course_id": course_id})
+    assert [r["id"] for r in resp.json()] == [with_edition.id]
+    assert resp.json()[0]["edition"]["slug"] == "2026_27"
+
+
 async def test_list_rubrics_filter_by_edition_with_no_match(client):
     course_id = await _make_course(client)
-    await _make_rubric(course_id)
-    other_edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    await _make_rubric(client, course_id)
+    other_edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
 
     resp = await client.get("/rubrics", params={"edition_id": other_edition_id})
     assert resp.status_code == 200
@@ -59,13 +77,13 @@ async def test_list_rubrics_filter_by_edition_with_no_match(client):
 
 
 async def test_get_rubric_not_found(client):
-    resp = await client.get("/rubrics/000000000000000000000000")
+    resp = await client.get("/rubrics/999999999")
     assert resp.status_code == 404
 
 
 async def test_get_rubric_by_id(client):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     resp = await client.get(f"/rubrics/{rubric.id}")
     assert resp.status_code == 200
     assert resp.json()["title"] == "Containers lab"
@@ -115,7 +133,7 @@ async def test_create_rubric_unknown_course_404(client):
         "/rubrics",
         json={
             "title": "Containers",
-            "course_id": "000000000000000000000000",
+            "course_id": "999999999",
             "questions": [_question_payload(id="a1")],
         },
     )
@@ -124,7 +142,7 @@ async def test_create_rubric_unknown_course_404(client):
 
 async def test_create_rubric_duplicate_slug_conflicts(client):
     course_id = await _make_course(client)
-    await _make_rubric(course_id)
+    await _make_rubric(client, course_id)
     resp = await client.post(
         "/rubrics",
         json={
@@ -139,7 +157,7 @@ async def test_create_rubric_duplicate_slug_conflicts(client):
 
 async def test_create_rubric_with_edition(client):
     course_id = await _make_course(client)
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
     resp = await client.post(
         "/rubrics",
         json={
@@ -160,7 +178,7 @@ async def test_create_rubric_unknown_edition_404(client):
         json={
             "title": "Final exam",
             "course_id": course_id,
-            "edition_id": "000000000000000000000000",
+            "edition_id": "999999999",
             "questions": [_question_payload(id="a1")],
         },
     )
@@ -189,12 +207,51 @@ async def test_create_rubric_with_custom_grading_scale(client):
         json={
             "title": "Pass/fail lab",
             "course_id": course_id,
-            "grading_scale": {"fail": "Did not meet the bar.", "pass": "Met the bar."},
+            "grading_scale": PASS_FAIL_SCALE,
             "questions": [_question_payload()],
         },
     )
     assert resp.status_code == 201
-    assert resp.json()["grading_scale"] == {"fail": "Did not meet the bar.", "pass": "Met the bar."}
+    assert resp.json()["grading_scale"] == PASS_FAIL_SCALE
+
+
+async def _post_scale(client, scale) -> object:
+    courses = (await client.get("/courses")).json()
+    course_id = courses[0]["id"] if courses else await _make_course(client)
+    return await client.post(
+        "/rubrics",
+        json={"title": "Scaled", "course_id": course_id, "grading_scale": scale, "questions": [_question_payload()]},
+    )
+
+
+async def test_grading_scale_needs_exactly_one_zero_level(client):
+    no_zero = [{"id": "ok", "description": "OK", "score": 1}, {"id": "great", "description": "Great", "score": 2}]
+    resp = await _post_scale(client, no_zero)
+    assert resp.status_code == 422
+    assert "exactly one level with score 0" in resp.text
+
+    two_zeros = [{"id": "blank", "description": "Blank", "score": 0}, {"id": "off", "description": "Off", "score": 0}]
+    resp = await _post_scale(client, two_zeros)
+    assert resp.status_code == 422
+    assert "exactly one level with score 0" in resp.text
+
+
+async def test_grading_scale_rejects_duplicate_ids(client):
+    dupes = [{"id": "a", "description": "A", "score": 0}, {"id": "a", "description": "A again", "score": 1}]
+    resp = await _post_scale(client, dupes)
+    assert resp.status_code == 422
+    assert "duplicate" in resp.text
+
+
+async def test_grading_scale_allows_negative_scores(client):
+    scale = [
+        {"id": "wrong", "description": "Wrong", "score": -1},
+        {"id": "blank", "description": "Blank", "score": 0},
+        {"id": "right", "description": "Right", "score": 1},
+    ]
+    resp = await _post_scale(client, scale)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["grading_scale"] == scale
 
 
 async def test_create_rubric_with_context(client):
@@ -214,7 +271,7 @@ async def test_create_rubric_with_empty_grading_scale_422(client):
         json={
             "title": "Broken",
             "course_id": course_id,
-            "grading_scale": {},
+            "grading_scale": [],
             "questions": [_question_payload()],
         },
     )
@@ -395,24 +452,28 @@ async def test_upload_rubric_yaml_defaults_to_default_grading_scale(client):
         files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC, "application/x-yaml")},
     )
     assert resp.status_code == 201
-    assert resp.json()["grading_scale"] == DEFAULT_GRADING_SCALE
+    assert resp.json()["grading_scale"] == DEFAULT_SCALE_JSON
 
 
 async def test_upload_rubric_yaml_with_grading_scale_key(client):
     course_id = await _make_course(client)
-    yaml_with_scale = YAML_RUBRIC + b"grading_scale:\n  fail: Did not meet the bar.\n  pass: Met the bar.\n"
+    yaml_with_scale = YAML_RUBRIC + (
+        b"grading_scale:\n"
+        b"  - {id: fail, description: Did not meet the bar., score: 0}\n"
+        b"  - {id: pass, description: Met the bar., score: 1}\n"
+    )
     resp = await client.post(
         "/rubrics/upload",
         data={"course_id": course_id},
         files={"yaml_file": ("containers_questions.yaml", yaml_with_scale, "application/x-yaml")},
     )
-    assert resp.status_code == 201
-    assert resp.json()["grading_scale"] == {"fail": "Did not meet the bar.", "pass": "Met the bar."}
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["grading_scale"] == PASS_FAIL_SCALE
 
 
 async def test_upload_rubric_yaml_empty_grading_scale_key_422(client):
     course_id = await _make_course(client)
-    yaml_with_empty_scale = YAML_RUBRIC + b"grading_scale: {}\n"
+    yaml_with_empty_scale = YAML_RUBRIC + b"grading_scale: []\n"
     resp = await client.post(
         "/rubrics/upload",
         data={"course_id": course_id},
@@ -484,7 +545,7 @@ def _patch_chat_model(monkeypatch, grade: Grade) -> None:
 
 async def test_test_rubric_answer_returns_grade(client, monkeypatch):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     _patch_chat_model(monkeypatch, Grade(level="solid", feedback="Great, covers everything."))
 
     resp = await client.post(
@@ -499,7 +560,7 @@ async def test_test_rubric_answer_returns_grade(client, monkeypatch):
 
 async def test_test_rubric_answer_blank_answer_short_circuits_without_llm_call(client, monkeypatch):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     # If grade_answer actually called the LLM for a blank answer, this
     # fake would return "solid" -- asserting "not_attempted" proves the
     # short-circuit ran instead.
@@ -516,7 +577,7 @@ async def test_test_rubric_answer_blank_answer_short_circuits_without_llm_call(c
 async def test_test_rubric_answer_rubric_not_found(client, monkeypatch):
     _patch_chat_model(monkeypatch, Grade(level="solid", feedback="x"))
     resp = await client.post(
-        "/rubrics/000000000000000000000000/test-answer",
+        "/rubrics/999999999/test-answer",
         json={"question_id": "answer1", "answer": "x"},
     )
     assert resp.status_code == 404
@@ -524,7 +585,7 @@ async def test_test_rubric_answer_rubric_not_found(client, monkeypatch):
 
 async def test_test_rubric_answer_unknown_question_id(client, monkeypatch):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     _patch_chat_model(monkeypatch, Grade(level="solid", feedback="x"))
 
     resp = await client.post(
@@ -560,7 +621,7 @@ async def test_upload_rubric_yaml_non_string_context_422(client):
 
 async def test_update_rubric_sets_and_clears_context(client):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     body = {"title": "Lab", "slug": rubric.slug, "course_id": course_id, "questions": [_question_payload()]}
 
     resp = await client.put(f"/rubrics/{rubric.id}", json={**body, "context": "Shared setup."})
@@ -574,7 +635,7 @@ async def test_update_rubric_sets_and_clears_context(client):
 
 async def test_update_rubric_manual_edit(client):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
 
     resp = await client.put(
         f"/rubrics/{rubric.id}",
@@ -596,7 +657,7 @@ async def test_update_rubric_manual_edit(client):
 async def test_update_rubric_not_found(client):
     course_id = await _make_course(client)
     resp = await client.put(
-        "/rubrics/000000000000000000000000",
+        "/rubrics/999999999",
         json={"title": "X", "course_id": course_id, "questions": [_question_payload()]},
     )
     assert resp.status_code == 404
@@ -604,10 +665,10 @@ async def test_update_rubric_not_found(client):
 
 async def test_update_rubric_unknown_course_404(client):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     resp = await client.put(
         f"/rubrics/{rubric.id}",
-        json={"title": "X", "course_id": "000000000000000000000000", "questions": [_question_payload()]},
+        json={"title": "X", "course_id": "999999999", "questions": [_question_payload()]},
     )
     assert resp.status_code == 404
 
@@ -617,7 +678,7 @@ async def test_update_rubric_unchanged_slug_is_not_a_conflict(client):
     itself -- only creation, and edits that collide with a *different*
     rubric's slug, are conflicts."""
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     resp = await client.put(
         f"/rubrics/{rubric.id}",
         json={"title": "Containers lab renamed", "slug": "containers", "course_id": course_id, "questions": [_question_payload()]},
@@ -628,7 +689,7 @@ async def test_update_rubric_unchanged_slug_is_not_a_conflict(client):
 
 async def test_update_rubric_slug_conflicts_with_different_rubric(client):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     await client.post(
         "/rubrics",
         json={"title": "Spark", "slug": "spark-lab", "course_id": course_id, "questions": [_question_payload(id="a1")]},
@@ -642,33 +703,42 @@ async def test_update_rubric_slug_conflicts_with_different_rubric(client):
 
 async def test_update_rubric_with_empty_grading_scale_422(client):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     resp = await client.put(
         f"/rubrics/{rubric.id}",
         json={
             "title": "Containers",
             "course_id": course_id,
-            "grading_scale": {},
+            "grading_scale": [],
             "questions": [_question_payload()],
         },
     )
     assert resp.status_code == 422
 
 
-# No positive-match test for "format change is blocked once a submission
-# exists": that requires `Submission.find(Submission.rubric.id == ...)` (the
-# same query shape used by `_guard_format_change`) to actually match an
-# existing row, which AGENTS.md's sharp edge #3 documents as untested (and,
-# per manual verification while building this, actually returns zero rows)
-# under mongomock -- a mongomock limitation in matching a DBRef subfield,
-# not a Beanie or app bug. `_guard_format_change` itself is the same
-# `Link.id ==` pattern already relied on (and only positive-verified against
-# real MongoDB) by `list_submissions`.
+async def test_update_rubric_format_change_blocked_with_submissions(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(client, course_id)
+    await make_submission(client.db, rubric=rubric)
+    resp = await client.put(
+        f"/rubrics/{rubric.id}",
+        json={"title": "Containers", "course_id": course_id, "format": "notebook", "questions": [_question_payload()]},
+    )
+    assert resp.status_code == 409
+    assert "submissions already exist" in resp.json()["detail"]
+
+    # Same format: editing everything else is still fine.
+    resp = await client.put(
+        f"/rubrics/{rubric.id}",
+        json={"title": "Renamed", "course_id": course_id, "questions": [_question_payload()]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "Renamed"
 
 
 async def test_update_rubric_format_change_allowed_without_submissions(client):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     resp = await client.put(
         f"/rubrics/{rubric.id}",
         json={
@@ -687,7 +757,7 @@ async def test_update_rubric_format_change_allowed_without_submissions(client):
 
 async def test_update_rubric_yaml_replaces_content(client):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
 
     updated_yaml = b"""\
 title: Containers lab (updated)
@@ -713,7 +783,7 @@ questions:
 async def test_update_rubric_yaml_not_found(client):
     course_id = await _make_course(client)
     resp = await client.put(
-        "/rubrics/000000000000000000000000/upload",
+        "/rubrics/999999999/upload",
         data={"course_id": course_id},
         files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC, "application/x-yaml")},
     )
@@ -722,7 +792,7 @@ async def test_update_rubric_yaml_not_found(client):
 
 async def test_update_rubric_yaml_with_slug_override(client):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     resp = await client.put(
         f"/rubrics/{rubric.id}/upload",
         data={"slug": "containers-v2", "course_id": course_id},
@@ -734,7 +804,7 @@ async def test_update_rubric_yaml_with_slug_override(client):
 
 async def test_update_rubric_yaml_slug_conflicts_with_different_rubric(client):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     await client.post(
         "/rubrics",
         json={"title": "Spark", "slug": "spark-lab", "course_id": course_id, "questions": [_question_payload(id="a1")]},
@@ -755,7 +825,7 @@ async def test_update_rubric_yaml_ignores_course_slug_key(client):
     pins to the rubric's current course) can set it."""
     course_id = await _make_course(client, "BDM")
     other_course_id = await _make_course(client, "Other course")
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     yaml_with_other_course = YAML_RUBRIC + b"course_slug: other_course\n"
 
     resp = await client.put(
@@ -774,7 +844,7 @@ async def test_update_rubric_yaml_ignores_edition_slug_key(client):
     to a rubric that doesn't have one."""
     course_id = await _make_course(client)
     await client.post("/editions", json={"name": "2026/27"})  # slug: 2026_27
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     assert rubric.edition is None
     yaml_with_edition = YAML_RUBRIC + b'edition_slug: "2026_27"\n'
 
@@ -787,17 +857,20 @@ async def test_update_rubric_yaml_ignores_edition_slug_key(client):
     assert resp.json()["edition"] is None
 
 
-async def test_update_rubric_yaml_without_course_id_422(client):
-    """Since a `course_slug:` key can't set the course during an edit (see
-    above), omitting `course_id` entirely on this endpoint must 422 -- not
-    fall back to the YAML the way creation does."""
+async def test_update_rubric_yaml_keeps_course_and_edition_by_default(client):
+    """Without `course_id`/`edition_id` form fields, an edit keeps the
+    rubric's current course and edition (a `course_slug:` key can't move it,
+    see above)."""
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
+    rubric = await _make_rubric(client, course_id, edition_id=edition_id)
     resp = await client.put(
         f"/rubrics/{rubric.id}/upload",
         files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC, "application/x-yaml")},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["course"]["id"] == course_id
+    assert resp.json()["edition"]["id"] == edition_id
 
 
 # ---- DELETE /rubrics/{id} ----
@@ -805,7 +878,7 @@ async def test_update_rubric_yaml_without_course_id_422(client):
 
 async def test_delete_rubric(client):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
     resp = await client.delete(f"/rubrics/{rubric.id}")
     assert resp.status_code == 204
 
@@ -814,20 +887,32 @@ async def test_delete_rubric(client):
 
 
 async def test_delete_rubric_not_found(client):
-    resp = await client.delete("/rubrics/000000000000000000000000")
+    resp = await client.delete("/rubrics/999999999")
     assert resp.status_code == 404
 
 
-# No positive-match test for "delete is blocked once a submission/batch
-# exists" -- same mongomock `Link.id ==` limitation as
-# _guard_format_change's tests above (see that comment / AGENTS.md sharp
-# edge #3). test_delete_rubric above already covers the "no
-# submissions/batches -> deletes fine" path.
+async def test_delete_rubric_blocked_by_submissions(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(client, course_id)
+    await make_submission(client.db, rubric=rubric)
+    resp = await client.delete(f"/rubrics/{rubric.id}")
+    assert resp.status_code == 409
+    assert "submissions" in resp.json()["detail"]
+
+
+async def test_delete_rubric_blocked_by_batches(client):
+    course_id = await _make_course(client)
+    rubric = await _make_rubric(client, course_id)
+    edition = await add(client.db, Edition(name="2026/27", slug="2026_27"))
+    await add(client.db, Batch(rubric=rubric, edition=edition, type=BatchType.ATENEA))
+    resp = await client.delete(f"/rubrics/{rubric.id}")
+    assert resp.status_code == 409
+    assert "batches" in resp.json()["detail"]
 
 
 async def test_test_rubric_answer_llm_failure_returns_502(client, monkeypatch):
     course_id = await _make_course(client)
-    rubric = await _make_rubric(course_id)
+    rubric = await _make_rubric(client, course_id)
 
     def _broken_get_chat_model(provider, model, **kwargs):
         raise RuntimeError("OPENROUTER_API_KEY is not set")
@@ -842,18 +927,13 @@ async def test_test_rubric_answer_llm_failure_returns_502(client, monkeypatch):
 
 
 async def test_rubric_submission_counts(client):
-    from aitana.documents import Course, Edition, Rubric, Submission
-
-    course = Course(name="BDM", slug="bdm")
-    await course.insert()
-    edition = Edition(name="2026/27", slug="2026_27")
-    await edition.insert()
-    used = Rubric(slug="used", title="Used", course=course, questions=[])
-    unused = Rubric(slug="unused", title="Unused", course=course, questions=[])
-    await used.insert()
-    await unused.insert()
+    db = client.db
+    course = await add(db, Course(name="BDM", slug="bdm"))
+    edition = await add(db, Edition(name="2026/27", slug="2026_27"))
+    used = await add(db, Rubric(slug="used", title="Used", course=course, questions=[]))
+    await add(db, Rubric(slug="unused", title="Unused", course=course, questions=[]))
     for _ in range(2):
-        await Submission(rubric=used, edition=edition, file_object_key="k").insert()
+        await make_submission(db, rubric=used, edition=edition)
 
     resp = await client.get("/rubrics/submission-counts")
     assert resp.status_code == 200
@@ -866,7 +946,7 @@ async def test_create_rubric_rejects_output_and_image_toggles_for_pdf(client):
 
     resp = await client.post("/rubrics", json={"title": "Plots", "course_id": course_id, "questions": [question]})
     assert resp.status_code == 422
-    assert "include_images" in resp.json()["detail"]
+    assert "include_images" in resp.text
 
     resp = await client.post(
         "/rubrics",
@@ -875,36 +955,3 @@ async def test_create_rubric_rejects_output_and_image_toggles_for_pdf(client):
     )
     assert resp.status_code == 201, resp.text
     assert resp.json()["questions"][0]["include_outputs"] is True
-
-
-async def test_legacy_format_values_still_accepted(client):
-    """Pre-rename values (`pdf`, `pdf_generic`) are read as their current
-    names wherever a format is parsed -- old YAML files, API callers."""
-    assert SubmissionFormat("pdf") is SubmissionFormat.PDF_FORM
-    assert SubmissionFormat("pdf_generic") is SubmissionFormat.GENERIC_DOCUMENT
-    course_id = await _make_course(client)
-    resp = await client.post(
-        "/rubrics/upload",
-        data={"course_id": course_id},
-        files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC + b"format: pdf_generic\n", "application/x-yaml")},
-    )
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["format"] == "generic_document"
-
-
-async def test_migrate_legacy_formats_rewrites_stored_rubrics(client):
-    from aitana.documents.rubric import migrate_legacy_formats
-
-    course_id = await _make_course(client)
-    course = await Course.get(course_id)
-    for slug, fmt in [("a", SubmissionFormat.PDF_FORM), ("b", SubmissionFormat.GENERIC_DOCUMENT)]:
-        await Rubric(slug=slug, title=slug, course=course, format=fmt, questions=[]).insert()
-    collection = Rubric.get_pymongo_collection()
-    # Simulate rubrics stored before the rename.
-    await collection.update_one({"slug": "a"}, {"$set": {"format": "pdf"}})
-    await collection.update_one({"slug": "b"}, {"$set": {"format": "pdf_generic"}})
-
-    await migrate_legacy_formats()
-
-    stored = {doc["slug"]: doc["format"] async for doc in collection.find({})}
-    assert stored == {"a": "pdf_form", "b": "generic_document"}

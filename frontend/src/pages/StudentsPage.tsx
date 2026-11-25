@@ -11,10 +11,9 @@ export default function StudentsPage() {
   const createStudent = useCreateStudent()
   const deleteStudent = useDeleteStudent()
 
-  function handleDelete(student: { _id?: string | null; name: string; student_id: string }) {
-    if (!student._id) return
+  function handleDelete(student: { id: number; name: string; student_id: string }) {
     if (!window.confirm(`Delete student "${student.name}" (${student.student_id})? This can't be undone.`)) return
-    deleteStudent.mutate(student._id)
+    deleteStudent.mutate(student.id)
   }
 
   const [studentId, setStudentId] = useState('')
@@ -103,7 +102,7 @@ export default function StudentsPage() {
           </thead>
           <tbody>
             {students.map((s) => (
-              <tr key={s._id} className="border-t border-slate-100">
+              <tr key={s.id} className="border-t border-slate-100">
                 <td className="px-4 py-2 font-mono">{s.student_id}</td>
                 <td className="px-4 py-2">{s.name}</td>
                 <td className="px-4 py-2 text-slate-500">{s.username ?? '—'}</td>

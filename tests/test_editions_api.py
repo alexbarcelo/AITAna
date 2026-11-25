@@ -1,5 +1,5 @@
 async def _make_course(client, name: str = "BDM") -> str:
-    return (await client.post("/courses", json={"name": name})).json()["_id"]
+    return (await client.post("/courses", json={"name": name})).json()["id"]
 
 
 async def test_create_and_list_editions(client):
@@ -27,13 +27,13 @@ async def test_create_edition_duplicate_slug_conflicts(client):
 
 
 async def test_get_edition_not_found(client):
-    resp = await client.get("/editions/000000000000000000000000")
+    resp = await client.get("/editions/999999999")
     assert resp.status_code == 404
 
 
 async def test_get_edition_by_id(client):
     created = (await client.post("/editions", json={"name": "2026/27"})).json()
-    resp = await client.get(f"/editions/{created['_id']}")
+    resp = await client.get(f"/editions/{created['id']}")
     assert resp.status_code == 200
     assert resp.json()["name"] == "2026/27"
 
@@ -45,7 +45,7 @@ async def test_edition_is_reusable_across_different_courses(client):
     identically-named one."""
     bdm_id = await _make_course(client, "BDM")
     ml_id = await _make_course(client, "ML")
-    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["_id"]
+    edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
 
     bdm_exam = await client.post(
         "/rubrics",
@@ -72,4 +72,4 @@ async def test_edition_is_reusable_across_different_courses(client):
 
     # Still exactly one edition -- not two "2026/27"s.
     resp = await client.get("/editions")
-    assert [e["_id"] for e in resp.json()] == [edition_id]
+    assert [e["id"] for e in resp.json()] == [edition_id]

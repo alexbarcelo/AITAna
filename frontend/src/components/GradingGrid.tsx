@@ -7,6 +7,7 @@ import { GradeDistributionBar, GradingStatsSummary } from './GradeStats'
 import { UntaggedCellsBadge } from './UntaggedCells'
 import { gradeColor, prettifyLevel } from '../lib/gradeColor'
 import { formatScore, gradeStats, type GradeStats } from '../lib/gradeStats'
+import { orderedLevels } from '../lib/gradingScale'
 import { effectiveGrade, IN_PROGRESS_STATUSES, submissionName, type AnsweredQuestion, type Question, type Submission, type SubmissionRubric } from '../api/types'
 
 /**
@@ -24,7 +25,7 @@ import { effectiveGrade, IN_PROGRESS_STATUSES, submissionName, type AnsweredQues
  * listed submissions (no stats endpoint): a summary panel above the grid
  * (`GradingStatsSummary`), a per-student "Score" column (sortable), and a
  * per-question footer row -- each with a grade-distribution bar and the
- * mean position in the grading scale (`levelScore`, `lib/gradeStats.ts`).
+ * score: total over the best possible total (`gradeStats`, `lib/gradeStats.ts`).
  */
 export default function GradingGrid({
   submissions,
@@ -37,20 +38,20 @@ export default function GradingGrid({
   // the live `submissions` prop on every render, so a manual-grade save
   // (which refetches the submissions query) shows up in the open modal
   // instead of it displaying a stale snapshot.
-  const [selected, setSelected] = useState<{ submissionId: string; questionId: string } | null>(null)
+  const [selected, setSelected] = useState<{ submissionId: number; questionId: string } | null>(null)
   const [sortBy, setSortBy] = useState<'name' | 'score-desc' | 'score-asc'>('name')
-  const selectedSubmission = selected && submissions.find((s) => s._id === selected.submissionId)
+  const selectedSubmission = selected && submissions.find((s) => s.id === selected.submissionId)
   const selectedQuestion = selected && rubric.questions.find((q) => q.id === selected.questionId)
   const selectedAnswer = selected && selectedSubmission?.answers.find((a) => a.question_id === selected.questionId)
 
   const scale = rubric.grading_scale
-  const studentStats = new Map(submissions.map((s) => [s._id, gradeStats(s.answers, scale)]))
+  const studentStats = new Map(submissions.map((s) => [s.id, gradeStats(s.answers, scale)]))
   const rowName = (s: Submission) => submissionName(s) ?? ''
   const rows = [...submissions].sort((a, b) => {
     if (sortBy !== 'name') {
       // Unscored rows always sink to the bottom, whichever direction.
-      const sa = studentStats.get(a._id)?.meanScore ?? null
-      const sb = studentStats.get(b._id)?.meanScore ?? null
+      const sa = studentStats.get(a.id)?.meanScore ?? null
+      const sb = studentStats.get(b.id)?.meanScore ?? null
       if (sa !== sb) {
         if (sa === null) return 1
         if (sb === null) return -1
@@ -88,7 +89,7 @@ export default function GradingGrid({
                   type="button"
                   onClick={() => setSortBy(nextSort[sortBy])}
                   className="uppercase hover:text-slate-900"
-                  title="Mean position of this student's graded answers in the grading scale (0% = all lowest level, 100% = all highest). Click to sort."
+                  title="This student's total score over the best possible total for their graded answers. Click to sort."
                 >
                   Score {sortBy === 'score-desc' ? '↓' : sortBy === 'score-asc' ? '↑' : ''}
                 </button>
@@ -105,12 +106,12 @@ export default function GradingGrid({
           </thead>
           <tbody>
             {rows.map((s) => (
-              <tr key={s._id} className="border-b border-slate-100 last:border-0">
+              <tr key={s.id} className="border-b border-slate-100 last:border-0">
                 <td className="sticky left-0 z-10 whitespace-nowrap border-r border-slate-200 bg-white px-3 py-2 font-medium text-slate-900">
                   {s.student || s.label ? submissionName(s) : <span className="text-slate-400">{s.batch_internal_id ?? 'Unmatched'}</span>}
                 </td>
                 <td className="border-r border-slate-200 px-3 py-2">
-                  <ScoreCell stats={studentStats.get(s._id)!} scale={scale} />
+                  <ScoreCell stats={studentStats.get(s.id)!} scale={scale} />
                 </td>
                 {rubric.questions.map((q) => {
                   const answer = s.answers.find((a) => a.question_id === q.id)
@@ -124,7 +125,7 @@ export default function GradingGrid({
                       <button
                         type="button"
                         disabled={!clickable}
-                        onClick={() => clickable && setSelected({ submissionId: s._id, questionId: q.id })}
+                        onClick={() => clickable && setSelected({ submissionId: s.id, questionId: q.id })}
                         title={
                           (grade
                             ? `${prettifyLevel(grade.level)}${answer?.manual_grade ? ' (edited by a TA)' : ''}`
@@ -184,7 +185,7 @@ export default function GradingGrid({
   )
 }
 
-/** Mean scale position + distribution bar -- one student's row, or one question's column. */
+/** Score + distribution bar -- one student's row, or one question's column. */
 function ScoreCell({ stats, scale }: { stats: GradeStats; scale: SubmissionRubric['grading_scale'] }) {
   return (
     <div className="flex min-w-24 items-center gap-2">
@@ -200,9 +201,9 @@ function GradeLegend({ scale }: { scale: SubmissionRubric['grading_scale'] }) {
   return (
     <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
       <span className="font-medium text-slate-600">Legend:</span>
-      {Object.keys(scale).map((level) => (
-        <span key={level} className="inline-flex items-center gap-1">
-          <GradeBadge level={level} scale={scale} />
+      {orderedLevels(scale).map((level) => (
+        <span key={level.id} className="inline-flex items-center gap-1">
+          <GradeBadge level={level.id} scale={scale} />
         </span>
       ))}
       <span className="inline-flex items-center gap-1">
@@ -258,9 +259,9 @@ function AnswerQuickView({
         <p className="mb-3 whitespace-pre-wrap rounded bg-slate-50 p-3 text-sm text-slate-700">
           {answer.student_answer || <span className="text-slate-400">No answer provided.</span>}
         </p>
-        <AnswerImages submissionId={submission._id} answer={answer} />
+        <AnswerImages submissionId={submission.id} answer={answer} />
         <AnswerGradeEditor
-          submissionId={submission._id}
+          submissionId={submission.id}
           answer={answer}
           scale={scale}
           disabled={IN_PROGRESS_STATUSES.includes(submission.status)}

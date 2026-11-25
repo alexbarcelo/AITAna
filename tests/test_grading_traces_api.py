@@ -1,26 +1,16 @@
 from datetime import UTC, datetime, timedelta
 
-from aitana.documents import Course, Edition, GradingTrace, Rubric, Student, Submission
-from aitana.grading.models import Grade, GradeTrace, Question
+from sqlalchemy import select
+
+from aitana.db import GradingTrace, Student
+from aitana.grading.models import Grade, GradeTrace
+
+from .factories import add, make_submission
 
 
-async def _make_submission(client) -> Submission:
-    course = Course(name="BDM", slug="bdm")
-    await course.insert()
-    edition = Edition(name="2026/27", slug="2026_27")
-    await edition.insert()
-    student = Student(student_id="s1", name="Ada")
-    await student.insert()
-    rubric = Rubric(
-        slug="containers",
-        title="Containers",
-        course=course,
-        questions=[Question(id="answer1", title="Q1", question="Q1?", rubric="R1")],
-    )
-    await rubric.insert()
-    submission = Submission(student=student, rubric=rubric, edition=edition, file_object_key="k")
-    await submission.insert()
-    return submission
+async def _make_submission(db):
+    student = await add(db, Student(student_id="s1", name="Ada"))
+    return await make_submission(db, student=student)
 
 
 def _trace(**overrides) -> GradeTrace:
@@ -36,43 +26,54 @@ def _trace(**overrides) -> GradeTrace:
     return GradeTrace(**defaults)
 
 
+async def _add_trace(db, submission, question_id: str, **fields) -> GradingTrace:
+    return await add(db, GradingTrace(submission_id=submission.id, question_id=question_id, trace=_trace(), **fields))
+
+
 async def test_list_grading_traces_empty(client):
     resp = await client.get("/grading-traces")
     assert resp.status_code == 200
     assert resp.json() == []
 
 
-async def test_list_grading_traces_filters_by_question_id(client):
-    submission = await _make_submission(client)
-    await GradingTrace(submission=submission, question_id="answer1", trace=_trace()).insert()
-    await GradingTrace(submission=submission, question_id="answer2", trace=_trace()).insert()
+async def test_list_grading_traces_filters_by_question_id(client, db):
+    submission = await _make_submission(db)
+    await _add_trace(db, submission, "answer1")
+    await _add_trace(db, submission, "answer2")
 
     resp = await client.get("/grading-traces", params={"question_id": "answer1"})
     assert resp.status_code == 200
     body = resp.json()
     assert len(body) == 1
     assert body[0]["question_id"] == "answer1"
+    assert body[0]["submission_id"] == submission.id
     assert body[0]["trace"]["provider"] == "openai"
     assert body[0]["trace"]["grade"]["level"] == "solid"
 
 
-async def test_list_grading_traces_by_submission_id_is_empty_under_mongomock(client):
-    # Same Beanie Link-query gap as everywhere else in this app (AGENTS.md
-    # sharp edge #3): `GradingTrace.submission.id == ...` doesn't match under
-    # mongomock even against a genuinely matching document. Verified against
-    # real MongoDB manually; only the shape (200, well-formed response) is
-    # asserted here.
-    submission = await _make_submission(client)
-    await GradingTrace(submission=submission, question_id="answer1", trace=_trace()).insert()
+async def test_list_grading_traces_filters_by_submission_id(client, db):
+    submission = await _make_submission(db)
+    other = await make_submission(db, rubric=submission.rubric, edition=submission.edition)
+    mine = await _add_trace(db, submission, "answer1")
+    await _add_trace(db, other, "answer1")
 
-    resp = await client.get("/grading-traces", params={"submission_id": str(submission.id)})
+    resp = await client.get("/grading-traces", params={"submission_id": submission.id})
     assert resp.status_code == 200
-    assert resp.json() == []
+    assert [t["id"] for t in resp.json()] == [mine.id]
 
 
-async def test_get_grading_trace_by_id(client):
-    submission = await _make_submission(client)
-    trace = await GradingTrace(submission=submission, question_id="answer1", trace=_trace()).insert()
+async def test_list_grading_traces_most_recent_first(client, db):
+    submission = await _make_submission(db)
+    old = await _add_trace(db, submission, "answer1", created_at=datetime.now(UTC) - timedelta(hours=1))
+    new = await _add_trace(db, submission, "answer1")
+
+    resp = await client.get("/grading-traces")
+    assert [t["id"] for t in resp.json()] == [new.id, old.id]
+
+
+async def test_get_grading_trace_by_id(client, db):
+    submission = await _make_submission(db)
+    trace = await _add_trace(db, submission, "answer1")
 
     resp = await client.get(f"/grading-traces/{trace.id}")
     assert resp.status_code == 200
@@ -80,7 +81,7 @@ async def test_get_grading_trace_by_id(client):
 
 
 async def test_get_grading_trace_not_found(client):
-    resp = await client.get("/grading-traces/000000000000000000000000")
+    resp = await client.get("/grading-traces/999999999")
     assert resp.status_code == 404
 
 
@@ -89,28 +90,49 @@ async def test_delete_grading_traces_requires_a_filter_or_confirmation(client):
     assert resp.status_code == 422
 
 
-async def test_delete_grading_traces_with_all_wipes_the_collection(client):
-    submission = await _make_submission(client)
-    await GradingTrace(submission=submission, question_id="answer1", trace=_trace()).insert()
-    await GradingTrace(submission=submission, question_id="answer2", trace=_trace()).insert()
+async def test_delete_grading_traces_with_all_wipes_the_table(client, db):
+    submission = await _make_submission(db)
+    await _add_trace(db, submission, "answer1")
+    await _add_trace(db, submission, "answer2")
 
     resp = await client.delete("/grading-traces", params={"all": "true"})
     assert resp.status_code == 200
     assert resp.json() == {"deleted": 2}
-    assert await GradingTrace.find_all().to_list() == []
+    assert list(await db.scalars(select(GradingTrace))) == []
 
 
-async def test_delete_grading_traces_before_a_cutoff(client):
-    submission = await _make_submission(client)
-    old = GradingTrace(submission=submission, question_id="old", trace=_trace())
-    old.created_at = datetime.now(UTC) - timedelta(days=30)
-    await old.insert()
-    recent = await GradingTrace(submission=submission, question_id="recent", trace=_trace()).insert()
+async def test_delete_grading_traces_by_submission(client, db):
+    submission = await _make_submission(db)
+    other = await make_submission(db, rubric=submission.rubric, edition=submission.edition)
+    await _add_trace(db, submission, "answer1")
+    kept = await _add_trace(db, other, "answer1")
+
+    resp = await client.delete("/grading-traces", params={"submission_id": submission.id})
+    assert resp.json() == {"deleted": 1}
+    assert [t.id for t in await db.scalars(select(GradingTrace))] == [kept.id]
+
+
+async def test_delete_grading_traces_before_a_cutoff(client, db):
+    submission = await _make_submission(db)
+    await _add_trace(db, submission, "old", created_at=datetime.now(UTC) - timedelta(days=30))
+    recent = await _add_trace(db, submission, "recent")
 
     cutoff = datetime.now(UTC) - timedelta(days=1)
     resp = await client.delete("/grading-traces", params={"before": cutoff.isoformat()})
     assert resp.status_code == 200
     assert resp.json() == {"deleted": 1}
 
-    remaining = await GradingTrace.find_all().to_list()
+    remaining = list(await db.scalars(select(GradingTrace)))
     assert [t.id for t in remaining] == [recent.id]
+
+
+async def test_deleting_a_submission_deletes_its_traces(client, db):
+    submission = await _make_submission(db)
+    submission_id = submission.id
+    await _add_trace(db, submission, "answer1")
+    submission.status = "graded"
+    await db.commit()
+
+    resp = await client.delete(f"/submissions/{submission_id}")
+    assert resp.status_code == 204
+    assert list(await db.scalars(select(GradingTrace))) == []

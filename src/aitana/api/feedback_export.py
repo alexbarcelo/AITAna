@@ -4,7 +4,7 @@ Produces one self-contained `.html` file per submission -- everything (CSS,
 markup) inlined into the single file, no external stylesheet/font/CDN
 reference, so it still renders correctly with no internet connection once
 downloaded (e.g. handed back to a student, or re-uploaded into an LMS as
-per-submission feedback -- see `batch_zip_entries` below for the batch
+per-submission feedback -- see `GET /batches/{id}/feedback.zip` for the batch
 case). Mirrors the ordinal grade-color ramp `GradeBadge`/`GradingGrid` use
 in the web UI (`frontend/src/lib/gradeColor.ts`) so the export reads
 consistently with what grading this submission in the app looks like.
@@ -22,11 +22,11 @@ import html
 import logging
 import re
 
-from beanie import Link
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..documents.rubric import Rubric
-from ..documents.submission import Submission
-from ..grading.models import ExtractedImage
+from ..db import Course, Rubric, Submission
+from ..grading.models import ExtractedImage, GradingLevel, ordered_levels
 from ..worker.tasks import extract_submission_file
 
 logger = logging.getLogger(__name__)
@@ -46,8 +46,10 @@ _ORDINAL_STEPS: list[tuple[str, str]] = [
 ]
 
 
-def _grade_color(level: str, scale: dict[str, str]) -> tuple[str, str] | None:
-    levels = list(scale.keys())
+def _grade_color(level: str, scale: list[GradingLevel]) -> tuple[str, str] | None:
+    """Ordinal color by the level's rank in the scale (lowest score =
+    lightest), same rule as the web UI."""
+    levels = [lvl.id for lvl in ordered_levels(scale)]
     if level not in levels:
         return None
     count = len(levels)
@@ -121,14 +123,9 @@ def _figures_html(images: list[ExtractedImage]) -> str:
     return f'<div class="figures">{tags}</div>'
 
 
-async def course_name(rubric: Rubric) -> str:
-    """`rubric.course`'s name for the export header. Submissions are fetched
-    with `rubric` capped at depth 1 (AGENTS.md sharp edge #6), so `course`
-    is usually still an unresolved `Link` -- `.fetch()` is a plain get by id."""
-    course = rubric.course
-    if isinstance(course, Link):
-        course = await course.fetch()
-    return course.name
+async def course_name(session: AsyncSession, rubric: Rubric) -> str:
+    """`rubric`'s course name, for the export header."""
+    return await session.scalar(select(Course.name).where(Course.id == rubric.course_id))
 
 
 def render_feedback_html(
@@ -143,9 +140,9 @@ def render_feedback_html(
     under their answer; omit it for a text-only export. `course` (see
     `course_name`) is shown next to the edition in the header when given.
 
-    `submission.rubric`/`.student`/`.edition` must already be resolved (i.e.
-    fetched with `fetch_links=True`, as every submissions/batches endpoint
-    does) -- this never re-fetches anything itself.
+    `submission.rubric`/`.student`/`.edition` must already be loaded
+    (`SUBMISSION_LOADS`, as every submissions/batches endpoint does) -- this
+    never queries anything itself.
     """
     rubric = submission.rubric
     identifier = submission.display_name

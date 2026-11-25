@@ -6,7 +6,7 @@ import type { AnsweredQuestion } from '../api/types'
  * (`include_images` questions only -- `image_count` is 0 otherwise). Images
  * are never persisted: the endpoint re-extracts them from the stored file.
  */
-export default function AnswerImages({ submissionId, answer }: { submissionId: string; answer: AnsweredQuestion }) {
+export default function AnswerImages({ submissionId, answer }: { submissionId: number; answer: AnsweredQuestion }) {
   if (answer.image_count <= 0) return null
   return (
     <div className="mb-3 flex flex-wrap gap-2">

@@ -2,15 +2,17 @@
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # MongoDB
-    mongo_uri: str = "mongodb://localhost:27017"
-    mongo_db: str = "aitana"
+    # PostgreSQL. Any `postgres://`/`postgresql://` URI works (e.g. the
+    # `uri` key of a CloudNativePG app secret, used verbatim): it's rewritten
+    # to the asyncpg driver.
+    database_url: str = "postgresql+asyncpg://aitana:aitana@localhost:5432/aitana"
 
     # MinIO / S3-compatible object storage
     minio_endpoint: str = "localhost:9000"
@@ -30,19 +32,26 @@ class Settings(BaseSettings):
 
     # LLM provider credentials (OPENAI_API_KEY, ANTHROPIC_API_KEY,
     # OPENROUTER_API_KEY, OLLAMA_BASE_URL) are read directly from the
-    # environment by grading/llm.py, same as before -- see .env.example.
+    # environment by grading/llm.py -- see .env.example.
 
-    # Which models grade is stored in the database (documents/llm_model.py,
-    # managed from the UI). These two only *seed* the first default model on
-    # API startup when no model exists yet (`seed_llm_models_from_env`), so
-    # an existing .env keeps working after the upgrade -- once the
-    # collection has any model, they're ignored.
+    # Which models grade is stored in the database (`LlmModel`, managed from
+    # the UI). These two only *seed* the first default model on API startup
+    # when no model exists yet (`seed_llm_models_from_env`) -- once any model
+    # exists, they're ignored.
     llm_provider: str | None = None
     llm_model: str | None = None
     # Seeds the seeded model's reasoning effort ("low"/"medium"/"high"),
     # same seed-only role as the two above -- reasoning effort is otherwise a
     # per-model setting (LlmModel.reasoning_effort).
     llm_reasoning_effort: str | None = None
+
+    @field_validator("database_url")
+    @classmethod
+    def _asyncpg_driver(cls, value: str) -> str:
+        for prefix in ("postgresql+asyncpg://", "postgresql://", "postgres://"):
+            if value.startswith(prefix):
+                return "postgresql+asyncpg://" + value[len(prefix) :]
+        return value
 
 
 @lru_cache

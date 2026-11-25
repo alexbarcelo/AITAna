@@ -148,6 +148,11 @@ jobs:
             | tar -xz -C "$RUNNER_TEMP" kubeconform
           for overlay in deploy/overlays/*/; do
             echo "::group::$overlay"
-            kubectl kustomize "$overlay" | "$RUNNER_TEMP/kubeconform" -strict -summary -
+            # Custom resources (e.g. the example's CloudNativePG Cluster)
+            # validate against the community CRDs catalog.
+            kubectl kustomize "$overlay" | "$RUNNER_TEMP/kubeconform" -strict -summary \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+              -
             echo "::endgroup::"
           done

@@ -3,6 +3,7 @@
 # in an image.
 *
 !pyproject.toml
+!alembic.ini
 !uv.lock
 !README.md
 !LICENSE

@@ -6,7 +6,7 @@ import { editionsForCourse } from '../lib/editions'
 export default function CoursesPage() {
   const { data: courses, isLoading, error } = useCourses()
   const createCourse = useCreateCourse()
-  const [expanded, setExpanded] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<number | null>(null)
 
   const [name, setName] = useState('')
 
@@ -52,19 +52,19 @@ export default function CoursesPage() {
 
       <div className="space-y-3">
         {courses?.map((course) => (
-          <div key={course._id} className="rounded-lg border border-slate-200 bg-white p-4">
+          <div key={course.id} className="rounded-lg border border-slate-200 bg-white p-4">
             <button
               className="flex w-full items-center justify-between text-left"
-              onClick={() => setExpanded(expanded === course._id ? null : (course._id ?? null))}
+              onClick={() => setExpanded(expanded === course.id ? null : course.id)}
             >
               <div>
                 <div className="font-medium">{course.name}</div>
                 <div className="font-mono text-xs text-slate-400">{course.slug}</div>
               </div>
-              <span className="text-slate-400">{expanded === course._id ? '▲' : '▼'}</span>
+              <span className="text-slate-400">{expanded === course.id ? '▲' : '▼'}</span>
             </button>
 
-            {expanded === course._id && course._id && <CourseEditions courseId={course._id} />}
+            {expanded === course.id && <CourseEditions courseId={course.id} />}
           </div>
         ))}
         {courses && courses.length === 0 && <p className="text-slate-400">No courses yet -- add one above.</p>}
@@ -78,7 +78,7 @@ export default function CoursesPage() {
  * only place a course and an edition are tied together -- see Edition's doc
  * comment in api/types.ts). Editions themselves are created on the Editions
  * page, not here -- there's no "add edition to this course" action anymore. */
-function CourseEditions({ courseId }: { courseId: string }) {
+function CourseEditions({ courseId }: { courseId: number }) {
   const { data: rubrics } = useRubrics()
   const editions = rubrics ? editionsForCourse(rubrics, courseId) : []
 

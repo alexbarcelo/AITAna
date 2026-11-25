@@ -5,6 +5,7 @@ import { useSaveSegments, useSubmission, useSubmissionDocument, useSubmissions, 
 import type { AnswerSegment, Question, Submission } from '../api/types'
 import { IN_PROGRESS_STATUSES, submissionName } from '../api/types'
 import StatusBadge from '../components/StatusBadge'
+import { parseId } from '../lib/ids'
 
 /**
  * Side-by-side editor for a generic document's segmentation (AGENTS.md
@@ -62,8 +63,8 @@ const IMAGE_LINE_RE = /!\[[^\]]*\]\((img-[^)\s]+)\)/
 
 export default function SegmentationEditorPage() {
   const { id } = useParams<{ id: string }>()
-  const { data: submission, isLoading, error } = useSubmission(id)
-  const { data: document } = useSubmissionDocument(id, Boolean(submission?.document))
+  const { data: submission, isLoading, error } = useSubmission(parseId(id))
+  const { data: document } = useSubmissionDocument(parseId(id), Boolean(submission?.document))
 
   if (isLoading) return <p className="text-sm text-slate-500">Loading...</p>
   if (error || !submission) return <p className="text-sm text-red-600">Failed to load this submission.</p>
@@ -98,7 +99,7 @@ function Editor({
   const navigate = useNavigate()
   const saveSegments = useSaveSegments()
   const suggest = useSuggestSegments()
-  const { data: batchSubmissions } = useSubmissions(submission.batch ? { batch_id: submission.batch._id } : undefined)
+  const { data: batchSubmissions } = useSubmissions(submission.batch_id ? { batch_id: submission.batch_id } : undefined)
 
   const questions = submission.rubric.questions
   const lines = useMemo(() => markdown.split('\n'), [markdown])
@@ -175,19 +176,19 @@ function Editor({
 
   const nextInBatch = (() => {
     if (!batchSubmissions) return null
-    const idx = batchSubmissions.findIndex((s) => s._id === submission._id)
+    const idx = batchSubmissions.findIndex((s) => s.id === submission.id)
     const ordered = [...batchSubmissions.slice(idx + 1), ...batchSubmissions.slice(0, Math.max(idx, 0))]
-    return ordered.find((s) => s._id !== submission._id && s.status === 'awaiting_segmentation') ?? null
+    return ordered.find((s) => s.id !== submission.id && s.status === 'awaiting_segmentation') ?? null
   })()
 
   function save(grade: boolean, goNext = false) {
     saveSegments.mutate(
-      { submissionId: submission._id, segments: draftToSegments(draft, questions), grade },
+      { submissionId: submission.id, segments: draftToSegments(draft, questions), grade },
       {
         onSuccess: () => {
           setDirty(false)
-          if (goNext && nextInBatch) navigate(`/submissions/${nextInBatch._id}/segments`)
-          else if (grade) navigate(`/submissions/${submission._id}`)
+          if (goNext && nextInBatch) navigate(`/submissions/${nextInBatch.id}/segments`)
+          else if (grade) navigate(`/submissions/${submission.id}`)
         },
       },
     )
@@ -202,7 +203,7 @@ function Editor({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-lg font-semibold">
-            <Link to={`/submissions/${submission._id}`} className="hover:underline">
+            <Link to={`/submissions/${submission.id}`} className="hover:underline">
               {submissionName(submission) ?? 'Unmatched'}
             </Link>{' '}
             &middot; {submission.rubric.title} &middot; segmentation
@@ -223,7 +224,7 @@ function Editor({
           <button
             onClick={() => {
               if (dirty && !window.confirm('Replace your unsaved segmentation with an LLM suggestion?')) return
-              suggest.mutate(submission._id)
+              suggest.mutate(submission.id)
             }}
             disabled={busy || suggest.isPending}
             title="Ask the active model where each answer starts (replaces the current segmentation)"
@@ -342,7 +343,7 @@ function Editor({
           // `#page=` on load.
           key={pdfPage}
           title="Submitted PDF"
-          src={`${API_URL}/submissions/${submission._id}/file?inline=true#page=${pdfPage}`}
+          src={`${API_URL}/submissions/${submission.id}/file?inline=true#page=${pdfPage}`}
           className="h-full w-full rounded-lg border border-slate-200 bg-white"
         />
         <div className="h-full overflow-y-auto rounded-lg border border-slate-200 bg-white py-2 font-mono text-xs">
@@ -381,7 +382,7 @@ function Editor({
                     )}
                     {imageIndex !== undefined ? (
                       <img
-                        src={`${API_URL}/submissions/${submission._id}/document/images/${imageIndex}`}
+                        src={`${API_URL}/submissions/${submission.id}/document/images/${imageIndex}`}
                         alt={imageMatch?.[1]}
                         className="my-1 max-h-48 rounded border border-slate-200"
                       />

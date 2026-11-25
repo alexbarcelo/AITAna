@@ -23,12 +23,12 @@ async def test_create_course_duplicate_slug_conflicts(client):
 
 
 async def test_get_course_not_found(client):
-    resp = await client.get("/courses/000000000000000000000000")
+    resp = await client.get("/courses/999999999")
     assert resp.status_code == 404
 
 
 async def test_get_course_by_id(client):
     created = (await client.post("/courses", json={"name": "BDM 2026/27"})).json()
-    resp = await client.get(f"/courses/{created['_id']}")
+    resp = await client.get(f"/courses/{created['id']}")
     assert resp.status_code == 200
     assert resp.json()["name"] == "BDM 2026/27"

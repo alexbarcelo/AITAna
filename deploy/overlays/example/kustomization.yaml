@@ -7,6 +7,13 @@ namespace: aitana
 resources:
   - ../../base
   - ingress.yaml
+  # Example in-cluster PostgreSQL via CloudNativePG; drop these two lines
+  # (and database-url.yaml below) to use an existing database through
+  # DATABASE_URL in `aitana-secrets` instead.
+  - postgres-cluster.yaml
+
+patches:
+  - path: database-url.yaml
 
 # Pin a released version instead of the moving `main` tag.
 images:

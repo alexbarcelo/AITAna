@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { useCourses, useEditions, useRubricSubmissionCounts, useRubrics } from '../api/hooks'
 import RubricForm from '../components/RubricForm'
 import { formatDate } from '../lib/date'
+import { parseId } from '../lib/ids'
 
 const FILTER_KEYS = ['course_id', 'edition_id']
 
@@ -41,7 +42,7 @@ export default function RubricsPage() {
     data: rubrics,
     isLoading,
     error,
-  } = useRubrics({ course_id: courseId || undefined, edition_id: editionId || undefined })
+  } = useRubrics({ course_id: parseId(courseId), edition_id: parseId(editionId) })
   const { data: submissionCounts } = useRubricSubmissionCounts()
   const [showForm, setShowForm] = useState(false)
 
@@ -72,7 +73,7 @@ export default function RubricsPage() {
           >
             <option value="">All courses</option>
             {courses?.map((course) => (
-              <option key={course._id} value={course._id ?? ''}>
+              <option key={course.id} value={course.id ?? ''}>
                 {course.name}
               </option>
             ))}
@@ -87,7 +88,7 @@ export default function RubricsPage() {
           >
             <option value="">All editions</option>
             {editions?.map((edition) => (
-              <option key={edition._id} value={edition._id ?? ''}>
+              <option key={edition.id} value={edition.id ?? ''}>
                 {edition.name}
               </option>
             ))}
@@ -118,9 +119,9 @@ export default function RubricsPage() {
           </thead>
           <tbody>
             {rubrics.map((rubric) => (
-              <tr key={rubric._id} className="border-t border-slate-100 hover:bg-slate-50">
+              <tr key={rubric.id} className="border-t border-slate-100 hover:bg-slate-50">
                 <td className="px-4 py-2">
-                  <Link to={`/rubrics/${rubric._id}`} className="text-slate-900 hover:underline">
+                  <Link to={`/rubrics/${rubric.id}`} className="text-slate-900 hover:underline">
                     {rubric.title}
                   </Link>
                   <div className="font-mono text-xs text-slate-400">{rubric.slug}</div>
@@ -129,8 +130,8 @@ export default function RubricsPage() {
                 <td className="px-4 py-2 text-slate-500">{rubric.edition ? rubric.edition.name : 'any (reusable)'}</td>
                 <td className="px-4 py-2 text-slate-500">{rubric.questions.length}</td>
                 <td className="px-4 py-2 text-slate-500">
-                  <Link to={`/?rubric_id=${rubric._id}`} className="hover:underline">
-                    {submissionCounts ? (submissionCounts[rubric._id] ?? 0) : '...'}
+                  <Link to={`/?rubric_id=${rubric.id}`} className="hover:underline">
+                    {submissionCounts ? (submissionCounts[rubric.id] ?? 0) : '...'}
                   </Link>
                 </td>
                 <td className="px-4 py-2 text-slate-500">{formatDate(rubric.created_at)}</td>
