@@ -45,6 +45,7 @@ dev = [
     # (construction, not live API calls -- no keys available in CI/dev) is
     # exercised by the test suite
     "aitana[openai,ollama,anthropic,openrouter]",
+    "ruff>=0.17.6",
 ]
 
 [build-system]
@@ -56,3 +57,25 @@ packages = ["src/aitana"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+# Python sources only: the default also picks up notebooks (and Markdown code
+# blocks), and the repo root holds course material that isn't project code.
+include = ["*.py", "*.pyi", "**/pyproject.toml"]
+
+[tool.ruff.lint]
+# pycodestyle (PEP 8) errors/warnings, pyflakes, isort, pyupgrade, bugbear
+select = ["E", "W", "F", "I", "UP", "B"]
+# Long lines are the formatter's job; what it can't wrap (strings, comments) is fine.
+# UP042 (`(str, Enum)` -> `StrEnum`) changes `str()`/f-string output of every
+# member, and these enums are persisted as strings: not a style fix.
+ignore = ["E501", "UP042"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency/parameter markers are meant to be called in defaults.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.File", "fastapi.Form", "fastapi.Query"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["aitana"]
