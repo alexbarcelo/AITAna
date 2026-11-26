@@ -1127,6 +1127,11 @@ per subfolder in the zip, each enqueued for grading immediately, same as
   the same over an explicit id list; the frontend uses it for its regrade
   bar, shown whenever the submissions list is filtered to a single rubric
   (batch or rubric filter), regrading exactly the listed submissions.
+  `AnswerGradeEditor.tsx` uses it too, for a per-answer "Regrade question"
+  button (one submission id + that question), so it shows on the submission
+  page and in the grading overview's cell modal alike. `useSubmissions`
+  polls while any listed submission is in progress, which is what makes
+  that regrade visible in the grid without a reload.
 
 ## Courses, editions and filtering submissions
 

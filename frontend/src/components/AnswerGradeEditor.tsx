@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useClearManualGrade, useSetManualGrade } from '../api/hooks'
+import { useClearManualGrade, useRegradeSubmissions, useSetManualGrade } from '../api/hooks'
 import { effectiveGrade, type AnsweredQuestion, type GradingScale } from '../api/types'
 import { prettifyLevel } from '../lib/gradeColor'
 import GradeBadge from './GradeBadge'
@@ -26,6 +26,7 @@ export default function AnswerGradeEditor({
 }) {
   const [editing, setEditing] = useState(false)
   const clear = useClearManualGrade()
+  const regrade = useRegradeSubmissions()
   const grade = effectiveGrade(answer)
 
   if (editing) {
@@ -61,7 +62,20 @@ export default function AnswerGradeEditor({
             {answer.grade ? 'Revert to LLM grade' : 'Remove manual grade'}
           </button>
         )}
+        <button
+          type="button"
+          onClick={() => regrade.mutate({ submissionIds: [submissionId], questionId: answer.question_id })}
+          disabled={disabled || regrade.isPending}
+          title={
+            'Ask the LLM to grade only this answer again (the file is re-extracted; other answers keep their grades' +
+            (answer.manual_grade ? ', and your manual grade stays in place)' : ')')
+          }
+          className="text-slate-500 hover:underline disabled:opacity-50"
+        >
+          {regrade.isPending ? 'Re-grading...' : 'Regrade question'}
+        </button>
         {clear.isError && <span className="text-red-600">Failed to revert.</span>}
+        {regrade.isError && <span className="text-red-600">Failed to trigger re-grading.</span>}
       </div>
     </div>
   )

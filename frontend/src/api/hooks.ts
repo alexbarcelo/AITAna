@@ -351,6 +351,10 @@ export function useSubmissions(filters?: {
           params: { query: filters ?? {} },
         }),
       ) as unknown as Promise<Submission[]>,
+    // Keep polling while anything listed is being worked on, so e.g. a
+    // single-question regrade from the grading overview shows up when done.
+    refetchInterval: (query) =>
+      query.state.data?.some((s) => IN_PROGRESS_STATUSES.includes(s.status)) ? 3000 : false,
   })
 }
 
