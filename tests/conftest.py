@@ -160,6 +160,11 @@ async def client(monkeypatch, db):
         "aitana.api.routers.submissions.suggest_segments_task.delay",
         lambda submission_id, model_id=None: delayed_suggestions.append((submission_id, model_id)),
     )
+    delayed_general_feedback: list[tuple[int, int | None]] = []
+    monkeypatch.setattr(
+        "aitana.api.routers.submissions.regenerate_general_feedback.delay",
+        lambda submission_id, model_id=None: delayed_general_feedback.append((submission_id, model_id)),
+    )
 
     # Every grading-triggering endpoint needs a usable model to resolve
     # (api/routers/llm.py's require_llm_model): seed a default one whose
@@ -189,6 +194,7 @@ async def client(monkeypatch, db):
         ac.fake_objects = fake_objects  # type: ignore[attr-defined]
         ac.delayed_prepares = delayed_prepares  # type: ignore[attr-defined]
         ac.delayed_suggestions = delayed_suggestions  # type: ignore[attr-defined]
+        ac.delayed_general_feedback = delayed_general_feedback  # type: ignore[attr-defined]
         ac.db = db  # type: ignore[attr-defined]
         try:
             yield ac

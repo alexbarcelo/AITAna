@@ -264,6 +264,28 @@ async def test_create_rubric_with_context(client):
     assert resp.json()["context"] == "Shared setup."
 
 
+async def test_create_rubric_with_general_feedback_instructions(client):
+    course_id = await _make_course(client)
+    resp = await client.post(
+        "/rubrics",
+        json={"title": "Lab", "course_id": course_id, "questions": [_question_payload()]},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["general_feedback_instructions"] is None
+
+    resp = await client.post(
+        "/rubrics",
+        json={
+            "title": "Lab 2",
+            "course_id": course_id,
+            "general_feedback_instructions": "  One encouraging sentence.  ",
+            "questions": [_question_payload()],
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["general_feedback_instructions"] == "One encouraging sentence."
+
+
 async def test_create_rubric_with_empty_grading_scale_422(client):
     course_id = await _make_course(client)
     resp = await client.post(
@@ -607,6 +629,23 @@ async def test_upload_rubric_yaml_with_context_key(client):
     )
     assert resp.status_code == 201
     assert resp.json()["context"] == "Shared setup.\n"
+
+
+async def test_upload_rubric_yaml_with_general_feedback_instructions_key(client):
+    course_id = await _make_course(client)
+    resp = await client.post(
+        "/rubrics/upload",
+        data={"course_id": course_id},
+        files={
+            "yaml_file": (
+                "containers_questions.yaml",
+                YAML_RUBRIC + b"general_feedback_instructions: Two sentences, strongest point first.\n",
+                "application/x-yaml",
+            )
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["general_feedback_instructions"] == "Two sentences, strongest point first."
 
 
 async def test_upload_rubric_yaml_non_string_context_422(client):

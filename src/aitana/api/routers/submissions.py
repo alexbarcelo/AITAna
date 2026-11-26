@@ -38,7 +38,14 @@ from ...grading.extraction.generic_document import (
 )
 from ...grading.models import AnswerSegment, Grade, SubmissionFormat
 from ...settings import get_settings
-from ...worker.tasks import extract_submission_file, grade_submission, prepare_submission, suggest_segments_task
+from ...grading.general_feedback import has_general_feedback
+from ...worker.tasks import (
+    extract_submission_file,
+    grade_submission,
+    prepare_submission,
+    regenerate_general_feedback,
+    suggest_segments_task,
+)
 from ..feedback_export import course_name, feedback_filename, load_answer_images, render_feedback_html
 from ..schemas import SubmissionOut
 from .llm import MODEL_ID_QUERY, require_llm_model
@@ -444,6 +451,73 @@ async def clear_manual_grade(
     return submission
 
 
+class ManualGeneralFeedbackIn(BaseModel):
+    feedback: str
+
+
+async def _get_editable_submission(session: AsyncSession, submission_id: int) -> Submission:
+    submission = await get_submission_or_404(session, submission_id)
+    if submission.status in _IN_PROGRESS_STATUSES:
+        # Same reason as `_get_editable_answer`: the worker would overwrite it.
+        raise HTTPException(status_code=409, detail="Submission is still being graded -- wait for it to finish")
+    return submission
+
+
+@router.put("/{submission_id}/general-feedback", response_model=SubmissionOut)
+async def set_manual_general_feedback(
+    submission_id: int, payload: ManualGeneralFeedbackIn, session: AsyncSession = Depends(get_session)
+) -> Submission:
+    """Set the TA's own general feedback. Stored as
+    `manual_general_feedback`, next to the LLM's `general_feedback` (both stay visible), and
+    survives re-grades -- same rules as a manual grade. Blank is `422`: use
+    `DELETE` to drop the override."""
+    feedback = payload.feedback.strip()
+    if not feedback:
+        raise HTTPException(status_code=422, detail="The general feedback can't be blank")
+    submission = await _get_editable_submission(session, submission_id)
+    now = datetime.now(UTC)
+    submission.manual_general_feedback = feedback
+    submission.manual_general_feedback_at = now
+    submission.updated_at = now
+    await session.commit()
+    return submission
+
+
+@router.delete("/{submission_id}/general-feedback", response_model=SubmissionOut)
+async def clear_manual_general_feedback(submission_id: int, session: AsyncSession = Depends(get_session)) -> Submission:
+    """Drop the TA's general feedback, reverting to the LLM's (if any)."""
+    submission = await _get_editable_submission(session, submission_id)
+    submission.manual_general_feedback = None
+    submission.manual_general_feedback_at = None
+    submission.updated_at = datetime.now(UTC)
+    await session.commit()
+    return submission
+
+
+@router.post("/{submission_id}/general-feedback/regenerate", response_model=SubmissionOut, status_code=202)
+async def regenerate_submission_general_feedback(
+    submission_id: int, model_id: int | None = MODEL_ID_QUERY, session: AsyncSession = Depends(get_session)
+) -> Submission:
+    """Ask the LLM to rewrite the general feedback from the current effective
+    grades (TA overrides included) -- only the general feedback, nothing else is
+    re-graded. `422` if the rubric has no `general_feedback_instructions`, `409`
+    unless the submission is `graded`. A TA's `manual_general_feedback` stays in
+    place (the new LLM text shows under it)."""
+    llm_model = await require_llm_model(session, model_id)
+    submission = await get_submission_or_404(session, submission_id)
+    if not has_general_feedback(submission.rubric.general_feedback_instructions):
+        raise HTTPException(status_code=422, detail="This rubric has no general feedback instructions")
+    if submission.status != SubmissionStatus.GRADED:
+        raise HTTPException(status_code=409, detail="Only a graded submission's general feedback can be regenerated")
+    # `grading` keeps manual edits out until the worker is done (and makes
+    # the frontend poll); commit before enqueueing.
+    submission.status = SubmissionStatus.GRADING
+    submission.error = None
+    await session.commit()
+    regenerate_general_feedback.delay(submission.id, model_id=llm_model.id)
+    return submission
+
+
 @router.get("/{submission_id}/file")
 async def download_submission_file(
     submission_id: int, inline: bool = False, session: AsyncSession = Depends(get_session)
@@ -551,6 +625,48 @@ async def regrade_submissions(
         raise HTTPException(status_code=422, detail=f"Question {body.question_id!r} is not in every submission's rubric")
     await enqueue_regrades(session, submissions, llm_model.id, body.question_id)
     return BulkRegradeResult(regraded=len(submissions))
+
+
+class BulkRegenerateGeneralFeedbackRequest(BaseModel):
+    submission_ids: list[int]
+
+
+class BulkRegenerateGeneralFeedbackResult(BaseModel):
+    regenerated: int
+    skipped: int
+
+
+@router.post(
+    "/general-feedback/regenerate", response_model=BulkRegenerateGeneralFeedbackResult, status_code=202
+)
+async def regenerate_general_feedback_bulk(
+    body: BulkRegenerateGeneralFeedbackRequest,
+    model_id: int | None = MODEL_ID_QUERY,
+    session: AsyncSession = Depends(get_session),
+) -> BulkRegenerateGeneralFeedbackResult:
+    """Bulk version of `POST /{id}/general-feedback/regenerate` over an explicit
+    id list (e.g. whatever a filtered list shows). `422` if any involved rubric
+    has no `general_feedback_instructions`. Submissions that aren't `graded`
+    are skipped (counted in `skipped`) rather than failing the whole request --
+    in a list, some are usually still in progress or failed."""
+    llm_model = await require_llm_model(session, model_id)
+    submissions = list(
+        await session.scalars(
+            select(Submission).options(selectinload(Submission.rubric)).where(Submission.id.in_(body.submission_ids))
+        )
+    )
+    if any(not has_general_feedback(s.rubric.general_feedback_instructions) for s in submissions):
+        raise HTTPException(status_code=422, detail="Not every submission's rubric has general feedback instructions")
+    graded = [s for s in submissions if s.status == SubmissionStatus.GRADED]
+    # Same as the single-submission endpoint: `grading` keeps manual edits
+    # out until the worker is done; commit before enqueueing.
+    for submission in graded:
+        submission.status = SubmissionStatus.GRADING
+        submission.error = None
+    await session.commit()
+    for submission in graded:
+        regenerate_general_feedback.delay(submission.id, model_id=llm_model.id)
+    return BulkRegenerateGeneralFeedbackResult(regenerated=len(graded), skipped=len(submissions) - len(graded))
 
 
 @router.post("/{submission_id}/regrade", response_model=SubmissionOut, status_code=202)

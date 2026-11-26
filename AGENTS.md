@@ -409,6 +409,65 @@ out of the box.
   (a list of objects doesn't fit a multipart field) -- only the YAML body's
   top-level `grading_scale:` key, or omit it for the default.
 
+## General feedback (`grading/general_feedback.py`)
+
+One short, submission-wide feedback text digesting every question's grade
+and feedback. **Named "general feedback", never "overview"**: "grading
+overview" is already the students x questions grid (`GradingGrid.tsx`,
+`?overview=1`), and the UI/export label is "General feedback" too.
+
+Optional, per rubric: `Rubric.general_feedback_instructions` (unset/blank =
+off -- stored as `NULL` when blank). When set, `_grade_submission` makes one
+extra LLM call after `_grade_answers` (`_write_general_feedback`) and stores
+the result on `Submission.general_feedback` (`GeneralFeedback`: `feedback` +
+an `info` dict in the same shape as `AnsweredQuestion.grading_info`, so
+`GradingInfo.tsx`'s `GradingDetailsTooltip` renders it).
+
+- **Input**: system prompt = rubric `context` + grading scale (ids and
+  descriptions, never scores) + the instructions; human message = per
+  question (rubric order) its `title`, level and feedback. It digests the
+  grading, it doesn't re-grade: student answers are not sent. Background
+  about the assignment belongs in the rubric's `context` (which this call
+  sees), not in the instructions -- a per-question `context` is *not* seen.
+- **Uses `effective_grade`**, so a TA override counts -- but only as of when
+  the general feedback was written. Editing a grade afterwards doesn't
+  rewrite it: the frontend (`GeneralFeedbackEditor.tsx`) flags it as stale
+  (latest `manual_graded_at` newer than `general_feedback.info.graded_at`)
+  and offers **Regenerate**.
+- **Regenerate**: `POST /submissions/{id}/general-feedback/regenerate`
+  (`?model_id=` like every LLM endpoint). Only the general feedback -- no
+  re-extraction, no per-question call (`worker/tasks.py`'s
+  `regenerate_general_feedback` task). `422` if the rubric has no
+  `general_feedback_instructions`, `409` unless the submission is `graded`.
+  It sets `status = grading` before enqueueing (so manual edits get the
+  usual `409` and the frontend polls); the task always ends in `graded`.
+  Bulk: `POST /submissions/general-feedback/regenerate`
+  (`{submission_ids}` -> `{regenerated, skipped}`) -- same, over an id
+  list; non-`graded` submissions are skipped instead of failing the
+  request (`422` if any involved rubric has no instructions). The
+  submissions list's regrade bar offers it on its own line ("Regenerate
+  general feedback") when the listed rubric has instructions.
+- **Manual override**: `Submission.manual_general_feedback` +
+  `manual_general_feedback_at`, next to (not instead of) the LLM's
+  `general_feedback`, same rules as `manual_grade`: `PUT
+  /submissions/{id}/general-feedback` (`{feedback}`, blank = `422`) /
+  `DELETE` to revert, `409` while in progress, survives re-grades and
+  regenerations, the LLM text stays visible under it. Allowed even when the
+  rubric has no instructions. What the student sees is
+  `Submission.effective_general_feedback` (frontend:
+  `effectiveGeneralFeedback()`) -- the feedback export goes through it.
+- **The LLM text is cleared at the start of every grading run** (it's
+  based on the old grades), rewritten at the end;
+  `manual_general_feedback` is kept.
+- **Not fatal**: a failed call leaves the per-question grades, status
+  `graded`, and `error = "General feedback failed: ..."` (shown on the
+  submission page for a graded submission).
+- No `GradingTrace` row (that table is per question, its `GradeTrace`
+  needs a `Grade`); the `info` dict is the only audit record.
+- YAML: top-level `general_feedback_instructions:` key, string only (`422`
+  otherwise). Feedback export: a "General feedback" box above the
+  questions.
+
 ## Python sandbox for grading
 
 Per-question opt-in, not a rubric-wide setting: `Question.needs_python_sandbox`

@@ -5,6 +5,7 @@ import { IN_PROGRESS_STATUSES } from './types'
 import type {
   AnswerSegment,
   Batch,
+  RegenerateGeneralFeedbackResult,
   RegradeResult,
   BatchType,
   BatchUploadResult,
@@ -477,6 +478,58 @@ export function useClearManualGrade() {
   })
 }
 
+export function useSetManualGeneralFeedback() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ submissionId, feedback }: { submissionId: number; feedback: string }) =>
+      unwrap(
+        client.PUT('/submissions/{submission_id}/general-feedback', {
+          params: { path: { submission_id: submissionId } },
+          body: { feedback },
+        }),
+      ) as unknown as Promise<Submission>,
+    onSuccess: (submission) => {
+      queryClient.setQueryData(['submissions', submission.id], submission)
+      queryClient.invalidateQueries({ queryKey: ['submissions'] })
+    },
+  })
+}
+
+export function useClearManualGeneralFeedback() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (submissionId: number) =>
+      unwrap(
+        client.DELETE('/submissions/{submission_id}/general-feedback', {
+          params: { path: { submission_id: submissionId } },
+        }),
+      ) as unknown as Promise<Submission>,
+    onSuccess: (submission) => {
+      queryClient.setQueryData(['submissions', submission.id], submission)
+      queryClient.invalidateQueries({ queryKey: ['submissions'] })
+    },
+  })
+}
+
+/** Rewrite only the LLM's general overview from the current (effective)
+ * grades -- nothing else is re-graded. */
+export function useRegenerateGeneralFeedback() {
+  const queryClient = useQueryClient()
+  const modelId = useActiveModelId()
+  return useMutation({
+    mutationFn: (submissionId: number) =>
+      unwrap(
+        client.POST('/submissions/{submission_id}/general-feedback/regenerate', {
+          params: { path: { submission_id: submissionId }, query: { model_id: modelId } },
+        }),
+      ) as unknown as Promise<Submission>,
+    onSuccess: (submission) => {
+      queryClient.setQueryData(['submissions', submission.id], submission)
+      queryClient.invalidateQueries({ queryKey: ['submissions'] })
+    },
+  })
+}
+
 export function useCreateSubmission() {
   const queryClient = useQueryClient()
   const modelId = useActiveModelId()
@@ -619,6 +672,23 @@ export function useRegradeSubmissions() {
           body: { submission_ids: submissionIds, question_id: questionId ?? null },
         }),
       ) as unknown as Promise<RegradeResult>,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['submissions'] }),
+  })
+}
+
+/** Bulk version of useRegenerateGeneralFeedback; ungraded submissions are
+ * skipped server-side (counted in `skipped`). */
+export function useRegenerateGeneralFeedbacks() {
+  const queryClient = useQueryClient()
+  const modelId = useActiveModelId()
+  return useMutation({
+    mutationFn: (submissionIds: number[]) =>
+      unwrap(
+        client.POST('/submissions/general-feedback/regenerate', {
+          params: { query: { model_id: modelId } },
+          body: { submission_ids: submissionIds },
+        }),
+      ) as unknown as Promise<RegenerateGeneralFeedbackResult>,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['submissions'] }),
   })
 }

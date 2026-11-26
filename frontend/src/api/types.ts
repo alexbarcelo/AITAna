@@ -23,6 +23,12 @@ export type SubmissionDocument = components['schemas']['DocumentView']
 export function effectiveGrade(answer: AnsweredQuestion): Grade | null {
   return answer.manual_grade ?? answer.grade ?? null
 }
+
+/** The general feedback the student should see: the TA's own text if any,
+ * else the LLM's. Mirrors `Submission.effective_general_feedback` (`db/models.py`). */
+export function effectiveGeneralFeedback(submission: Submission): string | null {
+  return submission.manual_general_feedback || submission.general_feedback?.feedback || null
+}
 export type SubmissionStatus = components['schemas']['SubmissionStatus']
 export type SubmissionFormat = components['schemas']['SubmissionFormat']
 export type StudentImportFormat = components['schemas']['StudentImportFormat']
@@ -148,5 +154,8 @@ export type BatchUploadResult = components['schemas']['BatchUploadResult']
 
 /** Response of `POST /submissions/regrade` (and `POST /batches/{batch_id}/regrade`). */
 export type RegradeResult = components['schemas']['BulkRegradeResult']
+
+/** Response of `POST /submissions/general-feedback/regenerate`. */
+export type RegenerateGeneralFeedbackResult = components['schemas']['BulkRegenerateGeneralFeedbackResult']
 
 export const IN_PROGRESS_STATUSES: SubmissionStatus[] = ['pending', 'converting', 'segmenting', 'extracting', 'grading']

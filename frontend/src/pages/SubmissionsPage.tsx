@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { API_URL } from '../api/client'
-import { useBatch, useBatches, useCourses, useEditions, useRegradeSubmissions, useRubrics, useStudents, useSubmissions } from '../api/hooks'
+import { useBatch, useBatches, useCourses, useEditions, useRegenerateGeneralFeedbacks, useRegradeSubmissions, useRubrics, useStudents, useSubmissions } from '../api/hooks'
 import DeleteSubmissionButton from '../components/DeleteSubmissionButton'
 import GradingGrid from '../components/GradingGrid'
 import MatchStudentDialog from '../components/MatchStudentDialog'
@@ -85,6 +85,7 @@ export default function SubmissionsPage() {
   const { data: batch } = useBatch(parseId(batchId))
   const regrade = useRegradeSubmissions()
   const [regradeQuestionId, setRegradeQuestionId] = useState('')
+  const regenerateGeneralFeedback = useRegenerateGeneralFeedbacks()
 
   const {
     data: submissions,
@@ -101,6 +102,7 @@ export default function SubmissionsPage() {
   const singleRubric = singleRubricFilter && submissions && submissions.length > 0 ? submissions[0].rubric : undefined
   // Drop a stale pick when the rubric filter changes to one without that question.
   const regradeQuestion = singleRubric?.questions.some((q) => q.id === regradeQuestionId) ? regradeQuestionId : ''
+  const hasGeneralFeedback = Boolean(singleRubric?.general_feedback_instructions?.trim())
   const anyInProgress = submissions?.some((s) => IN_PROGRESS_STATUSES.includes(s.status)) ?? false
   const hasFilters = FILTER_KEYS.some((k) => searchParams.get(k))
 
@@ -262,52 +264,77 @@ export default function SubmissionsPage() {
       {error && <p className="text-sm text-red-600">Failed to load submissions.</p>}
 
       {singleRubric && submissions && (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3">
-          <span className="text-sm text-slate-600">Regrade the {submissions.length} listed submission(s):</span>
-          <div className="flex items-center">
-            <select
-              value={regradeQuestion}
-              onChange={(e) => setRegradeQuestionId(e.target.value)}
-              title="Regrade only this question; other answers keep their current grades"
-              className="rounded-l-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-700"
-            >
-              <option value="">All questions</option>
-              {singleRubric.questions.map((q) => (
-                <option key={q.id} value={q.id}>
-                  {q.title}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={() => {
-                // Not a hard block: a submission can be stuck in an in-progress
-                // status forever if its worker job was lost, and this is the way out.
-                if (
-                  anyInProgress &&
-                  !window.confirm(
-                    'Some listed submissions are still pending/grading (or stuck there if their job was lost). Regrade anyway?',
+        <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-sm text-slate-600">Regrade the {submissions.length} listed submission(s):</span>
+            <div className="flex items-center">
+              <select
+                value={regradeQuestion}
+                onChange={(e) => setRegradeQuestionId(e.target.value)}
+                title="Regrade only this question; other answers keep their current grades"
+                className="rounded-l-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-700"
+              >
+                <option value="">All questions</option>
+                {singleRubric.questions.map((q) => (
+                  <option key={q.id} value={q.id}>
+                    {q.title}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => {
+                  // Not a hard block: a submission can be stuck in an in-progress
+                  // status forever if its worker job was lost, and this is the way out.
+                  if (
+                    anyInProgress &&
+                    !window.confirm(
+                      'Some listed submissions are still pending/grading (or stuck there if their job was lost). Regrade anyway?',
+                    )
                   )
-                )
-                  return
-                regrade.mutate({
-                  submissionIds: submissions.map((s) => s.id),
-                  questionId: regradeQuestion || undefined,
-                })
-              }}
-              disabled={regrade.isPending}
-              title={
-                regradeQuestion
-                  ? 'Re-grade only the selected question; other grades are kept'
-                  : 'Re-extract each file and re-grade every question, discarding existing LLM grades/feedback'
-              }
-              className="-ml-px rounded-r-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-50"
-            >
-              {regrade.isPending ? 'Re-grading...' : regradeQuestion ? 'Regrade question' : 'Regrade all'}
-            </button>
+                    return
+                  regrade.mutate({
+                    submissionIds: submissions.map((s) => s.id),
+                    questionId: regradeQuestion || undefined,
+                  })
+                }}
+                disabled={regrade.isPending}
+                title={
+                  regradeQuestion
+                    ? 'Re-grade only the selected question; other grades are kept'
+                    : 'Re-extract each file and re-grade every question, discarding existing LLM grades/feedback'
+                }
+                className="-ml-px rounded-r-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-50"
+              >
+                {regrade.isPending ? 'Re-grading...' : regradeQuestion ? 'Regrade question' : 'Regrade all'}
+              </button>
+            </div>
+            {regrade.isError && <span className="text-sm text-red-600">Failed to trigger re-grading.</span>}
+            {regrade.isSuccess && (
+              <span className="text-sm text-emerald-600">Queued {regrade.data.regraded} submission(s).</span>
+            )}
           </div>
-          {regrade.isError && <span className="text-sm text-red-600">Failed to trigger re-grading.</span>}
-          {regrade.isSuccess && (
-            <span className="text-sm text-emerald-600">Queued {regrade.data.regraded} submission(s).</span>
+          {hasGeneralFeedback && (
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={() => regenerateGeneralFeedback.mutate(submissions.map((s) => s.id))}
+                disabled={regenerateGeneralFeedback.isPending}
+                title="Rewrite only the general feedback from the current (effective) grades; nothing is re-graded. Submissions that aren't graded are skipped."
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-50"
+              >
+                {regenerateGeneralFeedback.isPending ? 'Regenerating...' : 'Regenerate general feedback'}
+              </button>
+              {regenerateGeneralFeedback.isError && (
+                <span className="text-sm text-red-600">Failed to trigger general feedback regeneration.</span>
+              )}
+              {regenerateGeneralFeedback.isSuccess && (
+                <span className="text-sm text-emerald-600">
+                  Queued {regenerateGeneralFeedback.data.regenerated} submission(s)
+                  {regenerateGeneralFeedback.data.skipped > 0 &&
+                    ` (skipped ${regenerateGeneralFeedback.data.skipped} not graded)`}
+                  .
+                </span>
+              )}
+            </div>
           )}
         </div>
       )}

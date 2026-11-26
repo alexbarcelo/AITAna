@@ -270,11 +270,13 @@ async def test_grade_answers_forwards_images_only_for_include_images(db, monkeyp
 # ---- _grade_submission end to end ----
 
 
-async def _setup_pending(db, monkeypatch, extracted: ExtractionResult) -> Submission:
+async def _setup_pending(db, monkeypatch, extracted: ExtractionResult, **rubric_fields) -> Submission:
     """A pending notebook submission, with extraction and the chat model
     faked out and a default model to resolve."""
     db.add(LlmModel(provider="openai", model="gpt-4o-mini", is_default=True))
-    submission = await _setup(db, [_q("answer1"), _q("answer2")], [], format=SubmissionFormat.NOTEBOOK)
+    submission = await _setup(
+        db, [_q("answer1"), _q("answer2")], [], format=SubmissionFormat.NOTEBOOK, **rubric_fields
+    )
     monkeypatch.setattr(tasks, "extract_submission_file", lambda s: extracted)
     monkeypatch.setattr(tasks, "get_chat_model", lambda *args, **kwargs: object())
     return submission
@@ -298,6 +300,141 @@ async def test_grade_submission_extracts_grades_and_finishes(db, monkeypatch):
         ("answer2", "y", "some_effort"),
     ]
     assert len(await _traces(db)) == 2
+    assert fresh.general_feedback is None  # the rubric has no general_feedback_instructions
+
+
+def _fake_general_feedback_agent(seen: list, feedback: str = "Good work overall."):
+    from types import SimpleNamespace
+
+    class _Agent:
+        def invoke(self, state):
+            seen.append(state["messages"])
+            return {"structured_response": SimpleNamespace(feedback=feedback)}
+
+    def _create_agent(*, model, tools, response_format):
+        return _Agent()
+
+    return _create_agent
+
+
+async def test_grade_submission_writes_general_feedback_from_effective_grades(db, monkeypatch):
+    submission = await _setup_pending(
+        db,
+        monkeypatch,
+        ExtractionResult(answers={"answer1": "x", "answer2": "y"}),
+        general_feedback_instructions="Summarize in one sentence.",
+        context="Docker lab.",
+    )
+    # A TA override on answer2 survives the re-grade and is what the
+    # general feedback sees.
+    submission.answers = [
+        AnsweredQuestion(question_id="answer2", student_answer="y", manual_grade=Grade(level="solid", feedback="TA says fine"))
+    ]
+    await db.commit()
+    monkeypatch.setattr(
+        "aitana.grading.grading.create_agent",
+        _fake_create_agent([Grade(level="solid", feedback="f1"), Grade(level="some_effort", feedback="f2")]),
+    )
+    seen: list = []
+    monkeypatch.setattr("aitana.grading.general_feedback.create_agent", _fake_general_feedback_agent(seen))
+    db.expunge_all()
+
+    await tasks._grade_submission(db, submission.id)
+
+    fresh = await reload(db, Submission, submission.id)
+    assert fresh.status == SubmissionStatus.GRADED
+    assert fresh.error is None
+    assert fresh.general_feedback.feedback == "Good work overall."
+    assert fresh.general_feedback.info["model"] == "gpt-4o-mini"
+    [[system, human]] = seen
+    assert "Summarize in one sentence." in system.content
+    assert "Docker lab." in system.content
+    assert "- solid:" in system.content  # the grading scale
+    assert "## ANSWER1\nGrade: solid\nFeedback: f1" in human.content
+    assert "## ANSWER2\nGrade: solid\nFeedback: TA says fine" in human.content
+
+
+async def test_regenerate_general_feedback_uses_current_grades_only(db, monkeypatch):
+    """Rewrites only the general feedback, from the effective grades, keeps the TA's
+    manual general feedback, and puts the submission back to graded."""
+    db.add(LlmModel(provider="openai", model="gpt-4o-mini", is_default=True))
+    submission = await _setup(
+        db,
+        [_q("answer1")],
+        [
+            AnsweredQuestion(
+                question_id="answer1",
+                student_answer="x",
+                grade=Grade(level="some_effort", feedback="LLM"),
+                manual_grade=Grade(level="solid", feedback="TA override"),
+            )
+        ],
+        general_feedback_instructions="Summarize.",
+    )
+    submission.status = SubmissionStatus.GRADING
+    submission.manual_general_feedback = "TA general feedback"
+    await db.commit()
+    monkeypatch.setattr(tasks, "get_chat_model", lambda *args, **kwargs: object())
+    monkeypatch.setattr(tasks, "extract_submission_file", lambda s: pytest.fail("must not re-extract"))
+    monkeypatch.setattr("aitana.grading.grading.create_agent", lambda **kw: pytest.fail("must not re-grade"))
+    seen: list = []
+    monkeypatch.setattr("aitana.grading.general_feedback.create_agent", _fake_general_feedback_agent(seen, "Fresh general feedback."))
+    db.expunge_all()
+
+    await tasks._regenerate_general_feedback(db, submission.id)
+
+    fresh = await reload(db, Submission, submission.id)
+    assert fresh.status == SubmissionStatus.GRADED
+    assert fresh.general_feedback.feedback == "Fresh general feedback."
+    assert fresh.manual_general_feedback == "TA general feedback"
+    assert fresh.answers[0].grade.feedback == "LLM"
+    [[_system, human]] = seen
+    assert "Grade: solid\nFeedback: TA override" in human.content
+
+
+async def test_regenerate_general_feedback_failure_still_ends_graded(db, monkeypatch):
+    db.add(LlmModel(provider="openai", model="gpt-4o-mini", is_default=True))
+    submission = await _setup(
+        db, [_q("answer1")], [AnsweredQuestion(question_id="answer1", student_answer="x")], general_feedback_instructions="S."
+    )
+    submission.status = SubmissionStatus.GRADING
+    await db.commit()
+
+    def _broken(*args, **kwargs):
+        raise RuntimeError("no key")
+
+    monkeypatch.setattr(tasks, "get_chat_model", _broken)
+    db.expunge_all()
+
+    await tasks._regenerate_general_feedback(db, submission.id)
+
+    fresh = await reload(db, Submission, submission.id)
+    assert fresh.status == SubmissionStatus.GRADED
+    assert "General feedback failed: no key" in fresh.error
+
+
+async def test_grade_submission_general_feedback_failure_is_not_fatal(db, monkeypatch):
+    submission = await _setup_pending(
+        db, monkeypatch, ExtractionResult(answers={"answer1": "x", "answer2": "y"}), general_feedback_instructions="Summarize."
+    )
+    monkeypatch.setattr(
+        "aitana.grading.grading.create_agent",
+        _fake_create_agent([Grade(level="solid", feedback="1"), Grade(level="solid", feedback="2")]),
+    )
+
+    def _broken(**kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr("aitana.grading.general_feedback.create_agent", _broken)
+    db.expunge_all()
+
+    await tasks._grade_submission(db, submission.id)
+
+    fresh = await reload(db, Submission, submission.id)
+    assert fresh.status == SubmissionStatus.GRADED
+    assert [a.grade.level for a in fresh.answers] == ["solid", "solid"]
+    assert fresh.general_feedback is None
+    assert "General feedback failed: provider down" in fresh.error
 
 
 async def test_grade_submission_failure_keeps_extracted_answers(db, monkeypatch):

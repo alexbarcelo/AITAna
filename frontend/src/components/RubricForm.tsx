@@ -432,6 +432,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
     scaleToRows(rubric?.grading_scale ?? GRADING_SCALE_PRESETS[0].scale),
   )
   const [rubricContext, setRubricContext] = useState(rubric?.context ?? '')
+  const [generalFeedbackInstructions, setGeneralFeedbackInstructions] = useState(rubric?.general_feedback_instructions ?? '')
   const [questions, setQuestions] = useState<DraftQuestion[]>(rubric ? rubric.questions.map(questionToDraft) : [emptyQuestion()])
 
   function updateQuestion(index: number, patch: Partial<DraftQuestion>) {
@@ -448,6 +449,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
       format,
       grading_scale: rowsToScale(gradingScaleRows),
       context: rubricContext.trim() || null,
+      general_feedback_instructions: generalFeedbackInstructions.trim() || null,
       questions: questions.map((q) => toQuestion(q, format)),
     }
     if (isEdit) {
@@ -462,6 +464,7 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
           setFormat('pdf_form')
           setGradingScaleRows(scaleToRows(GRADING_SCALE_PRESETS[0].scale))
           setRubricContext('')
+          setGeneralFeedbackInstructions('')
           setQuestions([emptyQuestion()])
           onDone?.()
         },
@@ -505,6 +508,17 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
           placeholder="Background shared by every question (lab setup, dataset, tools available...). Sent with each question's grading prompt."
           value={rubricContext}
           onChange={(e) => setRubricContext(e.target.value)}
+          rows={3}
+          className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
+        />
+      </div>
+
+      <div>
+        <label className="block text-xs font-medium text-slate-600">General feedback instructions (optional)</label>
+        <textarea
+          placeholder="How to digest every question's grade and feedback into one short general feedback (e.g. 'Two sentences: the strongest point, then the most important thing to review'). Leave empty for no general feedback."
+          value={generalFeedbackInstructions}
+          onChange={(e) => setGeneralFeedbackInstructions(e.target.value)}
           rows={3}
           className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
         />

@@ -27,6 +27,7 @@ from ..grading.models import (
     Grade,
     GradeTrace,
     GradingLevel,
+    GeneralFeedback,
     Question,
     SubmissionFormat,
     default_grading_scale,
@@ -146,6 +147,10 @@ class Rubric(Base):
     )
     # Rubric-wide background shared by every question's grading prompt.
     context: Mapped[str | None] = mapped_column(Text)
+    # Optional: how to digest every question's grade and feedback into one
+    # short general feedback (grading/general_feedback.py). Unset = no
+    # general feedback is written.
+    general_feedback_instructions: Mapped[str | None] = mapped_column(Text)
     questions: Mapped[list[Question]] = mapped_column(PydanticJSONB(list[Question]), default=list)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -261,6 +266,13 @@ class Submission(Base):
     original_object_key: Mapped[str | None] = mapped_column(Text)
     status: Mapped[SubmissionStatus] = mapped_column(_str_enum(SubmissionStatus), default=SubmissionStatus.PENDING)
     answers: Mapped[list[AnsweredQuestion]] = mapped_column(PydanticJSONB(list[AnsweredQuestion]), default=list)
+    # General feedback, written after every answer is graded --
+    # only when the rubric has `general_feedback_instructions`.
+    general_feedback: Mapped[GeneralFeedback | None] = mapped_column(PydanticJSONB(GeneralFeedback))
+    # A TA's own general feedback text, next to (not instead of) the LLM's -- same
+    # rule as `AnsweredQuestion.manual_grade`; survives re-grades.
+    manual_general_feedback: Mapped[str | None] = mapped_column(Text)
+    manual_general_feedback_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
     # Batch-created submissions only: the batch, and the item's folder name
     # from the zip kept verbatim -- the feedback zip writes each file back
@@ -280,6 +292,14 @@ class Submission(Base):
     rubric: Mapped[Rubric] = relationship(lazy="raise")
     edition: Mapped[Edition] = relationship(lazy="raise")
     batch: Mapped[Batch | None] = relationship(lazy="raise")
+
+    @property
+    def effective_general_feedback(self) -> str | None:
+        """The general feedback the student should see: the TA's override if
+        any, else the LLM's."""
+        if self.manual_general_feedback:
+            return self.manual_general_feedback
+        return self.general_feedback.feedback if self.general_feedback is not None else None
 
     @property
     def display_name(self) -> str:

@@ -84,6 +84,7 @@ def _apply(rubric: Rubric, payload: RubricIn, slug: str, course: Course, edition
     rubric.format = payload.format
     rubric.grading_scale = payload.grading_scale
     rubric.context = payload.context
+    rubric.general_feedback_instructions = (payload.general_feedback_instructions or "").strip() or None
     rubric.questions = payload.questions
 
 
@@ -192,7 +193,8 @@ async def _parse_rubric_yaml(
 
     Precedence for slug/course/edition/format: the form field, then the YAML
     key (`slug:`, `course_slug:`, `edition_slug:`, `format:`), then a
-    default. `grading_scale:` and `context:` are YAML-only.
+    default. `grading_scale:`, `context:` and `general_feedback_instructions:` are
+    YAML-only.
 
     `honor_yaml_course_edition`: whether `course_slug:`/`edition_slug:` are
     consulted at all. False for the edit path: re-uploading a file must not
@@ -228,12 +230,16 @@ async def _parse_rubric_yaml(
     context = raw.get("context")
     if context is not None and not isinstance(context, str):
         raise HTTPException(status_code=422, detail="The YAML `context:` key must be a string")
+    general_feedback_instructions = raw.get("general_feedback_instructions")
+    if general_feedback_instructions is not None and not isinstance(general_feedback_instructions, str):
+        raise HTTPException(status_code=422, detail="The YAML `general_feedback_instructions:` key must be a string")
 
     body: dict[str, Any] = {
         "title": raw.get("title") or resolved_slug.replace("_", " ").title(),
         "course_id": course_id,
         "edition_id": edition_id,
         "context": context,
+        "general_feedback_instructions": general_feedback_instructions,
         "questions": raw["questions"],
     }
     if format is not None:

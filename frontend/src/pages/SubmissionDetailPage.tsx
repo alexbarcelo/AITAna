@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { API_URL } from '../api/client'
 import { useRegradeSubmission, useSubmission } from '../api/hooks'
@@ -6,11 +7,22 @@ import AnswerImages from '../components/AnswerImages'
 import DeleteSubmissionButton from '../components/DeleteSubmissionButton'
 import GradeBadge from '../components/GradeBadge'
 import { GradingInfoTooltip, SubmissionGradingInfoTooltip } from '../components/GradingInfo'
+import GeneralFeedbackEditor from '../components/GeneralFeedbackEditor'
 import MatchStudentDialog from '../components/MatchStudentDialog'
+import QuestionDetails from '../components/QuestionDetails'
 import RenameLabelDialog from '../components/RenameLabelDialog'
 import StatusBadge from '../components/StatusBadge'
 import { UntaggedCellsBadge, UntaggedCellsSummary } from '../components/UntaggedCells'
-import { effectiveGrade, FORMAT_FILE_INFO, IN_PROGRESS_STATUSES, SEGMENTED_FORMATS, submissionName } from '../api/types'
+import {
+  effectiveGrade,
+  FORMAT_FILE_INFO,
+  IN_PROGRESS_STATUSES,
+  SEGMENTED_FORMATS,
+  submissionName,
+  type AnsweredQuestion,
+  type Question,
+  type Submission,
+} from '../api/types'
 import { parseId } from '../lib/ids'
 
 export default function SubmissionDetailPage() {
@@ -145,44 +157,88 @@ export default function SubmissionDetailPage() {
       {submission.status === 'failed' && (
         <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">{submission.error ?? 'Grading failed.'}</p>
       )}
+      {submission.status === 'graded' && submission.error && (
+        <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">{submission.error}</p>
+      )}
       <UntaggedCellsSummary submission={submission} />
 
+      <GeneralFeedbackEditor submission={submission} disabled={inProgress} />
+
       <div className="space-y-4">
-        {submission.answers.map((answer) => {
-          const question = questionsById.get(answer.question_id)
-          const grade = effectiveGrade(answer)
-          return (
-            <div key={answer.question_id} className="rounded-lg border border-slate-200 bg-white p-4">
-              <div className="mb-2 flex items-center justify-between">
-                <h2 className="font-medium">{question?.title ?? answer.question_id}</h2>
-                <div className="flex items-center gap-2">
-                  <UntaggedCellsBadge count={answer.untagged_cells} />
-                  {answer.manual_grade && (
-                    <span className="text-xs text-slate-500" title="Grade set manually by a TA">
-                      edited
-                    </span>
-                  )}
-                  {grade && <GradeBadge level={grade.level} scale={submission.rubric.grading_scale} />}
-                  <GradingInfoTooltip answer={answer} />
-                </div>
-              </div>
-              <p className="mb-3 whitespace-pre-wrap rounded bg-slate-50 p-3 text-sm text-slate-700">
-                {answer.student_answer || <span className="text-slate-400">No answer provided.</span>}
-              </p>
-              <AnswerImages submissionId={submission.id} answer={answer} />
-              <AnswerGradeEditor
-                submissionId={submission.id}
-                answer={answer}
-                scale={submission.rubric.grading_scale}
-                disabled={inProgress}
-              />
-            </div>
-          )
-        })}
+        {submission.answers.map((answer) => (
+          <AnswerCard
+            key={answer.question_id}
+            submission={submission}
+            answer={answer}
+            question={questionsById.get(answer.question_id)}
+            disabled={inProgress}
+          />
+        ))}
         {submission.answers.length === 0 && !inProgress && (
           <p className="text-slate-400">No answers extracted yet.</p>
         )}
       </div>
+    </div>
+  )
+}
+
+function AnswerCard({
+  submission,
+  answer,
+  question,
+  disabled,
+}: {
+  submission: Submission
+  answer: AnsweredQuestion
+  question: Question | undefined
+  disabled: boolean
+}) {
+  const [showQuestion, setShowQuestion] = useState(false)
+  const grade = effectiveGrade(answer)
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h2 className="font-medium">{question?.title ?? answer.question_id}</h2>
+          {question && (
+            <button
+              type="button"
+              onClick={() => setShowQuestion((v) => !v)}
+              title="The question statement and what the LLM graded against (context, instructions, model answer, expected points)"
+              className="text-xs font-medium text-slate-500 hover:underline"
+            >
+              {showQuestion ? 'Hide question' : 'Show question'}
+            </button>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <UntaggedCellsBadge count={answer.untagged_cells} />
+          {answer.manual_grade && (
+            <span className="text-xs text-slate-500" title="Grade set manually by a TA">
+              edited
+            </span>
+          )}
+          {grade && <GradeBadge level={grade.level} scale={submission.rubric.grading_scale} />}
+          <GradingInfoTooltip answer={answer} />
+        </div>
+      </div>
+      {question && showQuestion && (
+        <div className="mb-3">
+          <p className="mb-2 whitespace-pre-wrap text-sm text-slate-700">{question.question}</p>
+          <QuestionDetails question={question} rubricContext={submission.rubric.context} />
+          <p className="text-xs font-medium uppercase text-slate-400">Answer</p>
+        </div>
+      )}
+      <p className="mb-3 whitespace-pre-wrap rounded bg-slate-50 p-3 text-sm text-slate-700">
+        {answer.student_answer || <span className="text-slate-400">No answer provided.</span>}
+      </p>
+      <AnswerImages submissionId={submission.id} answer={answer} />
+      <AnswerGradeEditor
+        submissionId={submission.id}
+        answer={answer}
+        scale={submission.rubric.grading_scale}
+        disabled={disabled}
+      />
     </div>
   )
 }

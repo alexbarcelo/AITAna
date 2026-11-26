@@ -14,6 +14,7 @@ from ..grading.models import (
     GradeTrace,
     GradingLevel,
     GradingScale,
+    GeneralFeedback,
     Question,
     SubmissionFormat,
     default_grading_scale,
@@ -59,6 +60,7 @@ class RubricSummaryOut(_FromORM):
     format: SubmissionFormat
     grading_scale: list[GradingLevel]
     context: str | None = None
+    general_feedback_instructions: str | None = None
     questions: list[Question]
     created_at: datetime
     updated_at: datetime
@@ -82,6 +84,9 @@ class RubricIn(BaseModel):
     grading_scale: GradingScale = Field(default_factory=default_grading_scale)
     # Rubric-wide background shared by every question's grading prompt.
     context: str | None = None
+    # Optional: how to digest every question's grade and feedback into one
+    # general feedback (grading/general_feedback.py). Unset = no general feedback.
+    general_feedback_instructions: str | None = None
     questions: list[Question]
 
     @model_validator(mode="after")
@@ -117,6 +122,9 @@ class SubmissionOut(_FromORM):
     original_object_key: str | None = None
     status: SubmissionStatus
     answers: list[AnsweredQuestion]
+    general_feedback: GeneralFeedback | None = None
+    manual_general_feedback: str | None = None
+    manual_general_feedback_at: datetime | None = None
     error: str | None = None
     document: ConvertedDocument | None = None
     segments: list[AnswerSegment] | None = None

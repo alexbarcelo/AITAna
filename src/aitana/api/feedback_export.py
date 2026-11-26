@@ -88,6 +88,10 @@ _STYLE = """
   .figures { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 .75rem; }
   .figures img { max-width: 100%; border: 1px solid #e2e8f0; border-radius: .375rem; background: #fff; }
   .feedback { font-size: .875rem; color: #475569; margin: 0; }
+  .general-feedback { background: #fff; border: 1px solid #cbd5e1; border-left: 4px solid #256abf;
+              border-radius: .5rem; padding: 1rem; margin-bottom: 1.5rem; }
+  .general-feedback h2 { font-size: 1rem; font-weight: 600; margin: 0 0 .5rem; }
+  .general-feedback p { white-space: pre-wrap; font-size: .875rem; color: #334155; margin: 0; }
   .muted { color: #94a3b8; }
   footer { margin-top: 2rem; font-size: .75rem; color: #94a3b8; }
 """
@@ -200,6 +204,14 @@ def render_feedback_html(
         </section>"""
         )
 
+    general_feedback = ""
+    # The TA's override, if any (Submission.effective_general_feedback).
+    if (feedback_text := submission.effective_general_feedback) is not None:
+        general_feedback = (
+            '<section class="general-feedback"><h2>General feedback</h2>'
+            f"<p>{html.escape(feedback_text)}</p></section>"
+        )
+
     if not sections and submission.status not in ("pending", "extracting", "grading"):
         sections.append('<p class="muted">No answers extracted yet.</p>')
 
@@ -217,6 +229,7 @@ def render_feedback_html(
     <p class="meta">{" &middot; ".join(html.escape(part) for part in (secondary, course, submission.edition.name) if part)}</p>
   </header>
   {notice}
+  {general_feedback}
   {"".join(sections)}
   <footer>Exported from AITAna.</footer>
 </div>

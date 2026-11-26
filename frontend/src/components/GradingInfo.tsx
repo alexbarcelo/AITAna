@@ -112,7 +112,12 @@ export function GradingInfoTooltip({ answer }: { answer: AnsweredQuestion }) {
       </InfoPopover>
     )
   }
+  return <GradingDetailsTooltip info={info} />
+}
 
+/** The details popover for any `grading_info`-shaped dict -- an answer's, or
+ * a submission's general feedback (`Submission.general_feedback.info`). */
+export function GradingDetailsTooltip({ info }: { info: Info }) {
   const tokens = isRecord(info.tokens) ? info.tokens : {}
   const providerDetails = isRecord(info.provider_details) ? info.provider_details : {}
   const features = Array.isArray(info.features) ? info.features.map((f) => FEATURE_LABELS[String(f)] ?? String(f)) : []

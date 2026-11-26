@@ -234,6 +234,8 @@ grading_scale:           # optional; defaults to the 4-level scale below
   - {id: solid,         score: 3, description: Covers the key points correctly and shows clear understanding.}
 context: |               # optional -- background shared by every question (lab setup, dataset...)
   What the whole lab/exam is about, sent with every question's grading prompt.
+general_feedback_instructions: |  # optional -- one "general feedback" for the whole submission
+  Two sentences: the strongest point overall, then the one thing to review first.
 questions:
   - id: answer1          # label; also the default answer-slot name (PDF field / notebook tag)
     field: answer1       # optional override if the answer slot is named differently
@@ -305,6 +307,16 @@ For each question in the rubric:
   valid levels is enforced per grading call, not a fixed global list --
   each rubric can define its own scale (see `AGENTS.md`'s "Pluggable
   grading scales").
+
+If the rubric has `general_feedback_instructions`, one more LLM call follows once
+every question is graded: it gets the rubric's `context`, its grading scale
+and, for each question, its title, grade level and feedback (the TA's manual
+grade if there is one -- not the student's answers), and digests them into a
+single short **general feedback** following those instructions. It's shown
+on the submission page and at the top of the feedback export. A TA can
+override its text, or **regenerate** it from the current grades (e.g.
+after overriding some of them) without re-grading anything else. Without
+`general_feedback_instructions`, no general feedback is written.
 
 Blank answers get the rubric's score-0 level without an LLM call --
 `not_attempted` for the default scale. The grading overview's **Score** is

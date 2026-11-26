@@ -1,8 +1,8 @@
-import type { ReactNode } from 'react'
 import { useState } from 'react'
 import AnswerGradeEditor from './AnswerGradeEditor'
 import AnswerImages from './AnswerImages'
 import GradeBadge from './GradeBadge'
+import QuestionDetails from './QuestionDetails'
 import { GradeDistributionBar, GradingStatsSummary } from './GradeStats'
 import { UntaggedCellsBadge } from './UntaggedCells'
 import { gradeColor, prettifyLevel } from '../lib/gradeColor'
@@ -178,6 +178,7 @@ export default function GradingGrid({
           question={selectedQuestion}
           answer={selectedAnswer}
           scale={rubric.grading_scale}
+          rubricContext={rubric.context}
           onClose={() => setSelected(null)}
         />
       )}
@@ -223,12 +224,14 @@ function AnswerQuickView({
   question,
   answer,
   scale,
+  rubricContext,
   onClose,
 }: {
   submission: Submission
   question: Question
   answer: AnsweredQuestion
   scale: SubmissionRubric['grading_scale']
+  rubricContext?: string | null
   onClose: () => void
 }) {
   const grade = effectiveGrade(answer)
@@ -254,7 +257,7 @@ function AnswerQuickView({
           </div>
         </div>
         <p className="mb-2 whitespace-pre-wrap text-sm text-slate-700">{question.question}</p>
-        <QuestionDetails question={question} />
+        <QuestionDetails question={question} rubricContext={rubricContext} />
         <p className="mb-1 text-xs font-medium uppercase text-slate-400">Answer</p>
         <p className="mb-3 whitespace-pre-wrap rounded bg-slate-50 p-3 text-sm text-slate-700">
           {answer.student_answer || <span className="text-slate-400">No answer provided.</span>}
@@ -272,42 +275,6 @@ function AnswerQuickView({
           </button>
         </div>
       </div>
-    </div>
-  )
-}
-
-/**
- * The question's grading aids (context, instructions, model answer, expected
- * points), each collapsed by default: the quick view is about reading the
- * answer, these are just one click away when the grade needs checking.
- */
-function QuestionDetails({ question }: { question: Question }) {
-  const sections: { label: string; content: ReactNode }[] = []
-  if (question.context) sections.push({ label: 'Context', content: <p className="whitespace-pre-wrap">{question.context}</p> })
-  sections.push({ label: 'Grading instructions', content: <p className="whitespace-pre-wrap">{question.rubric}</p> })
-  if (question.model_answer) {
-    sections.push({ label: 'Model answer', content: <p className="whitespace-pre-wrap">{question.model_answer}</p> })
-  }
-  if ((question.expected_points?.length ?? 0) > 0) {
-    sections.push({
-      label: 'Expected points',
-      content: (
-        <ul className="list-inside list-disc">
-          {question.expected_points!.map((point, idx) => (
-            <li key={idx}>{point}</li>
-          ))}
-        </ul>
-      ),
-    })
-  }
-  return (
-    <div className="mb-3 divide-y divide-slate-100 rounded border border-slate-200">
-      {sections.map(({ label, content }) => (
-        <details key={label} className="px-3 py-1.5">
-          <summary className="cursor-pointer text-xs font-medium uppercase text-slate-400 hover:text-slate-600">{label}</summary>
-          <div className="mt-1 pb-1 text-sm text-slate-600">{content}</div>
-        </details>
-      ))}
     </div>
   )
 }

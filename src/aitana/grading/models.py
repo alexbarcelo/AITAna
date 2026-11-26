@@ -137,6 +137,17 @@ class GradeTrace(BaseModel):
     info: dict[str, Any] = Field(default_factory=dict)
 
 
+class GeneralFeedback(BaseModel):
+    """A submission's general feedback (`Submission.general_feedback`):
+    one short text digesting every question's grade and feedback, written by
+    `general_feedback.py`'s `write_general_feedback` only when the rubric has
+    `general_feedback_instructions`. `info` is the same compact audit summary as
+    `AnsweredQuestion.grading_info`."""
+
+    feedback: str
+    info: dict[str, Any] = Field(default_factory=dict)
+
+
 def grade_schema_for_scale(grading_scale: list[GradingLevel]) -> type[BaseModel]:
     """Build a one-off structured-output schema for one grading call.
 

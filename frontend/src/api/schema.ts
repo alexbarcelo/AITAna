@@ -413,6 +413,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/submissions/{submission_id}/general-feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Manual General Feedback
+         * @description Set the TA's own general feedback. Stored as
+         *     `manual_general_feedback`, next to the LLM's `general_feedback` (both stay visible), and
+         *     survives re-grades -- same rules as a manual grade. Blank is `422`: use
+         *     `DELETE` to drop the override.
+         */
+        put: operations["set_manual_general_feedback_submissions__submission_id__general_feedback_put"];
+        post?: never;
+        /**
+         * Clear Manual General Feedback
+         * @description Drop the TA's general feedback, reverting to the LLM's (if any).
+         */
+        delete: operations["clear_manual_general_feedback_submissions__submission_id__general_feedback_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/submissions/{submission_id}/general-feedback/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regenerate Submission General Feedback
+         * @description Ask the LLM to rewrite the general feedback from the current effective
+         *     grades (TA overrides included) -- only the general feedback, nothing else is
+         *     re-graded. `422` if the rubric has no `general_feedback_instructions`, `409`
+         *     unless the submission is `graded`. A TA's `manual_general_feedback` stays in
+         *     place (the new LLM text shows under it).
+         */
+        post: operations["regenerate_submission_general_feedback_submissions__submission_id__general_feedback_regenerate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/submissions/{submission_id}/file": {
         parameters: {
             query?: never;
@@ -518,6 +569,30 @@ export interface paths {
          *     isn't in every involved rubric.
          */
         post: operations["regrade_submissions_submissions_regrade_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/submissions/general-feedback/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regenerate General Feedback Bulk
+         * @description Bulk version of `POST /{id}/general-feedback/regenerate` over an explicit
+         *     id list (e.g. whatever a filtered list shows). `422` if any involved rubric
+         *     has no `general_feedback_instructions`. Submissions that aren't `graded`
+         *     are skipped (counted in `skipped`) rather than failing the whole request --
+         *     in a list, some are usually still in progress or failed.
+         */
+        post: operations["regenerate_general_feedback_bulk_submissions_general_feedback_regenerate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1102,6 +1177,18 @@ export interface components {
             edition_id?: number | null;
             format?: components["schemas"]["SubmissionFormat"] | null;
         };
+        /** BulkRegenerateGeneralFeedbackRequest */
+        BulkRegenerateGeneralFeedbackRequest: {
+            /** Submission Ids */
+            submission_ids: number[];
+        };
+        /** BulkRegenerateGeneralFeedbackResult */
+        BulkRegenerateGeneralFeedbackResult: {
+            /** Regenerated */
+            regenerated: number;
+            /** Skipped */
+            skipped: number;
+        };
         /** BulkRegradeRequest */
         BulkRegradeRequest: {
             /** Submission Ids */
@@ -1219,6 +1306,22 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /**
+         * GeneralFeedback
+         * @description A submission's general feedback (`Submission.general_feedback`):
+         *     one short text digesting every question's grade and feedback, written by
+         *     `general_feedback.py`'s `write_general_feedback` only when the rubric has
+         *     `general_feedback_instructions`. `info` is the same compact audit summary as
+         *     `AnsweredQuestion.grading_info`.
+         */
+        GeneralFeedback: {
+            /** Feedback */
+            feedback: string;
+            /** Info */
+            info?: {
+                [key: string]: unknown;
+            };
         };
         /**
          * Grade
@@ -1399,6 +1502,11 @@ export interface components {
             /** Unavailable Reason */
             unavailable_reason?: string | null;
         };
+        /** ManualGeneralFeedbackIn */
+        ManualGeneralFeedbackIn: {
+            /** Feedback */
+            feedback: string;
+        };
         /**
          * Question
          * @description One gradable question: where to read the student's answer from the
@@ -1460,6 +1568,8 @@ export interface components {
             grading_scale?: components["schemas"]["GradingLevel"][];
             /** Context */
             context?: string | null;
+            /** General Feedback Instructions */
+            general_feedback_instructions?: string | null;
             /** Questions */
             questions: components["schemas"]["Question"][];
         };
@@ -1480,6 +1590,8 @@ export interface components {
             grading_scale: components["schemas"]["GradingLevel"][];
             /** Context */
             context?: string | null;
+            /** General Feedback Instructions */
+            general_feedback_instructions?: string | null;
             /** Questions */
             questions: components["schemas"]["Question"][];
             /**
@@ -1516,6 +1628,8 @@ export interface components {
             grading_scale: components["schemas"]["GradingLevel"][];
             /** Context */
             context?: string | null;
+            /** General Feedback Instructions */
+            general_feedback_instructions?: string | null;
             /** Questions */
             questions: components["schemas"]["Question"][];
             /**
@@ -1635,6 +1749,11 @@ export interface components {
             status: components["schemas"]["SubmissionStatus"];
             /** Answers */
             answers: components["schemas"]["AnsweredQuestion"][];
+            general_feedback?: components["schemas"]["GeneralFeedback"] | null;
+            /** Manual General Feedback */
+            manual_general_feedback?: string | null;
+            /** Manual General Feedback At */
+            manual_general_feedback_at?: string | null;
             /** Error */
             error?: string | null;
             document?: components["schemas"]["ConvertedDocument"] | null;
@@ -2562,6 +2681,106 @@ export interface operations {
             };
         };
     };
+    set_manual_general_feedback_submissions__submission_id__general_feedback_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManualGeneralFeedbackIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubmissionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_manual_general_feedback_submissions__submission_id__general_feedback_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubmissionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regenerate_submission_general_feedback_submissions__submission_id__general_feedback_regenerate_post: {
+        parameters: {
+            query?: {
+                /** @description LLM model to grade with; defaults to the default model */
+                model_id?: number | null;
+            };
+            header?: never;
+            path: {
+                submission_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubmissionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     download_submission_file_submissions__submission_id__file_get: {
         parameters: {
             query?: {
@@ -2713,6 +2932,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BulkRegradeResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regenerate_general_feedback_bulk_submissions_general_feedback_regenerate_post: {
+        parameters: {
+            query?: {
+                /** @description LLM model to grade with; defaults to the default model */
+                model_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkRegenerateGeneralFeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkRegenerateGeneralFeedbackResult"];
                 };
             };
             /** @description Validation Error */

@@ -46,6 +46,7 @@ from ..grading.extraction.generic_document import (
 )
 from ..grading.grading import grade_answer
 from ..grading.llm import get_chat_model
+from ..grading.general_feedback import GeneralFeedbackItem, has_general_feedback, write_general_feedback
 from ..grading.models import (
     ConvertedDocument,
     DocumentImage,
@@ -147,6 +148,8 @@ async def _grade_submission(
         submission.answers = _rebuild_answers(
             rubric.questions, extracted, submission.answers, keep_grades_except=only_question_id
         )
+        # Based on the old grades: rewritten once grading is done.
+        submission.general_feedback = None
         await _commit(session)
 
         llm_model = await resolve_llm_model(session, model_id)
@@ -164,6 +167,8 @@ async def _grade_submission(
             images=extracted.images,
             rubric_context=rubric.context,
         )
+        if has_general_feedback(rubric.general_feedback_instructions):
+            _write_general_feedback(submission, chat_model, llm_model.provider, llm_model.model, llm_model.reasoning_effort)
 
         submission.status = SubmissionStatus.GRADED
         submission.updated_at = datetime.now(UTC)
@@ -173,6 +178,42 @@ async def _grade_submission(
     except Exception as exc:  # noqa: BLE001 -- one bad submission shouldn't crash the worker
         logger.exception("Grading submission %s failed", submission_id)
         await _mark(session, submission_id, SubmissionStatus.FAILED, str(exc))
+
+
+@celery_app.task(name="aitana.regenerate_general_feedback")
+def regenerate_general_feedback(submission_id: int, model_id: int | None = None) -> None:
+    """Rewrite only a graded submission's general feedback, from its current
+    effective grades (e.g. after a TA overrode some) -- no re-extraction, no
+    per-question LLM calls."""
+    asyncio.run(_run_regenerate_general_feedback(submission_id, model_id))
+
+
+async def _run_regenerate_general_feedback(submission_id: int, model_id: int | None) -> None:
+    async with task_session() as session:
+        try:
+            await _regenerate_general_feedback(session, submission_id, model_id)
+        except SubmissionGone:
+            logger.warning("Submission %s was deleted while being processed", submission_id)
+
+
+async def _regenerate_general_feedback(session: AsyncSession, submission_id: int, model_id: int | None = None) -> None:
+    """The API set the submission to `grading` before enqueueing (which
+    keeps manual edits out meanwhile); this always puts it back to `graded`
+    -- a general feedback failure never touches the per-question grades."""
+    submission = await _load_submission(session, submission_id)
+    if submission is None:
+        return
+    try:
+        llm_model = await resolve_llm_model(session, model_id)
+        chat_model = get_chat_model(llm_model.provider, llm_model.model, reasoning_effort=llm_model.reasoning_effort)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("General feedback of submission %s failed", submission_id)
+        submission.error = f"General feedback failed: {exc}"
+    else:
+        _write_general_feedback(submission, chat_model, llm_model.provider, llm_model.model, llm_model.reasoning_effort)
+    submission.status = SubmissionStatus.GRADED
+    submission.updated_at = datetime.now(UTC)
+    await _commit(session)
 
 
 @celery_app.task(name="aitana.prepare_submission")
@@ -282,6 +323,32 @@ async def _suggest(session: AsyncSession, submission: Submission, model_id: int 
         submission.error = f"LLM segmentation failed: {exc}"
     submission.status = SubmissionStatus.AWAITING_SEGMENTATION
     await _commit(session)
+
+
+def _write_general_feedback(
+    submission: Submission, chat_model: BaseChatModel, provider: str, model: str, reasoning_effort: str | None
+) -> None:
+    """Write the general feedback (`grading/general_feedback.py`) from the
+    graded answers -- their effective grade, so a TA override counts. Not
+    fatal: on failure the per-question grades stand, the submission still
+    ends up `graded`, and `error` says what happened."""
+    rubric = submission.rubric
+    titles = {q.id: q.title for q in rubric.questions}
+    items = [GeneralFeedbackItem(title=titles.get(a.question_id, a.question_id), grade=a.effective_grade) for a in submission.answers]
+    try:
+        submission.general_feedback = write_general_feedback(
+            chat_model,
+            rubric.general_feedback_instructions or "",
+            rubric.grading_scale,
+            items,
+            rubric_context=rubric.context,
+            provider=provider,
+            model=model,
+            reasoning_effort=reasoning_effort,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("General feedback of submission %s failed", submission.id)
+        submission.error = f"General feedback failed: {exc}"
 
 
 def extract_submission_file(submission: Submission) -> ExtractionResult:

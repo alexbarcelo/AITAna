@@ -1,7 +1,7 @@
 from sqlalchemy import func, select
 
 from aitana.db import AnsweredQuestion, Course, Edition, Rubric, Submission, SubmissionStatus
-from aitana.grading.models import ConvertedDocument, Grade, Question, SubmissionFormat
+from aitana.grading.models import ConvertedDocument, Grade, GeneralFeedback, Question, SubmissionFormat
 
 from .factories import add, reload, save
 
@@ -501,6 +501,113 @@ async def test_clear_manual_grade_reverts_to_llm(client):
     assert answer["manual_grade"] is None
     assert answer["manual_graded_at"] is None
     assert (await reload(client.db, Submission, submission_id)).answers[0].effective_grade.level == "some_effort"
+
+
+# ---- general feedback: manual override + regenerate ----
+
+
+async def test_set_and_clear_manual_general_feedback_keeps_llm_general_feedback(client):
+    submission_id = await _make_graded_submission(client)
+    submission = await reload(client.db, Submission, submission_id)
+    submission.general_feedback = GeneralFeedback(feedback="LLM general feedback")
+    await save(client.db, submission)
+
+    resp = await client.put(f"/submissions/{submission_id}/general-feedback", json={"feedback": "  TA general feedback  "})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["manual_general_feedback"] == "TA general feedback"
+    assert body["manual_general_feedback_at"] is not None
+    assert body["general_feedback"]["feedback"] == "LLM general feedback"
+    assert (await reload(client.db, Submission, submission_id)).effective_general_feedback == "TA general feedback"
+
+    resp = await client.delete(f"/submissions/{submission_id}/general-feedback")
+    assert resp.status_code == 200
+    assert resp.json()["manual_general_feedback"] is None
+    assert resp.json()["manual_general_feedback_at"] is None
+    assert (await reload(client.db, Submission, submission_id)).effective_general_feedback == "LLM general feedback"
+
+
+async def test_set_manual_general_feedback_blank_422(client):
+    submission_id = await _make_graded_submission(client)
+    resp = await client.put(f"/submissions/{submission_id}/general-feedback", json={"feedback": "   "})
+    assert resp.status_code == 422
+
+
+async def test_set_manual_general_feedback_rejected_while_grading(client):
+    submission_id = await _make_graded_submission(client)
+    submission = await reload(client.db, Submission, submission_id)
+    submission.status = SubmissionStatus.GRADING
+    await save(client.db, submission)
+    resp = await client.put(f"/submissions/{submission_id}/general-feedback", json={"feedback": "x"})
+    assert resp.status_code == 409
+
+
+async def _with_general_feedback_instructions(client, submission_id: int) -> None:
+    submission = await reload(client.db, Submission, submission_id)
+    rubric = await reload(client.db, Rubric, submission.rubric_id)
+    rubric.general_feedback_instructions = "One sentence."
+    await save(client.db, rubric)
+
+
+async def test_regenerate_general_feedback_enqueues_and_marks_grading(client):
+    submission_id = await _make_graded_submission(client)
+    await _with_general_feedback_instructions(client, submission_id)
+
+    resp = await client.post(f"/submissions/{submission_id}/general-feedback/regenerate")
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "grading"
+    assert client.delayed_general_feedback == [(submission_id, client.default_llm_model_id)]
+    # Only the general feedback: nothing re-graded.
+    assert client.delayed_submission_ids == [submission_id]  # the upload itself
+
+
+async def test_regenerate_general_feedback_without_instructions_422(client):
+    submission_id = await _make_graded_submission(client)
+    resp = await client.post(f"/submissions/{submission_id}/general-feedback/regenerate")
+    assert resp.status_code == 422
+    assert client.delayed_general_feedback == []
+
+
+async def test_regenerate_general_feedback_requires_graded_submission(client):
+    submission_id = await _make_graded_submission(client)
+    await _with_general_feedback_instructions(client, submission_id)
+    submission = await reload(client.db, Submission, submission_id)
+    submission.status = SubmissionStatus.FAILED
+    await save(client.db, submission)
+
+    resp = await client.post(f"/submissions/{submission_id}/general-feedback/regenerate")
+    assert resp.status_code == 409
+    assert client.delayed_general_feedback == []
+
+
+async def test_bulk_regenerate_general_feedback_skips_ungraded(client):
+    graded_id = await _make_graded_submission(client)
+    await _with_general_feedback_instructions(client, graded_id)
+    graded = await reload(client.db, Submission, graded_id)
+    failed = await add(
+        client.db,
+        Submission(
+            rubric_id=graded.rubric_id,
+            edition_id=graded.edition_id,
+            file_object_key="k",
+            status=SubmissionStatus.FAILED,
+        ),
+    )
+    failed_id = failed.id
+
+    resp = await client.post("/submissions/general-feedback/regenerate", json={"submission_ids": [graded_id, failed_id]})
+    assert resp.status_code == 202
+    assert resp.json() == {"regenerated": 1, "skipped": 1}
+    assert client.delayed_general_feedback == [(graded_id, client.default_llm_model_id)]
+    assert (await reload(client.db, Submission, graded_id)).status == SubmissionStatus.GRADING
+    assert (await reload(client.db, Submission, failed_id)).status == SubmissionStatus.FAILED
+
+
+async def test_bulk_regenerate_general_feedback_without_instructions_422(client):
+    submission_id = await _make_graded_submission(client)
+    resp = await client.post("/submissions/general-feedback/regenerate", json={"submission_ids": [submission_id]})
+    assert resp.status_code == 422
+    assert client.delayed_general_feedback == []
 
 
 async def test_set_manual_grade_rejects_unknown_level(client):
