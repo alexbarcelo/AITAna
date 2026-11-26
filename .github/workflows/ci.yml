@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Ruff: formatting + lint (config in pyproject.toml's [tool.ruff]).
+  python-lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --only-dev
+      - run: uv run --no-sync ruff format --check .
+      - run: uv run --no-sync ruff check .
+
+  # pytest against a real PostgreSQL: tests/conftest.py starts a throwaway
+  # postgres container through testcontainers (the runner has Docker).
+  # MinIO/Celery are in-process fakes; no LLM provider is called.
+  python-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # Default dev group: pytest plus every provider extra (tests/test_llm.py
+      # constructs each provider's real client class).
+      - run: uv sync --locked
+      - run: uv run --no-sync pytest -q
+      # Models and migrations agree (AGENTS.md "Database migrations").
+      - name: alembic check
+        run: |
+          docker run -d --name pg -e POSTGRES_PASSWORD=pg -p 5432:5432 postgres:17-alpine
+          until docker exec pg pg_isready -U postgres -h localhost; do sleep 1; done
+          uv run --no-sync alembic upgrade head
+          uv run --no-sync alembic check
+        env:
+          DATABASE_URL: postgresql://postgres:pg@localhost:5432/postgres
+
+  # Prettier, oxlint and the TypeScript build.
+  frontend:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run build

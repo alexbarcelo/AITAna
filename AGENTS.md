@@ -1508,6 +1508,10 @@ formatter's output. Line length is 120 on both.
   `npm run lint` (oxlint). `src/api/schema.ts` is generated
   (`openapi-typescript`) and in `.prettierignore` -- regenerate it, don't
   format it.
+- **CI** (`.github/workflows/ci.yml`) checks all of the above (formatter in
+  check mode, both linters, the frontend build), and runs `pytest` plus
+  `alembic check` against a throwaway PostgreSQL. A pure-reformat commit
+  goes in `.git-blame-ignore-revs`.
 
 ## Testing strategy
 
@@ -1604,6 +1608,10 @@ can't.
   sandbox for grading"), and a recursive chown would copy the whole `.venv`
   into another layer. Because of that runtime write, the root filesystem
   can't be read-only.
+- **The backend image has no dev dependencies** (`uv sync --no-dev`): no
+  pytest, testcontainers or Ruff, and only the provider extras the
+  Dockerfile names (the dev group would otherwise pull in all four,
+  `anthropic` included). Tests run in CI (`ci.yml`), never in the image.
 - **The root `.dockerignore` is a whitelist**, so a local build can never
   copy `.env` (API keys), `.venv`, `configs/` or student files at the repo
   root into the image. If the image needs a new top-level file (as

@@ -38,10 +38,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl unzip ca-c
 # left out here -- it needs a rebuild with `--extra anthropic` added below
 # (or its own image), not just setting ANTHROPIC_API_KEY.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-install-project --extra openai --extra ollama --extra openrouter
+RUN uv sync --locked --no-dev --no-install-project --extra openai --extra ollama --extra openrouter
 
 COPY . .
-RUN uv sync --locked --extra openai --extra ollama --extra openrouter
+RUN uv sync --locked --no-dev --extra openai --extra ollama --extra openrouter
 
 # The sandbox writes to ./node_modules (relative to /app) and the Deno cache
 # at runtime, so those -- and /app itself, non-recursively -- must be writable
