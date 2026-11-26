@@ -98,7 +98,12 @@ def suggest_segments(chat_model: BaseChatModel, markdown: str, questions: list[Q
     agent = create_agent(model=chat_model, tools=[], response_format=segmentation_schema(questions))
     start = time.perf_counter()
     result = agent.invoke(
-        {"messages": [SystemMessage(content=build_system_prompt(questions)), HumanMessage(content=number_lines(markdown))]}
+        {
+            "messages": [
+                SystemMessage(content=build_system_prompt(questions)),
+                HumanMessage(content=number_lines(markdown)),
+            ]
+        }
     )
     raw = result["structured_response"]
     logger.info("Segmentation suggested in %.2fs", time.perf_counter() - start)

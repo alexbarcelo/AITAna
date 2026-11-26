@@ -100,7 +100,9 @@ async def test_create_model_duplicate_conflicts(client):
     resp = await client.post("/llm/models", json={"provider": "openai", "model": "gpt-4o-mini"})
     assert resp.status_code == 409
     # A different reasoning effort doesn't make it a different model -- edit the existing one instead.
-    resp = await client.post("/llm/models", json={"provider": "openai", "model": "gpt-4o-mini", "reasoning_effort": "low"})
+    resp = await client.post(
+        "/llm/models", json={"provider": "openai", "model": "gpt-4o-mini", "reasoning_effort": "low"}
+    )
     assert resp.status_code == 409
 
 
@@ -158,9 +160,9 @@ async def test_favorite_unknown_model_404(client):
 
 
 async def test_delete_model_removes_favorite(client, db):
-    new_id = (await client.post("/llm/models", json={"provider": "openai", "model": "gpt-5", "is_favorite": True})).json()[
-        "id"
-    ]
+    new_id = (
+        await client.post("/llm/models", json={"provider": "openai", "model": "gpt-5", "is_favorite": True})
+    ).json()["id"]
     assert await _favorite_ids(db) == [new_id]
     resp = await client.delete(f"/llm/models/{new_id}")
     assert resp.status_code == 204
@@ -183,7 +185,9 @@ async def test_delete_last_model_allowed(client):
 
 
 async def test_seed_from_env_when_empty(db, monkeypatch):
-    monkeypatch.setattr(llm_router, "get_settings", lambda: Settings(llm_provider="OpenRouter", llm_model="z-ai/glm-4.5"))
+    monkeypatch.setattr(
+        llm_router, "get_settings", lambda: Settings(llm_provider="OpenRouter", llm_model="z-ai/glm-4.5")
+    )
     await llm_router.seed_llm_models_from_env(db)
     [model] = list(await db.scalars(select(LlmModel)))
     assert (model.provider, model.model, model.is_default) == ("openrouter", "z-ai/glm-4.5", True)
@@ -206,7 +210,9 @@ async def _make_submission(client) -> tuple[int, int]:
     student_id = (await client.post("/students", json={"student_id": "s1", "name": "Ada"})).json()["id"]
     course_id = (await client.post("/courses", json={"name": "BDM"})).json()["id"]
     edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
-    rubric = await make_rubric(client.db, "lab", course=await client.db.get(Course, course_id), questions=[question("q1")])
+    rubric = await make_rubric(
+        client.db, "lab", course=await client.db.get(Course, course_id), questions=[question("q1")]
+    )
     resp = await client.post(
         "/submissions",
         data={"student_id": student_id, "rubric_id": rubric.id, "edition_id": edition_id},
@@ -227,7 +233,9 @@ async def test_grading_uses_requested_model(client):
 
     resp = await client.post(f"/submissions/{submission_id}/regrade", params={"model_id": other_id})
     assert resp.status_code == 202
-    resp = await client.post("/submissions/regrade", params={"model_id": other_id}, json={"submission_ids": [submission_id]})
+    resp = await client.post(
+        "/submissions/regrade", params={"model_id": other_id}, json={"submission_ids": [submission_id]}
+    )
     assert resp.status_code == 202
     assert client.delayed_model_ids == [client.default_llm_model_id, other_id, other_id]
 
@@ -282,7 +290,9 @@ async def test_create_model_with_reasoning_effort(client):
 
 
 async def test_create_model_invalid_reasoning_effort_rejected(client):
-    resp = await client.post("/llm/models", json={"provider": "openai", "model": "gpt-5", "reasoning_effort": "extreme"})
+    resp = await client.post(
+        "/llm/models", json={"provider": "openai", "model": "gpt-5", "reasoning_effort": "extreme"}
+    )
     assert resp.status_code == 422
 
 

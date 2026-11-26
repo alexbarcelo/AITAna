@@ -1,7 +1,7 @@
 from sqlalchemy import func, select
 
 from aitana.db import AnsweredQuestion, Course, Edition, Rubric, Submission, SubmissionStatus
-from aitana.grading.models import ConvertedDocument, Grade, GeneralFeedback, Question, SubmissionFormat
+from aitana.grading.models import ConvertedDocument, GeneralFeedback, Grade, Question, SubmissionFormat
 
 from .factories import add, reload, save
 
@@ -107,9 +107,7 @@ async def test_create_submission_requires_exactly_one_of_student_or_label(client
         {"rubric_id": rubric_id, "label": "   "},
         {"rubric_id": rubric_id, "label": "Group 3", "student_id": student_id},
     ):
-        resp = await client.post(
-            "/submissions", data=data, files={"file": ("answers.pdf", b"data", "application/pdf")}
-        )
+        resp = await client.post("/submissions", data=data, files={"file": ("answers.pdf", b"data", "application/pdf")})
         assert resp.status_code == 422, data
     assert client.delayed_submission_ids == []
 
@@ -386,7 +384,9 @@ async def test_bulk_regrade_submissions(client):
     ).json()["id"]
     question_id = (await reload(client.db, Rubric, rubric_id)).questions[0].id
 
-    resp = await client.post("/submissions/regrade", json={"submission_ids": [submission_id], "question_id": question_id})
+    resp = await client.post(
+        "/submissions/regrade", json={"submission_ids": [submission_id], "question_id": question_id}
+    )
     assert resp.status_code == 202
     assert resp.json() == {"regraded": 1}
     assert client.delayed_question_ids == [None, question_id]
@@ -437,17 +437,13 @@ async def test_set_submission_student_not_found(client):
         )
     ).json()
 
-    resp = await client.put(
-        f"/submissions/{created['id']}/student", json={"student_id": "999999999"}
-    )
+    resp = await client.put(f"/submissions/{created['id']}/student", json={"student_id": "999999999"})
     assert resp.status_code == 404
 
 
 async def test_set_submission_student_submission_not_found(client):
     student_id = await _make_student(client)
-    resp = await client.put(
-        "/submissions/999999999/student", json={"student_id": student_id}
-    )
+    resp = await client.put("/submissions/999999999/student", json={"student_id": student_id})
     assert resp.status_code == 404
 
 
@@ -512,7 +508,9 @@ async def test_set_and_clear_manual_general_feedback_keeps_llm_general_feedback(
     submission.general_feedback = GeneralFeedback(feedback="LLM general feedback")
     await save(client.db, submission)
 
-    resp = await client.put(f"/submissions/{submission_id}/general-feedback", json={"feedback": "  TA general feedback  "})
+    resp = await client.put(
+        f"/submissions/{submission_id}/general-feedback", json={"feedback": "  TA general feedback  "}
+    )
     assert resp.status_code == 200
     body = resp.json()
     assert body["manual_general_feedback"] == "TA general feedback"
@@ -595,7 +593,9 @@ async def test_bulk_regenerate_general_feedback_skips_ungraded(client):
     )
     failed_id = failed.id
 
-    resp = await client.post("/submissions/general-feedback/regenerate", json={"submission_ids": [graded_id, failed_id]})
+    resp = await client.post(
+        "/submissions/general-feedback/regenerate", json={"submission_ids": [graded_id, failed_id]}
+    )
     assert resp.status_code == 202
     assert resp.json() == {"regenerated": 1, "skipped": 1}
     assert client.delayed_general_feedback == [(graded_id, client.default_llm_model_id)]
@@ -620,14 +620,14 @@ async def test_set_manual_grade_rejects_unknown_level(client):
 
 async def test_set_manual_grade_unknown_question(client):
     submission_id = await _make_graded_submission(client)
-    resp = await client.put(f"/submissions/{submission_id}/answers/nope/grade", json={"level": "solid", "feedback": "x"})
+    resp = await client.put(
+        f"/submissions/{submission_id}/answers/nope/grade", json={"level": "solid", "feedback": "x"}
+    )
     assert resp.status_code == 404
 
 
 async def test_set_manual_grade_not_found(client):
-    resp = await client.put(
-        "/submissions/999999999/answers/answer1/grade", json={"level": "solid", "feedback": "x"}
-    )
+    resp = await client.put("/submissions/999999999/answers/answer1/grade", json={"level": "solid", "feedback": "x"})
     assert resp.status_code == 404
 
 
@@ -669,7 +669,7 @@ async def _make_generic_submission(client, *, llm_segmentation: bool = True, con
     assert resp.status_code == 202, resp.text
     submission_id = resp.json()["id"]
     if converted:
-        client.fake_objects["md-key"] = "# Ex 1\nfoo\n# Ex 2\nbar".encode()
+        client.fake_objects["md-key"] = b"# Ex 1\nfoo\n# Ex 2\nbar"
         submission = await reload(client.db, Submission, submission_id)
         submission.document = ConvertedDocument(markdown_object_key="md-key", line_count=4, page_start_lines=[1])
         submission.status = SubmissionStatus.AWAITING_SEGMENTATION
@@ -796,7 +796,12 @@ async def test_get_submission_document(client):
     submission_id = await _make_generic_submission(client)
     resp = await client.get(f"/submissions/{submission_id}/document")
     assert resp.status_code == 200
-    assert resp.json() == {"markdown": "# Ex 1\nfoo\n# Ex 2\nbar", "line_count": 4, "page_start_lines": [1], "images": []}
+    assert resp.json() == {
+        "markdown": "# Ex 1\nfoo\n# Ex 2\nbar",
+        "line_count": 4,
+        "page_start_lines": [1],
+        "images": [],
+    }
 
 
 async def test_get_submission_document_not_converted_yet(client):
@@ -822,7 +827,10 @@ async def test_set_segments_and_grade(client):
     resp = await client.put(
         f"/submissions/{submission_id}/segments",
         json={
-            "segments": [{"question_id": "q1", "start_line": 1, "end_line": 2}, {"question_id": "q2", "start_line": None}],
+            "segments": [
+                {"question_id": "q1", "start_line": 1, "end_line": 2},
+                {"question_id": "q2", "start_line": None},
+            ],
             "grade": True,
         },
     )

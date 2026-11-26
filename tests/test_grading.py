@@ -230,7 +230,13 @@ def test_grade_answer_emits_trace_on_blank_short_circuit():
     captured: list[GradeTrace] = []
 
     result = grade_answer(
-        fake_model, question, "   ", DEFAULT_GRADING_SCALE, provider="openai", model="gpt-4o-mini", on_trace=captured.append
+        fake_model,
+        question,
+        "   ",
+        DEFAULT_GRADING_SCALE,
+        provider="openai",
+        model="gpt-4o-mini",
+        on_trace=captured.append,
     )
 
     assert result.level == "not_attempted"
@@ -318,7 +324,13 @@ def test_grade_answer_trace_extracts_tool_calls_and_thinking(monkeypatch):
     monkeypatch.setattr(grading, "create_agent", _create_agent)
 
     result = grade_answer(
-        fake_model, question, "My answer text", DEFAULT_GRADING_SCALE, provider="openai", model="gpt-4o-mini", on_trace=captured.append
+        fake_model,
+        question,
+        "My answer text",
+        DEFAULT_GRADING_SCALE,
+        provider="openai",
+        model="gpt-4o-mini",
+        on_trace=captured.append,
     )
 
     assert result == expected
@@ -357,7 +369,13 @@ def test_extract_thinking_reads_openai_responses_api_reasoning_block():
     messages = [
         AIMessage(
             content=[
-                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Step 1..."}, {"type": "summary_text", "text": "Step 2..."}]},
+                {
+                    "type": "reasoning",
+                    "summary": [
+                        {"type": "summary_text", "text": "Step 1..."},
+                        {"type": "summary_text", "text": "Step 2..."},
+                    ],
+                },
                 {"type": "text", "text": "final answer"},
             ]
         )
@@ -371,7 +389,12 @@ def test_extract_thinking_reads_anthropic_thinking_block():
     from aitana.grading.grading import _extract_thinking
 
     messages = [
-        AIMessage(content=[{"type": "thinking", "thinking": "Let me work through this..."}, {"type": "text", "text": "answer"}])
+        AIMessage(
+            content=[
+                {"type": "thinking", "thinking": "Let me work through this..."},
+                {"type": "text", "text": "answer"},
+            ]
+        )
     ]
     assert _extract_thinking(messages) == "Let me work through this..."
 

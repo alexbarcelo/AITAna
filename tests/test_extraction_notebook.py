@@ -262,7 +262,14 @@ def test_extract_answers_reads_text_outputs(tmp_path):
             ),
             _code(
                 "boom()",
-                [{"output_type": "error", "ename": "NameError", "evalue": "name 'boom' is not defined", "traceback": ["\x1b[0;31m..."]}],
+                [
+                    {
+                        "output_type": "error",
+                        "ename": "NameError",
+                        "evalue": "name 'boom' is not defined",
+                        "traceback": ["\x1b[0;31m..."],
+                    }
+                ],
                 tags=["aitana:answer"],
                 field="answer2",
             ),
@@ -287,9 +294,7 @@ def test_extract_answers_reads_images_and_drops_figure_repr(tmp_path):
         "metadata": {},
     }
     svg = {"output_type": "display_data", "data": {"image/svg+xml": "<svg/>", "text/plain": "<Figure>"}, "metadata": {}}
-    _write_notebook(
-        notebook_path, [_code("plt.plot(x)", [figure, svg], tags=["aitana:answer"], field="answer1")]
-    )
+    _write_notebook(notebook_path, [_code("plt.plot(x)", [figure, svg], tags=["aitana:answer"], field="answer1")])
 
     result = extract_answers(notebook_path)
 
@@ -304,8 +309,12 @@ def test_extract_answers_outputs_of_untagged_region_cells(tmp_path):
         notebook_path,
         [
             _cell("markdown", "Q1", tags=["aitana:question"], field="answer1", editable=False),
-            _code("...", [{"output_type": "execute_result", "data": {"text/plain": "Ellipsis"}, "metadata": {}}],
-                  tags=["aitana:answer"], field="answer1"),
+            _code(
+                "...",
+                [{"output_type": "execute_result", "data": {"text/plain": "Ellipsis"}, "metadata": {}}],
+                tags=["aitana:answer"],
+                field="answer1",
+            ),
             _code("plot()", [image]),
         ],
     )
@@ -325,7 +334,14 @@ def test_extract_answers_truncates_outputs_and_caps_images(tmp_path):
     long_text = {"output_type": "stream", "name": "stdout", "text": "x" * (notebook._MAX_OUTPUT_CHARS + 100)}
     _write_notebook(
         notebook_path,
-        [_code("go()", [long_text] + [image] * (notebook._MAX_IMAGES_PER_ANSWER + 2), tags=["aitana:answer"], field="answer1")],
+        [
+            _code(
+                "go()",
+                [long_text] + [image] * (notebook._MAX_IMAGES_PER_ANSWER + 2),
+                tags=["aitana:answer"],
+                field="answer1",
+            )
+        ],
     )
 
     result = extract_answers(notebook_path)

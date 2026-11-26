@@ -44,9 +44,9 @@ from ..grading.extraction.generic_document import (
     missing_questions,
     resolve_segments,
 )
+from ..grading.general_feedback import GeneralFeedbackItem, has_general_feedback, write_general_feedback
 from ..grading.grading import grade_answer
 from ..grading.llm import get_chat_model
-from ..grading.general_feedback import GeneralFeedbackItem, has_general_feedback, write_general_feedback
 from ..grading.models import (
     ConvertedDocument,
     DocumentImage,
@@ -168,7 +168,9 @@ async def _grade_submission(
             rubric_context=rubric.context,
         )
         if has_general_feedback(rubric.general_feedback_instructions):
-            _write_general_feedback(submission, chat_model, llm_model.provider, llm_model.model, llm_model.reasoning_effort)
+            _write_general_feedback(
+                submission, chat_model, llm_model.provider, llm_model.model, llm_model.reasoning_effort
+            )
 
         submission.status = SubmissionStatus.GRADED
         submission.updated_at = datetime.now(UTC)
@@ -334,7 +336,10 @@ def _write_general_feedback(
     ends up `graded`, and `error` says what happened."""
     rubric = submission.rubric
     titles = {q.id: q.title for q in rubric.questions}
-    items = [GeneralFeedbackItem(title=titles.get(a.question_id, a.question_id), grade=a.effective_grade) for a in submission.answers]
+    items = [
+        GeneralFeedbackItem(title=titles.get(a.question_id, a.question_id), grade=a.effective_grade)
+        for a in submission.answers
+    ]
     try:
         submission.general_feedback = write_general_feedback(
             chat_model,
@@ -381,7 +386,9 @@ def _extract_segmented_submission(submission: Submission) -> ExtractionResult:
     images = [
         (
             img.line,
-            ExtractedImage(mime_type=img.mime_type, data=base64.b64encode(storage.download_bytes(img.object_key)).decode()),
+            ExtractedImage(
+                mime_type=img.mime_type, data=base64.b64encode(storage.download_bytes(img.object_key)).decode()
+            ),
         )
         for img in document.images
         if any(start <= img.line <= end for start, end, _ in wanted)

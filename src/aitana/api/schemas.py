@@ -11,10 +11,10 @@ from ..grading.extraction import IMAGE_FORMATS, OUTPUT_FORMATS
 from ..grading.models import (
     AnswerSegment,
     ConvertedDocument,
+    GeneralFeedback,
     GradeTrace,
     GradingLevel,
     GradingScale,
-    GeneralFeedback,
     Question,
     SubmissionFormat,
     default_grading_scale,
@@ -93,7 +93,9 @@ class RubricIn(BaseModel):
     def _toggles_supported_by_format(self) -> "RubricIn":
         for q in self.questions:
             if q.include_outputs and self.format not in OUTPUT_FORMATS:
-                raise ValueError(f"question {q.id!r}: include_outputs is not supported for format {self.format.value!r}")
+                raise ValueError(
+                    f"question {q.id!r}: include_outputs is not supported for format {self.format.value!r}"
+                )
             if q.include_images and self.format not in IMAGE_FORMATS:
                 raise ValueError(f"question {q.id!r}: include_images is not supported for format {self.format.value!r}")
         return self

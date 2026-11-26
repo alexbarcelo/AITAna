@@ -56,9 +56,7 @@ export default function SubmissionDetailPage() {
           <p className="text-sm text-slate-500">
             {/* A labelled submission's label is already the heading -- nothing to show before the edition. */}
             {!submission.student && submission.label ? null : (
-              <>
-                {submission.student ? submission.student.student_id : submission.batch_internal_id} &middot;{' '}
-              </>
+              <>{submission.student ? submission.student.student_id : submission.batch_internal_id} &middot; </>
             )}
             {submission.edition.name}
             {submission.batch_id && (
@@ -109,7 +107,10 @@ export default function SubmissionDetailPage() {
           <button
             onClick={() => {
               // Not a hard block -- see SubmissionsPage's regrade bar.
-              if (inProgress && !window.confirm('This submission is still in progress (or stuck if its job was lost). Re-grade anyway?'))
+              if (
+                inProgress &&
+                !window.confirm('This submission is still in progress (or stuck if its job was lost). Re-grade anyway?')
+              )
                 return
               regrade.mutate(submission.id)
             }}
@@ -174,9 +175,7 @@ export default function SubmissionDetailPage() {
             disabled={inProgress}
           />
         ))}
-        {submission.answers.length === 0 && !inProgress && (
-          <p className="text-slate-400">No answers extracted yet.</p>
-        )}
+        {submission.answers.length === 0 && !inProgress && <p className="text-slate-400">No answers extracted yet.</p>}
       </div>
     </div>
   )

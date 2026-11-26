@@ -8,7 +8,15 @@ import { UntaggedCellsBadge } from './UntaggedCells'
 import { gradeColor, prettifyLevel } from '../lib/gradeColor'
 import { formatScore, gradeStats, type GradeStats } from '../lib/gradeStats'
 import { orderedLevels } from '../lib/gradingScale'
-import { effectiveGrade, IN_PROGRESS_STATUSES, submissionName, type AnsweredQuestion, type Question, type Submission, type SubmissionRubric } from '../api/types'
+import {
+  effectiveGrade,
+  IN_PROGRESS_STATUSES,
+  submissionName,
+  type AnsweredQuestion,
+  type Question,
+  type Submission,
+  type SubmissionRubric,
+} from '../api/types'
 
 /**
  * Students (rows) x questions (columns) grading overview for a batch --
@@ -27,13 +35,7 @@ import { effectiveGrade, IN_PROGRESS_STATUSES, submissionName, type AnsweredQues
  * per-question footer row -- each with a grade-distribution bar and the
  * score: total over the best possible total (`gradeStats`, `lib/gradeStats.ts`).
  */
-export default function GradingGrid({
-  submissions,
-  rubric,
-}: {
-  submissions: Submission[]
-  rubric: SubmissionRubric
-}) {
+export default function GradingGrid({ submissions, rubric }: { submissions: Submission[]; rubric: SubmissionRubric }) {
   // Ids only, not the objects themselves: the modal re-reads the answer from
   // the live `submissions` prop on every render, so a manual-grade save
   // (which refetches the submissions query) shows up in the open modal
@@ -108,7 +110,11 @@ export default function GradingGrid({
             {rows.map((s) => (
               <tr key={s.id} className="border-b border-slate-100 last:border-0">
                 <td className="sticky left-0 z-10 whitespace-nowrap border-r border-slate-200 bg-white px-3 py-2 font-medium text-slate-900">
-                  {s.student || s.label ? submissionName(s) : <span className="text-slate-400">{s.batch_internal_id ?? 'Unmatched'}</span>}
+                  {s.student || s.label ? (
+                    submissionName(s)
+                  ) : (
+                    <span className="text-slate-400">{s.batch_internal_id ?? 'Unmatched'}</span>
+                  )}
                 </td>
                 <td className="border-r border-slate-200 px-3 py-2">
                   <ScoreCell stats={studentStats.get(s.id)!} scale={scale} />
@@ -190,7 +196,9 @@ export default function GradingGrid({
 function ScoreCell({ stats, scale }: { stats: GradeStats; scale: SubmissionRubric['grading_scale'] }) {
   return (
     <div className="flex min-w-24 items-center gap-2">
-      <span className="w-9 text-right text-xs font-medium tabular-nums text-slate-900">{formatScore(stats.meanScore)}</span>
+      <span className="w-9 text-right text-xs font-medium tabular-nums text-slate-900">
+        {formatScore(stats.meanScore)}
+      </span>
       <div className="flex-1">
         <GradeDistributionBar stats={stats} scale={scale} className="h-2" />
       </div>

@@ -6,7 +6,13 @@ import { useSetSubmissionLabel } from '../api/hooks'
  * (e.g. fixing a typo in a group name). Same pencil icon and modal shell
  * as `MatchStudentDialog`, which it replaces on labelled submissions.
  */
-export default function RenameLabelDialog({ submissionId, currentLabel }: { submissionId: number; currentLabel: string }) {
+export default function RenameLabelDialog({
+  submissionId,
+  currentLabel,
+}: {
+  submissionId: number
+  currentLabel: string
+}) {
   const [open, setOpen] = useState(false)
 
   return (

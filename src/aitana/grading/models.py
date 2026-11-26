@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, create_model
 
+
 class GradingLevel(BaseModel):
     """One level of a rubric's grading scale. `id` is what the LLM answers
     with and what's stored on a `Grade`; `description` is what the LLM grades
@@ -54,7 +55,9 @@ def blank_level(grading_scale: list[GradingLevel]) -> GradingLevel:
 # rubric form offers the same levels as its default preset
 # (frontend/src/api/gradingScalePresets.ts) -- keep both in sync.
 DEFAULT_GRADING_SCALE: list[GradingLevel] = [
-    GradingLevel(id="not_attempted", description="Blank, off-topic, or shows no understanding of the question.", score=0),
+    GradingLevel(
+        id="not_attempted", description="Blank, off-topic, or shows no understanding of the question.", score=0
+    ),
     GradingLevel(
         id="some_effort", description="On-topic but misses most key points or has major misconceptions.", score=1
     ),

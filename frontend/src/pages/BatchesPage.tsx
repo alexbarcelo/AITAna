@@ -1,6 +1,14 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ApiError, useBatches, useCreateBatch, useDeleteBatch, useEditions, useRubrics, useSuggestBatchSegments } from '../api/hooks'
+import {
+  ApiError,
+  useBatches,
+  useCreateBatch,
+  useDeleteBatch,
+  useEditions,
+  useRubrics,
+  useSuggestBatchSegments,
+} from '../api/hooks'
 import { BATCH_TYPE_LABELS, SEGMENTED_FORMATS } from '../api/types'
 import type { Batch, BatchType } from '../api/types'
 import { TrashIcon } from '../components/DeleteSubmissionButton'
@@ -86,7 +94,11 @@ function DeleteBatchButton({ batch }: { batch: Batch }) {
           // 409: some submissions are still being processed. Lost jobs never
           // finish, so offer to delete anyway instead of a dead end.
           if (err instanceof ApiError && err.status === 409) {
-            if (window.confirm('Some submissions in this batch are still being processed (or stuck if their jobs were lost). Delete anyway?'))
+            if (
+              window.confirm(
+                'Some submissions in this batch are still being processed (or stuck if their jobs were lost). Delete anyway?',
+              )
+            )
               deleteBatch.mutate(
                 { batchId: batch.id, force: true },
                 { onError: (e) => window.alert(e.message || 'Failed to delete this batch.') },
@@ -182,9 +194,9 @@ function UploadBatchForm() {
       <div>
         <h2 className="text-sm font-medium text-slate-900">Upload a batch</h2>
         <p className="text-sm text-slate-500">
-          Upload a zip with one folder per student submission -- everyone in the zip is graded against the same
-          rubric. Folder names are auto-matched to roster students by name; turn that off for group projects to
-          identify each submission by a label taken from its folder name instead.
+          Upload a zip with one folder per student submission -- everyone in the zip is graded against the same rubric.
+          Folder names are auto-matched to roster students by name; turn that off for group projects to identify each
+          submission by a label taken from its folder name instead.
         </p>
       </div>
       <div className="flex flex-wrap items-end gap-3">
@@ -273,7 +285,9 @@ function UploadBatchForm() {
       <label className="flex items-center gap-2 text-sm text-slate-700">
         <input type="checkbox" checked={matchStudents} onChange={(e) => setMatchStudents(e.target.checked)} />
         Match folders to roster students
-        <span className="text-xs text-slate-400">(uncheck to label each submission by its folder name, e.g. groups)</span>
+        <span className="text-xs text-slate-400">
+          (uncheck to label each submission by its folder name, e.g. groups)
+        </span>
       </label>
       {segmented && <LlmSegmentationCheckbox checked={llmSegmentation} onChange={setLlmSegmentation} />}
       {createBatch.isSuccess && (
@@ -286,7 +300,9 @@ function UploadBatchForm() {
         </p>
       )}
       {createBatch.isError && (
-        <p className="text-sm text-red-600">{(createBatch.error as { message?: string })?.message ?? 'Upload failed.'}</p>
+        <p className="text-sm text-red-600">
+          {(createBatch.error as { message?: string })?.message ?? 'Upload failed.'}
+        </p>
       )}
     </form>
   )

@@ -471,7 +471,11 @@ async def test_delete_batch(client):
             submission_id=first.id,
             question_id="answer1",
             trace=GradeTrace(
-                provider="openai", model="m", system_prompt="p", student_answer="a", grade=Grade(level="solid", feedback="f")
+                provider="openai",
+                model="m",
+                system_prompt="p",
+                student_answer="a",
+                grade=Grade(level="solid", feedback="f"),
             ),
         )
     )

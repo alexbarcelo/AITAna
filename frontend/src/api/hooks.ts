@@ -140,7 +140,8 @@ export function useEditions() {
 export function useCreateEdition() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (body: { name: string; slug?: string }) => unwrap(client.POST('/editions', { body })) as Promise<Edition>,
+    mutationFn: (body: { name: string; slug?: string }) =>
+      unwrap(client.POST('/editions', { body })) as Promise<Edition>,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['editions'] }),
   })
 }
@@ -150,10 +151,7 @@ export function useCreateEdition() {
 export function useRubrics(filters?: { course_id?: number; edition_id?: number }) {
   return useQuery({
     queryKey: ['rubrics', filters],
-    queryFn: () =>
-      unwrap(
-        client.GET('/rubrics', { params: { query: filters ?? {} } }),
-      ) as Promise<Rubric[]>,
+    queryFn: () => unwrap(client.GET('/rubrics', { params: { query: filters ?? {} } })) as Promise<Rubric[]>,
   })
 }
 
@@ -354,8 +352,7 @@ export function useSubmissions(filters?: {
       ) as unknown as Promise<Submission[]>,
     // Keep polling while anything listed is being worked on, so e.g. a
     // single-question regrade from the grading overview shows up when done.
-    refetchInterval: (query) =>
-      query.state.data?.some((s) => IN_PROGRESS_STATUSES.includes(s.status)) ? 3000 : false,
+    refetchInterval: (query) => (query.state.data?.some((s) => IN_PROGRESS_STATUSES.includes(s.status)) ? 3000 : false),
   })
 }
 
@@ -580,9 +577,7 @@ export function useBatches(filters?: { rubric_id?: number; edition_id?: number }
     queryKey: ['batches', filters],
     queryFn: async () =>
       byMostRecentFirst(
-        await (unwrap(
-          client.GET('/batches', { params: { query: filters ?? {} } }),
-        ) as unknown as Promise<Batch[]>),
+        await (unwrap(client.GET('/batches', { params: { query: filters ?? {} } })) as unknown as Promise<Batch[]>),
       ),
   })
 }
@@ -591,9 +586,7 @@ export function useBatch(id: number | undefined) {
   return useQuery({
     queryKey: ['batches', id],
     queryFn: () =>
-      unwrap(
-        client.GET('/batches/{batch_id}', { params: { path: { batch_id: id! } } }),
-      ) as unknown as Promise<Batch>,
+      unwrap(client.GET('/batches/{batch_id}', { params: { path: { batch_id: id! } } })) as unknown as Promise<Batch>,
     enabled: Boolean(id),
   })
 }
@@ -712,7 +705,15 @@ export function useSaveSegments() {
   const queryClient = useQueryClient()
   const modelId = useActiveModelId()
   return useMutation({
-    mutationFn: ({ submissionId, segments, grade }: { submissionId: number; segments: AnswerSegment[]; grade: boolean }) =>
+    mutationFn: ({
+      submissionId,
+      segments,
+      grade,
+    }: {
+      submissionId: number
+      segments: AnswerSegment[]
+      grade: boolean
+    }) =>
       unwrap(
         client.PUT('/submissions/{submission_id}/segments', {
           params: { path: { submission_id: submissionId }, query: { model_id: modelId } },
@@ -818,7 +819,9 @@ export function useSetFavoriteLlmModel() {
     mutationFn: ({ modelId, favorite }: { modelId: number; favorite: boolean }) => {
       const params = { params: { path: { model_id: modelId } } }
       return unwrap(
-        favorite ? client.PUT('/llm/models/{model_id}/favorite', params) : client.DELETE('/llm/models/{model_id}/favorite', params),
+        favorite
+          ? client.PUT('/llm/models/{model_id}/favorite', params)
+          : client.DELETE('/llm/models/{model_id}/favorite', params),
       )
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['llm', 'models'] }),

@@ -1,5 +1,12 @@
 import { useState } from 'react'
-import { useCourses, useCreateRubric, useEditions, useUpdateRubric, useUpdateRubricYaml, useUploadRubricYaml } from '../api/hooks'
+import {
+  useCourses,
+  useCreateRubric,
+  useEditions,
+  useUpdateRubric,
+  useUpdateRubricYaml,
+  useUploadRubricYaml,
+} from '../api/hooks'
 import { GRADING_SCALE_PRESETS } from '../api/gradingScalePresets'
 import { FORMAT_FILE_INFO, IMAGE_FORMATS, OUTPUT_FORMATS, SEGMENTED_FORMATS } from '../api/types'
 import type { GradingScale, Question, Rubric, SubmissionFormat } from '../api/types'
@@ -30,7 +37,13 @@ function rowsToScale(rows: GradingScaleRow[]): GradingScale {
  * answer gets without asking the LLM. Levels rank by score, so row order
  * doesn't matter.
  */
-function GradingScaleEditor({ rows, onChange }: { rows: GradingScaleRow[]; onChange: (rows: GradingScaleRow[]) => void }) {
+function GradingScaleEditor({
+  rows,
+  onChange,
+}: {
+  rows: GradingScaleRow[]
+  onChange: (rows: GradingScaleRow[]) => void
+}) {
   function updateRow(index: number, patch: Partial<GradingScaleRow>) {
     onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)))
   }
@@ -300,7 +313,11 @@ export default function RubricForm({ rubric, onDone }: { rubric?: Rubric; onDone
         </button>
       </div>
 
-      {mode === 'upload' ? <UploadYamlForm rubric={rubric} onDone={onDone} /> : <ManualRubricForm rubric={rubric} onDone={onDone} />}
+      {mode === 'upload' ? (
+        <UploadYamlForm rubric={rubric} onDone={onDone} />
+      ) : (
+        <ManualRubricForm rubric={rubric} onDone={onDone} />
+      )}
     </div>
   )
 }
@@ -356,22 +373,23 @@ function UploadYamlForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => vo
       <p className="text-sm text-slate-500">
         {isEdit ? (
           <>
-            Upload a rubric YAML file to replace this rubric's title, format, grading scale, and questions with what's in the
-            file. Slug, course, and edition can't be changed here (a <code className="rounded bg-slate-100 px-1">slug:</code>/
+            Upload a rubric YAML file to replace this rubric's title, format, grading scale, and questions with what's
+            in the file. Slug, course, and edition can't be changed here (a{' '}
+            <code className="rounded bg-slate-100 px-1">slug:</code>/
             <code className="rounded bg-slate-100 px-1">course_slug:</code>/
-            <code className="rounded bg-slate-100 px-1">edition_slug:</code> key in the file is ignored) -- see "Edit manually" if
-            you need to move this rubric to a different course/edition.
+            <code className="rounded bg-slate-100 px-1">edition_slug:</code> key in the file is ignored) -- see "Edit
+            manually" if you need to move this rubric to a different course/edition.
           </>
         ) : (
           <>
             Upload a rubric YAML file (see README.md for the format -- a top-level{' '}
-            <code className="rounded bg-slate-100 px-1">questions</code> list, one entry per question). The course can also come
-            from a <code className="rounded bg-slate-100 px-1">course_slug:</code> key in the file instead of the dropdown below,
-            and the format from a <code className="rounded bg-slate-100 px-1">format:</code> key instead of the dropdown below.
-            Grading levels default to the standard 4-level scale unless the file has its own top-level{' '}
-            <code className="rounded bg-slate-100 px-1">grading_scale:</code> list of{' '}
-            <code className="rounded bg-slate-100 px-1">{'{id, description, score}'}</code> levels, exactly one scored 0 (no
-            dropdown for this one -- see "Build manually" for a quick-pick editor instead).
+            <code className="rounded bg-slate-100 px-1">questions</code> list, one entry per question). The course can
+            also come from a <code className="rounded bg-slate-100 px-1">course_slug:</code> key in the file instead of
+            the dropdown below, and the format from a <code className="rounded bg-slate-100 px-1">format:</code> key
+            instead of the dropdown below. Grading levels default to the standard 4-level scale unless the file has its
+            own top-level <code className="rounded bg-slate-100 px-1">grading_scale:</code> list of{' '}
+            <code className="rounded bg-slate-100 px-1">{'{id, description, score}'}</code> levels, exactly one scored 0
+            (no dropdown for this one -- see "Build manually" for a quick-pick editor instead).
           </>
         )}
       </p>
@@ -387,7 +405,9 @@ function UploadYamlForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => vo
       </div>
       <div className="flex gap-3">
         <div className="flex-1">
-          <label className="block text-xs font-medium text-slate-600">{isEdit ? 'Slug' : 'Slug override (optional)'}</label>
+          <label className="block text-xs font-medium text-slate-600">
+            {isEdit ? 'Slug' : 'Slug override (optional)'}
+          </label>
           <input
             value={slug}
             onChange={(e) => setSlug(e.target.value)}
@@ -432,8 +452,12 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
     scaleToRows(rubric?.grading_scale ?? GRADING_SCALE_PRESETS[0].scale),
   )
   const [rubricContext, setRubricContext] = useState(rubric?.context ?? '')
-  const [generalFeedbackInstructions, setGeneralFeedbackInstructions] = useState(rubric?.general_feedback_instructions ?? '')
-  const [questions, setQuestions] = useState<DraftQuestion[]>(rubric ? rubric.questions.map(questionToDraft) : [emptyQuestion()])
+  const [generalFeedbackInstructions, setGeneralFeedbackInstructions] = useState(
+    rubric?.general_feedback_instructions ?? '',
+  )
+  const [questions, setQuestions] = useState<DraftQuestion[]>(
+    rubric ? rubric.questions.map(questionToDraft) : [emptyQuestion()],
+  )
 
   function updateQuestion(index: number, patch: Partial<DraftQuestion>) {
     setQuestions((qs) => qs.map((q, i) => (i === index ? { ...q, ...patch } : q)))
@@ -685,7 +709,8 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
       </div>
       {mutation.isError && (
         <p className="text-sm text-red-600">
-          {(mutation.error as { message?: string })?.message ?? (isEdit ? 'Failed to save changes.' : 'Failed to create rubric.')}
+          {(mutation.error as { message?: string })?.message ??
+            (isEdit ? 'Failed to save changes.' : 'Failed to create rubric.')}
         </p>
       )}
     </form>

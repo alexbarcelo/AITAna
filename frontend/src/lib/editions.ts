@@ -8,12 +8,18 @@ import type { Rubric } from '../api/types'
  * by `EditionsPage.tsx` and `CoursesPage.tsx` so the two directions of this
  * derivation can't quietly drift apart.
  */
-export function editionsForCourse(rubrics: Pick<Rubric, 'course' | 'edition'>[], courseId: number): NonNullable<Rubric['edition']>[] {
+export function editionsForCourse(
+  rubrics: Pick<Rubric, 'course' | 'edition'>[],
+  courseId: number,
+): NonNullable<Rubric['edition']>[] {
   const matches = rubrics.filter((r) => r.course.id === courseId && r.edition !== null)
   return [...new Map(matches.map((r) => [r.edition!.id, r.edition!])).values()]
 }
 
-export function coursesForEdition(rubrics: Pick<Rubric, 'course' | 'edition'>[], editionId: number): Rubric['course'][] {
+export function coursesForEdition(
+  rubrics: Pick<Rubric, 'course' | 'edition'>[],
+  editionId: number,
+): Rubric['course'][] {
   const matches = rubrics.filter((r) => r.edition?.id === editionId)
   return [...new Map(matches.map((r) => [r.course.id, r.course])).values()]
 }

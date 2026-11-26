@@ -55,7 +55,9 @@ async def _get_batch(session: AsyncSession, batch_id: int, *, loaded: bool = Fal
     return batch
 
 
-async def _batch_submissions(session: AsyncSession, batch_id: int, *conditions, loaded: bool = False) -> list[Submission]:
+async def _batch_submissions(
+    session: AsyncSession, batch_id: int, *conditions, loaded: bool = False
+) -> list[Submission]:
     query = select(Submission).where(Submission.batch_id == batch_id, *conditions).order_by(Submission.id)
     if loaded:
         query = query.options(*SUBMISSION_LOADS)

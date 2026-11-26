@@ -53,13 +53,23 @@ export default function ModelSelector() {
       </button>
 
       {open && (
-        <div role="menu" className="absolute right-0 z-20 mt-1 max-h-[70vh] w-full overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+        <div
+          role="menu"
+          className="absolute right-0 z-20 mt-1 max-h-[70vh] w-full overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-lg"
+        >
           {models && models.length === 0 && (
             <p className="px-3 py-2 text-sm text-slate-500">No models yet -- add one to start grading.</p>
           )}
-          {favorites.length > 0 && <ModelGroup title="Favorites" models={favorites} active={activeModel} onPick={pick} />}
+          {favorites.length > 0 && (
+            <ModelGroup title="Favorites" models={favorites} active={activeModel} onPick={pick} />
+          )}
           {others.length > 0 && (
-            <ModelGroup title={favorites.length > 0 ? 'Other models' : 'Models'} models={others} active={activeModel} onPick={pick} />
+            <ModelGroup
+              title={favorites.length > 0 ? 'Other models' : 'Models'}
+              models={others}
+              active={activeModel}
+              onPick={pick}
+            />
           )}
           <div className="mt-1 border-t border-slate-100 pt-1">
             <Link

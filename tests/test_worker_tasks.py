@@ -10,7 +10,17 @@ JSONB value on its own (`PydanticJSONB`), so
 import pytest
 from sqlalchemy import select
 
-from aitana.db import AnsweredQuestion, Course, Edition, GradingTrace, LlmModel, Rubric, Student, Submission, SubmissionStatus
+from aitana.db import (
+    AnsweredQuestion,
+    Course,
+    Edition,
+    GradingTrace,
+    LlmModel,
+    Rubric,
+    Student,
+    Submission,
+    SubmissionStatus,
+)
 from aitana.grading.models import (
     DEFAULT_GRADING_SCALE,
     ExtractionResult,
@@ -47,7 +57,9 @@ async def _setup(db, questions: list[Question], answers: list[AnsweredQuestion],
     course = await add(db, Course(name="BDM", slug="bdm"))
     edition = await add(db, Edition(name="2026/27", slug="2026_27"))
     student = await add(db, Student(student_id="s1", name="Ada"))
-    rubric = await add(db, Rubric(slug="containers", title="Containers", course=course, questions=questions, **rubric_fields))
+    rubric = await add(
+        db, Rubric(slug="containers", title="Containers", course=course, questions=questions, **rubric_fields)
+    )
     return await add(
         db, Submission(student=student, rubric=rubric, edition=edition, file_object_key="k", answers=answers)
     )
@@ -96,7 +108,13 @@ async def test_grade_answers_records_reasoning_effort(db, monkeypatch):
 
     monkeypatch.setattr("aitana.grading.grading.create_agent", _fake_create_agent([Grade(level="solid", feedback="f")]))
     await _grade_answers(
-        db, submission, submission.rubric.questions, object(), DEFAULT_GRADING_SCALE, "openai", "gpt-5",
+        db,
+        submission,
+        submission.rubric.questions,
+        object(),
+        DEFAULT_GRADING_SCALE,
+        "openai",
+        "gpt-5",
         reasoning_effort="high",
     )
 
@@ -122,7 +140,9 @@ async def test_grade_answers_blank_answer_gets_the_zero_level(db, monkeypatch):
         raise AssertionError("blank answers must not reach the LLM")
 
     monkeypatch.setattr("aitana.grading.grading.create_agent", _no_llm)
-    await _grade_answers(db, submission, submission.rubric.questions, object(), submission.rubric.grading_scale, "o", "m")
+    await _grade_answers(
+        db, submission, submission.rubric.questions, object(), submission.rubric.grading_scale, "o", "m"
+    )
 
     fresh = await reload(db, Submission, submission.id)
     assert fresh.answers[0].grade.level == "nothing"
@@ -151,7 +171,9 @@ def test_rebuild_answers_carries_over_manual_overrides():
     ]
 
     answers = _rebuild_answers(
-        questions, ExtractionResult(answers={"answer1": "new1", "answer2": "new2"}, untagged_cells={"answer2": 3}), previous
+        questions,
+        ExtractionResult(answers={"answer1": "new1", "answer2": "new2"}, untagged_cells={"answer2": 3}),
+        previous,
     )
 
     assert [a.question_id for a in answers] == ["answer1", "answer2"]
@@ -168,10 +190,16 @@ def test_rebuild_answers_keeps_other_grades_on_single_question_regrade():
 
     previous = [
         AnsweredQuestion(
-            question_id="answer1", student_answer="a1", grade=Grade(level="solid", feedback="f1"), grading_info={"model": "m"}
+            question_id="answer1",
+            student_answer="a1",
+            grade=Grade(level="solid", feedback="f1"),
+            grading_info={"model": "m"},
         ),
         AnsweredQuestion(
-            question_id="answer2", student_answer="a2", grade=Grade(level="solid", feedback="f2"), grading_info={"model": "m"}
+            question_id="answer2",
+            student_answer="a2",
+            grade=Grade(level="solid", feedback="f2"),
+            grading_info={"model": "m"},
         ),
     ]
     answers = _rebuild_answers(
@@ -201,7 +229,13 @@ async def test_grade_answers_only_question_id(db, monkeypatch):
         "aitana.grading.grading.create_agent", _fake_create_agent([Grade(level="some_effort", feedback="new")])
     )
     await _grade_answers(
-        db, submission, submission.rubric.questions, object(), DEFAULT_GRADING_SCALE, "openai", "m",
+        db,
+        submission,
+        submission.rubric.questions,
+        object(),
+        DEFAULT_GRADING_SCALE,
+        "openai",
+        "m",
         only_question_id="answer2",
     )
 
@@ -274,9 +308,7 @@ async def _setup_pending(db, monkeypatch, extracted: ExtractionResult, **rubric_
     """A pending notebook submission, with extraction and the chat model
     faked out and a default model to resolve."""
     db.add(LlmModel(provider="openai", model="gpt-4o-mini", is_default=True))
-    submission = await _setup(
-        db, [_q("answer1"), _q("answer2")], [], format=SubmissionFormat.NOTEBOOK, **rubric_fields
-    )
+    submission = await _setup(db, [_q("answer1"), _q("answer2")], [], format=SubmissionFormat.NOTEBOOK, **rubric_fields)
     monkeypatch.setattr(tasks, "extract_submission_file", lambda s: extracted)
     monkeypatch.setattr(tasks, "get_chat_model", lambda *args, **kwargs: object())
     return submission
@@ -328,7 +360,9 @@ async def test_grade_submission_writes_general_feedback_from_effective_grades(db
     # A TA override on answer2 survives the re-grade and is what the
     # general feedback sees.
     submission.answers = [
-        AnsweredQuestion(question_id="answer2", student_answer="y", manual_grade=Grade(level="solid", feedback="TA says fine"))
+        AnsweredQuestion(
+            question_id="answer2", student_answer="y", manual_grade=Grade(level="solid", feedback="TA says fine")
+        )
     ]
     await db.commit()
     monkeypatch.setattr(
@@ -378,7 +412,9 @@ async def test_regenerate_general_feedback_uses_current_grades_only(db, monkeypa
     monkeypatch.setattr(tasks, "extract_submission_file", lambda s: pytest.fail("must not re-extract"))
     monkeypatch.setattr("aitana.grading.grading.create_agent", lambda **kw: pytest.fail("must not re-grade"))
     seen: list = []
-    monkeypatch.setattr("aitana.grading.general_feedback.create_agent", _fake_general_feedback_agent(seen, "Fresh general feedback."))
+    monkeypatch.setattr(
+        "aitana.grading.general_feedback.create_agent", _fake_general_feedback_agent(seen, "Fresh general feedback.")
+    )
     db.expunge_all()
 
     await tasks._regenerate_general_feedback(db, submission.id)
@@ -395,7 +431,10 @@ async def test_regenerate_general_feedback_uses_current_grades_only(db, monkeypa
 async def test_regenerate_general_feedback_failure_still_ends_graded(db, monkeypatch):
     db.add(LlmModel(provider="openai", model="gpt-4o-mini", is_default=True))
     submission = await _setup(
-        db, [_q("answer1")], [AnsweredQuestion(question_id="answer1", student_answer="x")], general_feedback_instructions="S."
+        db,
+        [_q("answer1")],
+        [AnsweredQuestion(question_id="answer1", student_answer="x")],
+        general_feedback_instructions="S.",
     )
     submission.status = SubmissionStatus.GRADING
     await db.commit()
@@ -415,7 +454,10 @@ async def test_regenerate_general_feedback_failure_still_ends_graded(db, monkeyp
 
 async def test_grade_submission_general_feedback_failure_is_not_fatal(db, monkeypatch):
     submission = await _setup_pending(
-        db, monkeypatch, ExtractionResult(answers={"answer1": "x", "answer2": "y"}), general_feedback_instructions="Summarize."
+        db,
+        monkeypatch,
+        ExtractionResult(answers={"answer1": "x", "answer2": "y"}),
+        general_feedback_instructions="Summarize.",
     )
     monkeypatch.setattr(
         "aitana.grading.grading.create_agent",
@@ -475,7 +517,8 @@ async def test_grade_submission_stops_when_the_row_is_deleted(db, monkeypatch):
         if not deleted:
             await real_commit(session)
             await session.execute(
-                delete(Submission).where(Submission.id == submission_id), execution_options={"synchronize_session": False}
+                delete(Submission).where(Submission.id == submission_id),
+                execution_options={"synchronize_session": False},
             )
             deleted = True
             return
@@ -555,7 +598,9 @@ async def test_prepare_converts_pdf_and_waits_for_segmentation(db, monkeypatch):
     monkeypatch.setattr("aitana.storage.upload_file", lambda key, data, content_type: stored.__setitem__(key, data))
 
     course = await add(db, Course(name="BDM", slug="bdm"))
-    rubric = await add(db, Rubric(slug="free", title="Free", course=course, format=SubmissionFormat.GENERIC_DOCUMENT, questions=[]))
+    rubric = await add(
+        db, Rubric(slug="free", title="Free", course=course, format=SubmissionFormat.GENERIC_DOCUMENT, questions=[])
+    )
     edition = await add(db, Edition(name="2026/27", slug="2026_27"))
     submission = await add(db, Submission(rubric=rubric, edition=edition, file_object_key="r/s/1.pdf"))
 

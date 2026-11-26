@@ -17,8 +17,8 @@ export default function LlmSegmentationCheckbox({
         LLM-assisted segmentation
       </label>
       <p className="mt-1 text-xs text-slate-500">
-        Generic document: it's converted to text, then split into one answer per question. With this on, the active model
-        suggests the split. Either way, you review it before anything is graded.
+        Generic document: it's converted to text, then split into one answer per question. With this on, the active
+        model suggests the split. Either way, you review it before anything is graded.
       </p>
     </div>
   )

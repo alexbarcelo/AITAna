@@ -24,7 +24,9 @@ async def _make_rubric(client, course_id: int, *, edition_id: int | None = None)
             course=await db.get(Course, course_id),
             edition=await db.get(Edition, edition_id) if edition_id is not None else None,
             questions=[
-                Question(id="answer1", title="Q1", question="What happened?", rubric="Rubric", expected_points=["a point"])
+                Question(
+                    id="answer1", title="Q1", question="What happened?", rubric="Rubric", expected_points=["a point"]
+                )
             ],
         ),
     )
@@ -551,9 +553,7 @@ class _FakeChatModel:
 
 
 def _patch_chat_model(monkeypatch, grade: Grade) -> None:
-    monkeypatch.setattr(
-        "aitana.api.routers.rubrics.get_chat_model", lambda provider, model, **kwargs: _FakeChatModel()
-    )
+    monkeypatch.setattr("aitana.api.routers.rubrics.get_chat_model", lambda provider, model, **kwargs: _FakeChatModel())
 
     class _FakeCompiledAgent:
         def invoke(self, state):
@@ -625,7 +625,13 @@ async def test_upload_rubric_yaml_with_context_key(client):
     resp = await client.post(
         "/rubrics/upload",
         data={"course_id": course_id},
-        files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC + b"context: |\n  Shared setup.\n", "application/x-yaml")},
+        files={
+            "yaml_file": (
+                "containers_questions.yaml",
+                YAML_RUBRIC + b"context: |\n  Shared setup.\n",
+                "application/x-yaml",
+            )
+        },
     )
     assert resp.status_code == 201
     assert resp.json()["context"] == "Shared setup.\n"
@@ -653,7 +659,9 @@ async def test_upload_rubric_yaml_non_string_context_422(client):
     resp = await client.post(
         "/rubrics/upload",
         data={"course_id": course_id},
-        files={"yaml_file": ("containers_questions.yaml", YAML_RUBRIC + b"context:\n  - a list\n", "application/x-yaml")},
+        files={
+            "yaml_file": ("containers_questions.yaml", YAML_RUBRIC + b"context:\n  - a list\n", "application/x-yaml")
+        },
     )
     assert resp.status_code == 422
 
@@ -720,7 +728,12 @@ async def test_update_rubric_unchanged_slug_is_not_a_conflict(client):
     rubric = await _make_rubric(client, course_id)
     resp = await client.put(
         f"/rubrics/{rubric.id}",
-        json={"title": "Containers lab renamed", "slug": "containers", "course_id": course_id, "questions": [_question_payload()]},
+        json={
+            "title": "Containers lab renamed",
+            "slug": "containers",
+            "course_id": course_id,
+            "questions": [_question_payload()],
+        },
     )
     assert resp.status_code == 200
     assert resp.json()["slug"] == "containers"
@@ -989,8 +1002,12 @@ async def test_create_rubric_rejects_output_and_image_toggles_for_pdf(client):
 
     resp = await client.post(
         "/rubrics",
-        json={"title": "Plots", "course_id": course_id, "format": "notebook",
-              "questions": [{**question, "include_outputs": True}]},
+        json={
+            "title": "Plots",
+            "course_id": course_id,
+            "format": "notebook",
+            "questions": [{**question, "include_outputs": True}],
+        },
     )
     assert resp.status_code == 201, resp.text
     assert resp.json()["questions"][0]["include_outputs"] is True

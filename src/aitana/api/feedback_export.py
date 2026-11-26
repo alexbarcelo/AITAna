@@ -208,8 +208,7 @@ def render_feedback_html(
     # The TA's override, if any (Submission.effective_general_feedback).
     if (feedback_text := submission.effective_general_feedback) is not None:
         general_feedback = (
-            '<section class="general-feedback"><h2>General feedback</h2>'
-            f"<p>{html.escape(feedback_text)}</p></section>"
+            f'<section class="general-feedback"><h2>General feedback</h2><p>{html.escape(feedback_text)}</p></section>'
         )
 
     if not sections and submission.status not in ("pending", "extracting", "grading"):

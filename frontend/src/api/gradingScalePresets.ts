@@ -55,7 +55,8 @@ export const GRADING_SCALE_PRESETS: { label: string; scale: GradingScale }[] = [
       },
       {
         id: 'perfect',
-        description: 'Complete, correct, and well-phrased. The answer is clear, precise, and fully addresses the question.',
+        description:
+          'Complete, correct, and well-phrased. The answer is clear, precise, and fully addresses the question.',
         score: 2,
       },
     ],

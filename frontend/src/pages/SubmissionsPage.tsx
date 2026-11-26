@@ -1,7 +1,17 @@
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { API_URL } from '../api/client'
-import { useBatch, useBatches, useCourses, useEditions, useRegenerateGeneralFeedbacks, useRegradeSubmissions, useRubrics, useStudents, useSubmissions } from '../api/hooks'
+import {
+  useBatch,
+  useBatches,
+  useCourses,
+  useEditions,
+  useRegenerateGeneralFeedbacks,
+  useRegradeSubmissions,
+  useRubrics,
+  useStudents,
+  useSubmissions,
+} from '../api/hooks'
 import DeleteSubmissionButton from '../components/DeleteSubmissionButton'
 import GradingGrid from '../components/GradingGrid'
 import MatchStudentDialog from '../components/MatchStudentDialog'
@@ -389,7 +399,10 @@ export default function SubmissionsPage() {
             ))}
             {submissions.length === 0 && (
               <tr>
-                <td colSpan={3 + Number(showFolder) + Number(showRubricColumn) + 2} className="px-4 py-6 text-center text-slate-400">
+                <td
+                  colSpan={3 + Number(showFolder) + Number(showRubricColumn) + 2}
+                  className="px-4 py-6 text-center text-slate-400"
+                >
                   No submissions match these filters.
                 </td>
               </tr>

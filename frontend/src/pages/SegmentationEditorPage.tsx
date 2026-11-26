@@ -82,7 +82,14 @@ export default function SegmentationEditorPage() {
   }
   if (!document) return <p className="text-sm text-slate-500">Loading document...</p>
 
-  return <Editor submission={submission} markdown={document.markdown} pageStarts={document.page_start_lines} images={document.images} />
+  return (
+    <Editor
+      submission={submission}
+      markdown={document.markdown}
+      pageStarts={document.page_start_lines}
+      images={document.images}
+    />
+  )
 }
 
 function Editor({
@@ -313,7 +320,10 @@ function Editor({
                     </button>
                   )}
                   {d?.end != null && (
-                    <button onClick={() => update(q.id, { start: d.start, end: null })} className="text-slate-600 hover:underline">
+                    <button
+                      onClick={() => update(q.id, { start: d.start, end: null })}
+                      className="text-slate-600 hover:underline"
+                    >
                       clear end
                     </button>
                   )}
@@ -376,7 +386,9 @@ function Editor({
                   <span className="w-12 shrink-0 pr-2 text-right text-slate-400">{line}</span>
                   <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pr-2">
                     {isStart && owner && (
-                      <span className={`mr-2 rounded px-1 font-sans text-[10px] font-semibold text-white ${color?.dot}`}>
+                      <span
+                        className={`mr-2 rounded px-1 font-sans text-[10px] font-semibold text-white ${color?.dot}`}
+                      >
                         {questions.find((q) => q.id === owner)?.title}
                       </span>
                     )}

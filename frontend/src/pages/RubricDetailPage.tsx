@@ -27,7 +27,11 @@ function QuestionTestPanel({
 
   return (
     <div className="mt-3 border-t border-slate-100 pt-3">
-      <button type="button" onClick={() => setExpanded((v) => !v)} className="text-xs font-medium text-slate-500 hover:underline">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="text-xs font-medium text-slate-500 hover:underline"
+      >
         {expanded ? 'Hide test panel' : 'Test this question'}
       </button>
 
@@ -124,9 +128,7 @@ export default function RubricDetailPage() {
             </Link>
           </div>
           {deleteRubric.isError && (
-            <p className="mt-1 text-sm text-red-600">
-              {deleteRubric.error.message || 'Failed to delete this rubric.'}
-            </p>
+            <p className="mt-1 text-sm text-red-600">{deleteRubric.error.message || 'Failed to delete this rubric.'}</p>
           )}
         </div>
         <div className="flex gap-2">

@@ -67,8 +67,8 @@ export default function ModelsPage() {
           LLM models available for grading. The <strong>default</strong> is used whenever no model is picked; the{' '}
           <strong>active</strong> model (top right) is what this browser grades with, and starts out as the default.
           Favorites are listed first in the picker. Reasoning effort asks the model to think harder (more tokens,
-          slower, and it's what makes the grading trace's "thinking" available) and can be changed at any time. API
-          keys stay in the server's environment.
+          slower, and it's what makes the grading trace's "thinking" available) and can be changed at any time. API keys
+          stay in the server's environment.
         </p>
       </div>
 
@@ -106,7 +106,9 @@ export default function ModelsPage() {
                   <td className="px-3 py-2">{model.provider}</td>
                   <td className="px-3 py-2">
                     <span className="font-mono">{model.model}</span>
-                    {!model.available && <div className="text-xs text-amber-700">Unavailable: {model.unavailable_reason}</div>}
+                    {!model.available && (
+                      <div className="text-xs text-amber-700">Unavailable: {model.unavailable_reason}</div>
+                    )}
                   </td>
                   <td className="px-3 py-2">
                     <ReasoningEffortSelect
@@ -119,7 +121,9 @@ export default function ModelsPage() {
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap items-center justify-end gap-2">
                       {model.id === activeModel?.id ? (
-                        <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs font-medium text-white">active</span>
+                        <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs font-medium text-white">
+                          active
+                        </span>
                       ) : (
                         model.available && (
                           <button
@@ -132,7 +136,9 @@ export default function ModelsPage() {
                         )
                       )}
                       {model.is_default ? (
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">default</span>
+                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+                          default
+                        </span>
                       ) : (
                         <button
                           type="button"
@@ -159,8 +165,12 @@ export default function ModelsPage() {
           </table>
         </div>
       )}
-      {deleteModel.isError && <p className="text-sm text-red-600">{errorDetail(deleteModel.error, 'Delete failed.')}</p>}
-      {updateModel.isError && <p className="text-sm text-red-600">{errorDetail(updateModel.error, 'Update failed.')}</p>}
+      {deleteModel.isError && (
+        <p className="text-sm text-red-600">{errorDetail(deleteModel.error, 'Delete failed.')}</p>
+      )}
+      {updateModel.isError && (
+        <p className="text-sm text-red-600">{errorDetail(updateModel.error, 'Update failed.')}</p>
+      )}
     </div>
   )
 }
@@ -182,7 +192,13 @@ function AddModelForm() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     createModel.mutate(
-      { provider: selectedProvider, model, reasoning_effort: reasoningEffort, is_default: isDefault, is_favorite: isFavorite },
+      {
+        provider: selectedProvider,
+        model,
+        reasoning_effort: reasoningEffort,
+        is_default: isDefault,
+        is_favorite: isFavorite,
+      },
       {
         onSuccess: () => {
           setModel('')
@@ -210,7 +226,10 @@ function AddModelForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-4">
+    <form
+      onSubmit={handleSubmit}
+      className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-4"
+    >
       <div>
         <label className="block text-xs font-medium text-slate-600">Provider</label>
         <select

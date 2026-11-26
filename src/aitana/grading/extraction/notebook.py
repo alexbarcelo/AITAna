@@ -237,9 +237,7 @@ def extract_answers(notebook_path: Path) -> ExtractionResult:
     # Drop blank/placeholder parts before joining so they leave no stray
     # separators; a field whose parts are all blank still maps to "".
     answers = {field: "\n\n".join(p for p in parts if p) for field, parts in parts_by_field.items()}
-    answers_with_outputs = {
-        field: "\n\n".join(p for p in parts if p) for field, parts in output_parts_by_field.items()
-    }
+    answers_with_outputs = {field: "\n\n".join(p for p in parts if p) for field, parts in output_parts_by_field.items()}
     for field, field_images in images.items():
         if len(field_images) > _MAX_IMAGES_PER_ANSWER:
             logger.warning(

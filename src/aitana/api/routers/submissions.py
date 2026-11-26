@@ -1,8 +1,8 @@
 import base64
 import logging
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from urllib.parse import quote
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -36,9 +36,9 @@ from ...grading.extraction.generic_document import (
     missing_questions,
     validate_segments,
 )
+from ...grading.general_feedback import has_general_feedback
 from ...grading.models import AnswerSegment, Grade, SubmissionFormat
 from ...settings import get_settings
-from ...grading.general_feedback import has_general_feedback
 from ...worker.tasks import (
     extract_submission_file,
     grade_submission,
@@ -369,9 +369,7 @@ def guard_not_in_progress(submissions: list[Submission], force: bool) -> None:
     busy = [s for s in submissions if s.status in _IN_PROGRESS_STATUSES]
     if busy and not force:
         what = "This submission is" if len(submissions) == 1 else f"{len(busy)} submission(s) are"
-        raise HTTPException(
-            status_code=409, detail=f"{what} still being processed; pass force=true to delete anyway."
-        )
+        raise HTTPException(status_code=409, detail=f"{what} still being processed; pass force=true to delete anyway.")
 
 
 async def delete_submissions(session: AsyncSession, submissions: list[Submission]) -> None:
@@ -622,7 +620,9 @@ async def regrade_submissions(
     if body.question_id is not None and any(
         body.question_id not in {q.id for q in s.rubric.questions} for s in submissions
     ):
-        raise HTTPException(status_code=422, detail=f"Question {body.question_id!r} is not in every submission's rubric")
+        raise HTTPException(
+            status_code=422, detail=f"Question {body.question_id!r} is not in every submission's rubric"
+        )
     await enqueue_regrades(session, submissions, llm_model.id, body.question_id)
     return BulkRegradeResult(regraded=len(submissions))
 
@@ -636,9 +636,7 @@ class BulkRegenerateGeneralFeedbackResult(BaseModel):
     skipped: int
 
 
-@router.post(
-    "/general-feedback/regenerate", response_model=BulkRegenerateGeneralFeedbackResult, status_code=202
-)
+@router.post("/general-feedback/regenerate", response_model=BulkRegenerateGeneralFeedbackResult, status_code=202)
 async def regenerate_general_feedback_bulk(
     body: BulkRegenerateGeneralFeedbackRequest,
     model_id: int | None = MODEL_ID_QUERY,

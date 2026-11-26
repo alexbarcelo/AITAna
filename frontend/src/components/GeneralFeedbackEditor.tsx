@@ -76,7 +76,11 @@ export default function GeneralFeedbackEditor({ submission, disabled }: { submis
               disabled={disabled}
               className="font-medium text-slate-600 hover:underline disabled:opacity-50"
             >
-              {submission.manual_general_feedback ? 'Edit general feedback' : text ? 'Override general feedback' : 'Write manually'}
+              {submission.manual_general_feedback
+                ? 'Edit general feedback'
+                : text
+                  ? 'Override general feedback'
+                  : 'Write manually'}
             </button>
             {submission.manual_general_feedback && (
               <button
@@ -101,7 +105,11 @@ export default function GeneralFeedbackEditor({ submission, disabled }: { submis
                 }
                 className="text-slate-500 hover:underline disabled:opacity-50"
               >
-                {regenerate.isPending ? 'Regenerating...' : llm ? 'Regenerate general feedback' : 'Generate general feedback'}
+                {regenerate.isPending
+                  ? 'Regenerating...'
+                  : llm
+                    ? 'Regenerate general feedback'
+                    : 'Generate general feedback'}
               </button>
             )}
             {clear.isError && <span className="text-red-600">Failed to revert.</span>}
@@ -134,7 +142,11 @@ function EditForm({ submissionId, initial, onDone }: { submissionId: number; ini
       />
       {save.isError && <p className="text-sm text-red-600">Failed to save the general feedback.</p>}
       <div className="flex justify-end gap-2">
-        <button type="button" onClick={onDone} className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">
+        <button
+          type="button"
+          onClick={onDone}
+          className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
+        >
           Cancel
         </button>
         <button

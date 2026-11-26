@@ -11,6 +11,7 @@ Prompt split:
 """
 
 from __future__ import annotations
+
 import logging
 import time
 from collections.abc import Callable, Sequence
@@ -147,7 +148,9 @@ def build_human_message(student_answer: str, images: Sequence[ExtractedImage] = 
     return HumanMessage(content=blocks)
 
 
-def _grade_with_tools(chat_model: BaseChatModel, tools: list[BaseTool], system_prompt: str, human_message: HumanMessage, schema: type) -> dict:
+def _grade_with_tools(
+    chat_model: BaseChatModel, tools: list[BaseTool], system_prompt: str, human_message: HumanMessage, schema: type
+) -> dict:
     """Call an agent with the available tools for this answer.
     Note that this is typically overkill for no-tool answers, but
     you know: DRY.
@@ -366,7 +369,9 @@ def build_grading_info(
 
     if tokens := _sum_token_details(messages):
         info["tokens"] = tokens
-    costs = [m.response_metadata["cost"] for m in ai_messages if isinstance(m.response_metadata.get("cost"), int | float)]
+    costs = [
+        m.response_metadata["cost"] for m in ai_messages if isinstance(m.response_metadata.get("cost"), int | float)
+    ]
     if costs:
         info["cost"] = sum(costs)
 
@@ -428,7 +433,9 @@ def grade_answer(
     # context even when no LLM call was actually made for it.
     system_prompt = build_system_prompt(question, grading_scale, image_count=len(images), rubric_context=rubric_context)
 
-    def _emit(grade: Grade, *, blank_short_circuit: bool, elapsed: float, messages: list[BaseMessage] | None = None) -> None:
+    def _emit(
+        grade: Grade, *, blank_short_circuit: bool, elapsed: float, messages: list[BaseMessage] | None = None
+    ) -> None:
         if on_trace is None:
             return
         messages = messages or []

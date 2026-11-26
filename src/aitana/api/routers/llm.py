@@ -112,9 +112,7 @@ async def _get_model(session: AsyncSession, model_id: int) -> LlmModel:
 async def _make_default(session: AsyncSession, model: LlmModel) -> None:
     """Unset the current default, then set this one -- flushed in that order
     so the single-default partial unique index never sees two at once."""
-    await session.execute(
-        update(LlmModel).where(LlmModel.is_default, LlmModel.id != model.id).values(is_default=False)
-    )
+    await session.execute(update(LlmModel).where(LlmModel.is_default, LlmModel.id != model.id).values(is_default=False))
     model.is_default = True
     await session.flush()
 

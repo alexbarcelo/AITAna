@@ -30,7 +30,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from pydantic import BaseModel, Field
 
 from .grading import _sum_token_details, build_grading_section
-from .models import Grade, GradingLevel, GeneralFeedback
+from .models import GeneralFeedback, Grade, GradingLevel
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,9 @@ def _general_feedback_info(
     }
     if tokens := _sum_token_details(messages):
         info["tokens"] = tokens
-    costs = [m.response_metadata["cost"] for m in ai_messages if isinstance(m.response_metadata.get("cost"), int | float)]
+    costs = [
+        m.response_metadata["cost"] for m in ai_messages if isinstance(m.response_metadata.get("cost"), int | float)
+    ]
     if costs:
         info["cost"] = sum(costs)
     return info

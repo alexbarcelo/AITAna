@@ -41,7 +41,10 @@ export default function StudentsPage() {
         <p className="text-sm text-slate-500">The roster corrections are linked against.</p>
       </div>
 
-      <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-4">
+      <form
+        onSubmit={handleSubmit}
+        className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-4"
+      >
         <div>
           <label className="block text-xs font-medium text-slate-600">Student ID</label>
           <input
@@ -156,8 +159,8 @@ function ImportStudentsForm() {
         <h2 className="text-sm font-medium text-slate-900">Batch import</h2>
         <p className="text-sm text-slate-500">
           Upload a roster CSV to create or update several students at once. ID number and First name are required
-          columns. An existing student (matched by ID number) has its name/username/email overwritten with
-          the file's values.
+          columns. An existing student (matched by ID number) has its name/username/email overwritten with the file's
+          values.
         </p>
       </div>
       <div className="flex flex-wrap items-end gap-3">
@@ -206,4 +209,3 @@ function ImportStudentsForm() {
     </form>
   )
 }
-

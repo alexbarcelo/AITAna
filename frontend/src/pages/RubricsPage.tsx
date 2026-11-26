@@ -51,7 +51,9 @@ export default function RubricsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">Rubrics</h1>
-          <p className="text-sm text-slate-500">One per lab or exam -- questions, grading instructions, and expected points.</p>
+          <p className="text-sm text-slate-500">
+            One per lab or exam -- questions, grading instructions, and expected points.
+          </p>
         </div>
         <button
           onClick={() => setShowForm((v) => !v)}

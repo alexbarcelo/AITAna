@@ -82,8 +82,8 @@ export function UntaggedCellsReport({ submissions, rubric }: { submissions: Subm
         <p className="text-amber-800">
           <span className="font-medium">{total}</span> cell(s) without the answer tag were joined into answers, across{' '}
           <span className="font-medium">{affected.length}</span> of {submissions.length} submission(s) and{' '}
-          <span className="font-medium">{perQuestion.length}</span> question(s). Students added or recreated cells
-          below these questions -- worth double-checking.
+          <span className="font-medium">{perQuestion.length}</span> question(s). Students added or recreated cells below
+          these questions -- worth double-checking.
         </p>
 
         <div className="grid gap-4 md:grid-cols-2">

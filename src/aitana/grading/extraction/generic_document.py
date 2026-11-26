@@ -254,9 +254,7 @@ class SegmentationError(ValueError):
     question ids). The message is meant for the professor."""
 
 
-def validate_segments(
-    segments: Sequence[AnswerSegment], line_count: int, question_ids: Iterable[str]
-) -> None:
+def validate_segments(segments: Sequence[AnswerSegment], line_count: int, question_ids: Iterable[str]) -> None:
     known = set(question_ids)
     seen: set[str] = set()
     for seg in segments:

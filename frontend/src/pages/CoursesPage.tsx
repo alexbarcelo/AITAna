@@ -21,12 +21,19 @@ export default function CoursesPage() {
         <h1 className="text-xl font-semibold">Courses</h1>
         <p className="text-sm text-slate-500">
           A course is a subject, e.g. "BDM". Editions (terms like "2026/27") are global and shared across courses --
-          manage them on the <Link to="/editions" className="underline">Editions</Link> page. Students enroll in
-          editions, and rubrics (labs, exams) belong to a course and optionally pin one edition.
+          manage them on the{' '}
+          <Link to="/editions" className="underline">
+            Editions
+          </Link>{' '}
+          page. Students enroll in editions, and rubrics (labs, exams) belong to a course and optionally pin one
+          edition.
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-4">
+      <form
+        onSubmit={handleSubmit}
+        className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-4"
+      >
         <div>
           <label className="block text-xs font-medium text-slate-600">Course name</label>
           <input

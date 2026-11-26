@@ -85,7 +85,10 @@ def test_resolve_segments_fills_implicit_ends():
             [AnswerSegment(question_id="q1", start_line=1, end_line=6), AnswerSegment(question_id="q2", start_line=5)],
             "overlaps",
         ),
-        ([AnswerSegment(question_id="q1", start_line=1), AnswerSegment(question_id="q1", start_line=5)], "more than one"),
+        (
+            [AnswerSegment(question_id="q1", start_line=1), AnswerSegment(question_id="q1", start_line=5)],
+            "more than one",
+        ),
     ],
 )
 def test_validate_segments_rejects(segments, message):

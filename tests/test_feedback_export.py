@@ -5,7 +5,7 @@ already-loaded data.
 
 from aitana.api.feedback_export import feedback_filename, render_feedback_html
 from aitana.db import AnsweredQuestion, Batch, BatchType, Course, Edition, Rubric, Student, Submission, SubmissionStatus
-from aitana.grading.models import Grade, GeneralFeedback, Question, SubmissionFormat
+from aitana.grading.models import GeneralFeedback, Grade, Question, SubmissionFormat
 
 
 def _rubric(**overrides) -> Rubric:
@@ -60,7 +60,9 @@ async def test_render_feedback_html_includes_general_feedback_only_when_present(
     assert "Nice &lt;work&gt; overall." in html_out
 
     # A TA's manual general feedback wins, even with no LLM general feedback at all.
-    html_out = render_feedback_html(_submission(general_feedback=GeneralFeedback(feedback="LLM"), manual_general_feedback="TA text"))
+    html_out = render_feedback_html(
+        _submission(general_feedback=GeneralFeedback(feedback="LLM"), manual_general_feedback="TA text")
+    )
     assert "TA text" in html_out and ">LLM<" not in html_out
     assert "TA only" in render_feedback_html(_submission(manual_general_feedback="TA only"))
 

@@ -195,7 +195,9 @@ async def import_students(
         seen[row.student_id] = line_number
 
     existing = set(
-        await session.scalars(select(Student.student_id).where(Student.student_id.in_([row.student_id for row in rows])))
+        await session.scalars(
+            select(Student.student_id).where(Student.student_id.in_([row.student_id for row in rows]))
+        )
     )
     stmt = insert(Student).values([row.model_dump() for row in rows])
     stmt = stmt.on_conflict_do_update(

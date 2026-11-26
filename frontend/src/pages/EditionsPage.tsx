@@ -21,13 +21,16 @@ export default function EditionsPage() {
       <div>
         <h1 className="text-xl font-semibold">Editions</h1>
         <p className="text-sm text-slate-500">
-          An edition is a term, e.g. "2026/27" -- global, shared by every course taught that term, not owned by any
-          one of them. A single "2026/27" here can back a BDM rubric and an ML rubric alike; you don't need to
-          recreate it per course.
+          An edition is a term, e.g. "2026/27" -- global, shared by every course taught that term, not owned by any one
+          of them. A single "2026/27" here can back a BDM rubric and an ML rubric alike; you don't need to recreate it
+          per course.
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-4">
+      <form
+        onSubmit={handleSubmit}
+        className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-4"
+      >
         <div>
           <label className="block text-xs font-medium text-slate-600">Edition name</label>
           <input
@@ -110,7 +113,9 @@ function EditionCourses({ editionId }: { editionId: number }) {
           ))}
         </ul>
       )}
-      <p className="mt-2 text-xs text-slate-400">Via {usingRubrics.length} rubric{usingRubrics.length === 1 ? '' : 's'}.</p>
+      <p className="mt-2 text-xs text-slate-400">
+        Via {usingRubrics.length} rubric{usingRubrics.length === 1 ? '' : 's'}.
+      </p>
     </div>
   )
 }

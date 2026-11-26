@@ -25,7 +25,9 @@ def test_python_sandbox_available_reflects_which(monkeypatch):
 def test_get_python_sandbox_tool_construction_never_checks_for_deno(monkeypatch):
     """Constructing the tool must stay side-effect-free (see its docstring)
     -- assert this by making shutil.which explode if it's ever called."""
-    monkeypatch.setattr(sandbox.shutil, "which", lambda _name: (_ for _ in ()).throw(AssertionError("should not check")))
+    monkeypatch.setattr(
+        sandbox.shutil, "which", lambda _name: (_ for _ in ()).throw(AssertionError("should not check"))
+    )
     tool = sandbox.get_python_sandbox_tool()
     assert tool.name == "python_sandbox"
 

@@ -105,10 +105,7 @@ function EditForm({
       className="space-y-2"
       onSubmit={(e) => {
         e.preventDefault()
-        save.mutate(
-          { submissionId, questionId: answer.question_id, grade: { level, feedback } },
-          { onSuccess: onDone },
-        )
+        save.mutate({ submissionId, questionId: answer.question_id, grade: { level, feedback } }, { onSuccess: onDone })
       }}
     >
       <select
@@ -131,7 +128,11 @@ function EditForm({
       />
       {save.isError && <p className="text-sm text-red-600">Failed to save the grade.</p>}
       <div className="flex justify-end gap-2">
-        <button type="button" onClick={onDone} className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">
+        <button
+          type="button"
+          onClick={onDone}
+          className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
+        >
           Cancel
         </button>
         <button

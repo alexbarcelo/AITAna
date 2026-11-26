@@ -63,8 +63,8 @@ export function GradingStatsSummary({ submissions, rubric }: { submissions: Subm
   const studentScores = submissions
     .map((s) => gradeStats(s.answers, scale).meanScore)
     .filter((score): score is number => score !== null)
-  const fullyGraded = submissions.filter(
-    (s) => rubric.questions.every((q) => {
+  const fullyGraded = submissions.filter((s) =>
+    rubric.questions.every((q) => {
       const a = s.answers.find((ans) => ans.question_id === q.id)
       return a && effectiveGrade(a)
     }),
@@ -83,11 +83,13 @@ export function GradingStatsSummary({ submissions, rubric }: { submissions: Subm
 
   const bins = Array.from({ length: HISTOGRAM_BINS }, () => 0)
   // Clamped: with negative-scoring levels a student can land below 0%.
-  for (const score of studentScores) bins[Math.max(0, Math.min(HISTOGRAM_BINS - 1, Math.floor(score * HISTOGRAM_BINS)))]++
+  for (const score of studentScores)
+    bins[Math.max(0, Math.min(HISTOGRAM_BINS - 1, Math.floor(score * HISTOGRAM_BINS)))]++
   const maxBin = Math.max(1, ...bins)
   const histogramColor = gradeColor(orderedLevels(scale).at(-1)?.id ?? '', scale)?.hex ?? '#256abf'
 
-  const pctOfAll = (n: number) => (overall.graded + overall.ungraded > 0 ? Math.round((n / (overall.graded + overall.ungraded)) * 100) : 0)
+  const pctOfAll = (n: number) =>
+    overall.graded + overall.ungraded > 0 ? Math.round((n / (overall.graded + overall.ungraded)) * 100) : 0
 
   return (
     <div className="space-y-4 rounded-lg border border-slate-200 bg-white p-4">
@@ -107,10 +109,22 @@ export function GradingStatsSummary({ submissions, rubric }: { submissions: Subm
         <StatTile
           label="Median student"
           value={formatScore(median(studentScores))}
-          detail={studentScores.length > 0 ? `range ${formatScore(Math.min(...studentScores))}–${formatScore(Math.max(...studentScores))}` : undefined}
+          detail={
+            studentScores.length > 0
+              ? `range ${formatScore(Math.min(...studentScores))}–${formatScore(Math.max(...studentScores))}`
+              : undefined
+          }
         />
-        <StatTile label="Manual overrides" value={String(overall.manual)} detail={`${pctOfAll(overall.manual)}% of answers`} />
-        <StatTile label="Blank answers" value={String(overall.blank)} detail={`${pctOfAll(overall.blank)}% of answers`} />
+        <StatTile
+          label="Manual overrides"
+          value={String(overall.manual)}
+          detail={`${pctOfAll(overall.manual)}% of answers`}
+        />
+        <StatTile
+          label="Blank answers"
+          value={String(overall.blank)}
+          detail={`${pctOfAll(overall.blank)}% of answers`}
+        />
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
@@ -120,7 +134,10 @@ export function GradingStatsSummary({ submissions, rubric }: { submissions: Subm
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
             {Object.entries(overall.counts).map(([level, count]) => (
               <span key={level} className="inline-flex items-center gap-1.5">
-                <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: gradeColor(level, scale)?.hex }} />
+                <span
+                  className="inline-block h-2.5 w-2.5 rounded-sm"
+                  style={{ backgroundColor: gradeColor(level, scale)?.hex }}
+                />
                 {prettifyLevel(level)}
                 <span className="tabular-nums text-slate-900">{count}</span>
                 <span className="tabular-nums text-slate-400">({pctOfAll(count)}%)</span>
@@ -157,10 +174,15 @@ export function GradingStatsSummary({ submissions, rubric }: { submissions: Subm
                     className="flex h-full flex-1 flex-col justify-end"
                     title={`${binLabel(i)}: ${count} student(s)`}
                   >
-                    {count > 0 && <span className="mb-0.5 text-center text-[10px] tabular-nums text-slate-500">{count}</span>}
+                    {count > 0 && (
+                      <span className="mb-0.5 text-center text-[10px] tabular-nums text-slate-500">{count}</span>
+                    )}
                     <div
                       className="rounded-t"
-                      style={{ height: `${(count / maxBin) * 80}%`, backgroundColor: count > 0 ? histogramColor : undefined }}
+                      style={{
+                        height: `${(count / maxBin) * 80}%`,
+                        backgroundColor: count > 0 ? histogramColor : undefined,
+                      }}
                     />
                   </div>
                 ))}
