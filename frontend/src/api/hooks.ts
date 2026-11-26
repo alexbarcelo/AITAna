@@ -150,7 +150,7 @@ export function useCreateEdition() {
 
 export function useRubrics(filters?: { course_id?: number; edition_id?: number }) {
   return useQuery({
-    queryKey: ['rubrics', filters],
+    queryKey: ['rubrics', 'list', filters],
     queryFn: () => unwrap(client.GET('/rubrics', { params: { query: filters ?? {} } })) as Promise<Rubric[]>,
   })
 }
@@ -343,7 +343,7 @@ export function useSubmissions(filters?: {
   status?: SubmissionStatus
 }) {
   return useQuery({
-    queryKey: ['submissions', filters],
+    queryKey: ['submissions', 'list', filters],
     queryFn: () =>
       unwrap(
         client.GET('/submissions', {
@@ -574,7 +574,7 @@ export function useCreateSubmission() {
 
 export function useBatches(filters?: { rubric_id?: number; edition_id?: number }) {
   return useQuery({
-    queryKey: ['batches', filters],
+    queryKey: ['batches', 'list', filters],
     queryFn: async () =>
       byMostRecentFirst(
         await (unwrap(client.GET('/batches', { params: { query: filters ?? {} } })) as unknown as Promise<Batch[]>),
