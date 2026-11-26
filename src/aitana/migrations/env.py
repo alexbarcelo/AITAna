@@ -52,6 +52,13 @@ def _run(connection: Connection) -> None:
         context.configure(connection=connection, **_CONFIGURE)
         with context.begin_transaction():
             context.run_migrations()
+    except BaseException:
+        # A failed statement leaves the transaction aborted, so the unlock
+        # below would fail too and replace the real error with "current
+        # transaction is aborted". A session-level advisory lock survives
+        # the rollback, so the unlock still has something to release.
+        connection.rollback()
+        raise
     finally:
         connection.execute(text("SELECT pg_advisory_unlock(:id)"), {"id": _MIGRATION_LOCK_ID})
         connection.commit()
