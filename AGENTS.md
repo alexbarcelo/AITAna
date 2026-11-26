@@ -464,9 +464,40 @@ an `info` dict in the same shape as `AnsweredQuestion.grading_info`, so
   submission page for a graded submission).
 - No `GradingTrace` row (that table is per question, its `GradeTrace`
   needs a `Grade`); the `info` dict is the only audit record.
+- **CSV export**: `GET /submissions/general-feedback.csv?rubric_id=&edition_id=`
+  (both required: one rubric x edition = one LMS assignment), one row per
+  submission with an effective general feedback: `ID number`, `Full name`,
+  `Username`, `Email address`, `General feedback` -- Moodle's own field
+  labels, so its gradebook CSV import maps them without renaming. UTF-8 with
+  BOM (Moodle strips it). Unrostered submissions (label/unmatched) get a row
+  with blank user columns. See "Exports" for where the UI offers it.
+- **Grading overview**: a submission with an effective general feedback gets
+  an icon next to its name in `GradingGrid.tsx` -- native `title` tooltip
+  preview (a styled popover would be clipped by the grid's scroll
+  container), click opens a dialog with the same `GeneralFeedbackEditor`.
 - YAML: top-level `general_feedback_instructions:` key, string only (`422`
-  otherwise). Feedback export: a "General feedback" box above the
+  otherwise). Feedback report: a "General feedback" box above the
   questions.
+
+## Exports (UI naming)
+
+Two names, used the same way in every label, tooltip and doc:
+
+- **Feedback report** -- one student's standalone HTML page
+  (`feedback_export.render_feedback_html`): general feedback plus each
+  question's grade and feedback. Submission page: "Feedback report" (`GET
+  /submissions/{id}/feedback.html`).
+- **General feedback** -- just the submission-wide text (see "General
+  feedback").
+
+The submissions list shows both bulk exports as `ExportCard`s
+(`SubmissionsPage.tsx`) **always**, greyed out with a hint naming the
+missing filter, so a TA sees that they exist and what they're for:
+"Feedback reports (zip)" (`GET /batches/{id}/feedback.zip`, needs a batch:
+the zip reuses the batch's folder names, Atenea's feedback-files upload)
+and "General feedback (CSV)" (needs one rubric and one edition -- a batch or
+a fixed-edition rubric pins the edition; Atenea's gradebook import). Keep
+card text to a title and one line; a new bulk export gets a card too.
 
 ## Python sandbox for grading
 

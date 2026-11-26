@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import AnswerGradeEditor from './AnswerGradeEditor'
 import AnswerImages from './AnswerImages'
+import GeneralFeedbackEditor from './GeneralFeedbackEditor'
 import GradeBadge from './GradeBadge'
 import QuestionDetails from './QuestionDetails'
 import { GradeDistributionBar, GradingStatsSummary } from './GradeStats'
@@ -9,6 +10,7 @@ import { gradeColor, prettifyLevel } from '../lib/gradeColor'
 import { formatScore, gradeStats, type GradeStats } from '../lib/gradeStats'
 import { orderedLevels } from '../lib/gradingScale'
 import {
+  effectiveGeneralFeedback,
   effectiveGrade,
   IN_PROGRESS_STATUSES,
   submissionName,
@@ -34,6 +36,10 @@ import {
  * (`GradingStatsSummary`), a per-student "Score" column (sortable), and a
  * per-question footer row -- each with a grade-distribution bar and the
  * score: total over the best possible total (`gradeStats`, `lib/gradeStats.ts`).
+ *
+ * A submission with a general feedback gets an icon next to its name: hover
+ * previews the text, click opens it in a dialog (same `GeneralFeedbackEditor`
+ * as the submission page, so it can be edited/regenerated from here too).
  */
 export default function GradingGrid({ submissions, rubric }: { submissions: Submission[]; rubric: SubmissionRubric }) {
   // Ids only, not the objects themselves: the modal re-reads the answer from
@@ -41,6 +47,8 @@ export default function GradingGrid({ submissions, rubric }: { submissions: Subm
   // (which refetches the submissions query) shows up in the open modal
   // instead of it displaying a stale snapshot.
   const [selected, setSelected] = useState<{ submissionId: number; questionId: string } | null>(null)
+  const [feedbackFor, setFeedbackFor] = useState<number | null>(null)
+  const feedbackSubmission = feedbackFor !== null ? submissions.find((s) => s.id === feedbackFor) : undefined
   const [sortBy, setSortBy] = useState<'name' | 'score-desc' | 'score-asc'>('name')
   const selectedSubmission = selected && submissions.find((s) => s.id === selected.submissionId)
   const selectedQuestion = selected && rubric.questions.find((q) => q.id === selected.questionId)
@@ -110,11 +118,14 @@ export default function GradingGrid({ submissions, rubric }: { submissions: Subm
             {rows.map((s) => (
               <tr key={s.id} className="border-b border-slate-100 last:border-0">
                 <td className="sticky left-0 z-10 whitespace-nowrap border-r border-slate-200 bg-white px-3 py-2 font-medium text-slate-900">
-                  {s.student || s.label ? (
-                    submissionName(s)
-                  ) : (
-                    <span className="text-slate-400">{s.batch_internal_id ?? 'Unmatched'}</span>
-                  )}
+                  <div className="flex items-center justify-between gap-2">
+                    {s.student || s.label ? (
+                      submissionName(s)
+                    ) : (
+                      <span className="text-slate-400">{s.batch_internal_id ?? 'Unmatched'}</span>
+                    )}
+                    <GeneralFeedbackButton submission={s} onOpen={() => setFeedbackFor(s.id)} />
+                  </div>
                 </td>
                 <td className="border-r border-slate-200 px-3 py-2">
                   <ScoreCell stats={studentStats.get(s.id)!} scale={scale} />
@@ -188,6 +199,59 @@ export default function GradingGrid({ submissions, rubric }: { submissions: Subm
           onClose={() => setSelected(null)}
         />
       )}
+
+      {feedbackSubmission && (
+        <GeneralFeedbackDialog submission={feedbackSubmission} onClose={() => setFeedbackFor(null)} />
+      )}
+    </div>
+  )
+}
+
+const FEEDBACK_PREVIEW_CHARS = 400
+
+/** Speech-bubble icon, only when the submission has a general feedback:
+ * the (native) tooltip previews it, a click opens the full dialog. A native
+ * `title` rather than a styled popover, since the grid's scroll container
+ * would clip one. */
+function GeneralFeedbackButton({ submission, onOpen }: { submission: Submission; onOpen: () => void }) {
+  const text = effectiveGeneralFeedback(submission)
+  if (!text) return null
+  const preview = text.length > FEEDBACK_PREVIEW_CHARS ? `${text.slice(0, FEEDBACK_PREVIEW_CHARS).trimEnd()}…` : text
+  const edited = submission.manual_general_feedback ? ' (edited by a TA)' : ''
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`General feedback${edited} -- click to open:\n\n${preview}`}
+      aria-label="Show general feedback"
+      className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+    >
+      <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+        <path
+          fillRule="evenodd"
+          d="M3.43 2.524A41.29 41.29 0 0 1 10 2c2.236 0 4.43.18 6.57.524 1.437.231 2.43 1.49 2.43 2.902v5.148c0 1.413-.993 2.67-2.43 2.902a41.202 41.202 0 0 1-5.183.501.78.78 0 0 0-.528.224l-3.579 3.58A.75.75 0 0 1 6 17.25v-3.443a41.033 41.033 0 0 1-2.57-.33C1.993 13.244 1 11.986 1 10.573V5.426c0-1.413.993-2.67 2.43-2.902Z"
+          clipRule="evenodd"
+        />
+      </svg>
+    </button>
+  )
+}
+
+function GeneralFeedbackDialog({ submission, onClose }: { submission: Submission; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-white p-4 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="mb-3 text-sm font-medium text-slate-900">{submissionName(submission)}</p>
+        <GeneralFeedbackEditor submission={submission} disabled={IN_PROGRESS_STATUSES.includes(submission.status)} />
+        <div className="flex justify-end">
+          <button onClick={onClose} className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

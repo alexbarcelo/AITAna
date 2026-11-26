@@ -46,7 +46,13 @@ from ...worker.tasks import (
     regenerate_general_feedback,
     suggest_segments_task,
 )
-from ..feedback_export import course_name, feedback_filename, load_answer_images, render_feedback_html
+from ..feedback_export import (
+    course_name,
+    feedback_filename,
+    load_answer_images,
+    render_feedback_html,
+    render_general_feedback_csv,
+)
 from ..schemas import SubmissionOut
 from .llm import MODEL_ID_QUERY, require_llm_model
 
@@ -299,6 +305,34 @@ async def list_submissions(
     if edition_id is not None:
         query = query.where(Submission.edition_id == edition_id)
     return list(await session.scalars(query))
+
+
+@router.get("/general-feedback.csv")
+async def export_general_feedback_csv(
+    rubric_id: int, edition_id: int, session: AsyncSession = Depends(get_session)
+) -> Response:
+    """Every general feedback of one rubric x edition (i.e. one LMS
+    assignment) as CSV, for importing into Moodle's gradebook -- see
+    `feedback_export.render_general_feedback_csv`. Declared before
+    `/{submission_id}` so the path isn't taken for an id."""
+    rubric = await get_rubric_or_404(session, rubric_id)
+    edition = await session.get(Edition, edition_id)
+    if edition is None:
+        raise HTTPException(status_code=404, detail=f"Edition {edition_id} not found")
+    submissions = await session.scalars(
+        select(Submission)
+        .options(selectinload(Submission.student))
+        .where(Submission.rubric_id == rubric.id, Submission.edition_id == edition.id)
+    )
+    return Response(
+        content=render_general_feedback_csv(list(submissions)),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": content_disposition(
+                "attachment", f"{rubric.slug}_{edition.slug}_general_feedback.csv"
+            )
+        },
+    )
 
 
 @router.get("/{submission_id}", response_model=SubmissionOut)

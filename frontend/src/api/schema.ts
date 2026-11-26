@@ -322,6 +322,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/submissions/general-feedback.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export General Feedback Csv
+         * @description Every general feedback of one rubric x edition (i.e. one LMS
+         *     assignment) as CSV, for importing into Moodle's gradebook -- see
+         *     `feedback_export.render_general_feedback_csv`. Declared before
+         *     `/{submission_id}` so the path isn't taken for an id.
+         */
+        get: operations["export_general_feedback_csv_submissions_general_feedback_csv_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/submissions/{submission_id}": {
         parameters: {
             query?: never;
@@ -2468,6 +2491,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SubmissionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_general_feedback_csv_submissions_general_feedback_csv_get: {
+        parameters: {
+            query: {
+                rubric_id: number;
+                edition_id: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

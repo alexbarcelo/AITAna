@@ -19,7 +19,7 @@ import RenameLabelDialog from '../components/RenameLabelDialog'
 import StatusBadge from '../components/StatusBadge'
 import { UntaggedCellsBadge, UntaggedCellsReport } from '../components/UntaggedCells'
 import { totalUntaggedCells } from '../lib/untaggedCells'
-import { BATCH_TYPE_LABELS, IN_PROGRESS_STATUSES, submissionName } from '../api/types'
+import { BATCH_TYPE_LABELS, effectiveGeneralFeedback, IN_PROGRESS_STATUSES, submissionName } from '../api/types'
 import { formatDateTime } from '../lib/date'
 import { parseId } from '../lib/ids'
 
@@ -113,6 +113,11 @@ export default function SubmissionsPage() {
   // Drop a stale pick when the rubric filter changes to one without that question.
   const regradeQuestion = singleRubric?.questions.some((q) => q.id === regradeQuestionId) ? regradeQuestionId : ''
   const hasGeneralFeedback = Boolean(singleRubric?.general_feedback_instructions?.trim())
+  // One rubric x one edition = one LMS assignment, what the general feedback
+  // CSV export is scoped to. A batch, or a rubric with a fixed edition, pins
+  // the edition without the edition filter.
+  const singleEditionId = parseId(editionId) ?? batch?.edition.id ?? singleRubric?.edition_id ?? undefined
+  const generalFeedbackCount = submissions?.filter((s) => effectiveGeneralFeedback(s)).length ?? 0
   const anyInProgress = submissions?.some((s) => IN_PROGRESS_STATUSES.includes(s.status)) ?? false
   const hasFilters = FILTER_KEYS.some((k) => searchParams.get(k))
 
@@ -129,7 +134,7 @@ export default function SubmissionsPage() {
       </div>
 
       {batchId && batch && (
-        <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-4">
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
           <div>
             <h2 className="text-sm font-medium text-slate-900">
               {batch.rubric.title} &middot; {batch.edition.name}
@@ -139,15 +144,6 @@ export default function SubmissionsPage() {
               {formatDateTime(batch.created_at)}
               {batch.original_filename && <> &middot; {batch.original_filename}</>}
             </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <a
-              href={`${API_URL}/batches/${batch.id}/feedback.zip`}
-              title="Zip with one standalone feedback HTML per student, each inside that student's original submission folder"
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
-            >
-              Download feedback (zip)
-            </a>
           </div>
         </div>
       )}
@@ -268,6 +264,31 @@ export default function SubmissionsPage() {
             Clear filters
           </button>
         )}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ExportCard
+          title="Feedback reports (zip)"
+          description="Each student's feedback report, in the batch's folders: upload it to Atenea as feedback files."
+          href={batch ? `${API_URL}/batches/${batch.id}/feedback.zip` : undefined}
+          hint={batchId ? undefined : 'Select a batch to enable'}
+        />
+        <ExportCard
+          title="General feedback (CSV)"
+          description="Each student's general feedback, by ID number: import it into Atenea's gradebook."
+          href={
+            singleRubric && singleEditionId != null && generalFeedbackCount > 0
+              ? `${API_URL}/submissions/general-feedback.csv?rubric_id=${singleRubric.id}&edition_id=${singleEditionId}`
+              : undefined
+          }
+          hint={
+            !singleRubric || singleEditionId == null
+              ? 'Select a rubric and an edition to enable'
+              : generalFeedbackCount === 0
+                ? 'No general feedback yet'
+                : undefined
+          }
+        />
       </div>
 
       {isLoading && <p className="text-sm text-slate-500">Loading...</p>}
@@ -420,6 +441,48 @@ export default function SubmissionsPage() {
         <div className="relative left-1/2 right-1/2 -mx-[50vw] w-screen px-4">
           <GradingGrid submissions={submissions} rubric={singleRubric} />
         </div>
+      )}
+    </div>
+  )
+}
+
+/** One export: always shown, so its existence and purpose are visible even
+ * when the filters don't allow it yet -- then greyed out, with `hint` saying
+ * what's missing. */
+function ExportCard({
+  title,
+  description,
+  href,
+  hint,
+}: {
+  title: string
+  description: string
+  href?: string
+  hint?: string
+}) {
+  const enabled = Boolean(href) && !hint
+  return (
+    <div
+      className={`flex items-start justify-between gap-3 rounded-lg border p-3 ${
+        enabled ? 'border-slate-200 bg-white' : 'border-dashed border-slate-200 bg-slate-50'
+      }`}
+    >
+      <div className={enabled ? '' : 'opacity-60'}>
+        <h2 className="text-sm font-medium text-slate-900">{title}</h2>
+        <p className="text-xs text-slate-500">{description}</p>
+        {hint && <p className="mt-1 text-xs italic text-slate-400">{hint}</p>}
+      </div>
+      {enabled ? (
+        <a
+          href={href}
+          className="shrink-0 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
+        >
+          Download
+        </a>
+      ) : (
+        <span className="shrink-0 cursor-not-allowed rounded-md border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-400">
+          Download
+        </span>
       )}
     </div>
   )

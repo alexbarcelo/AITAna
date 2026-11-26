@@ -313,7 +313,7 @@ every question is graded: it gets the rubric's `context`, its grading scale
 and, for each question, its title, grade level and feedback (the TA's manual
 grade if there is one -- not the student's answers), and digests them into a
 single short **general feedback** following those instructions. It's shown
-on the submission page and at the top of the feedback export. A TA can
+on the submission page and at the top of the feedback report. A TA can
 override its text, or **regenerate** it from the current grades (e.g.
 after overriding some of them) without re-grading anything else. Without
 `general_feedback_instructions`, no general feedback is written.

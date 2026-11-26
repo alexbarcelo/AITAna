@@ -90,10 +90,10 @@ export default function SubmissionDetailPage() {
           )}
           <a
             href={`${API_URL}/submissions/${submission.id}/feedback.html`}
-            title="Standalone HTML page with this submission's feedback -- no internet connection needed to view it"
+            title="This student's grades and feedback as one self-contained HTML page, to hand back"
             className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
           >
-            Export feedback
+            Feedback report
           </a>
           {segmented && submission.document && (
             <Link

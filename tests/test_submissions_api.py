@@ -1,9 +1,12 @@
+import csv
+import io
+
 from sqlalchemy import func, select
 
-from aitana.db import AnsweredQuestion, Course, Edition, Rubric, Submission, SubmissionStatus
+from aitana.db import AnsweredQuestion, Course, Edition, Rubric, Student, Submission, SubmissionStatus
 from aitana.grading.models import ConvertedDocument, GeneralFeedback, Grade, Question, SubmissionFormat
 
-from .factories import add, reload, save
+from .factories import add, make_edition, make_rubric, make_submission, reload, save
 
 
 async def _make_student(client) -> int:
@@ -924,4 +927,54 @@ async def test_delete_submission_in_progress_needs_force(client):
 
 async def test_delete_submission_not_found(client):
     resp = await client.delete("/submissions/999999999")
+    assert resp.status_code == 404
+
+
+# ---- general feedback CSV export ----
+
+
+async def test_export_general_feedback_csv(client):
+    db = client.db
+    rubric = await make_rubric(db, "gf_csv")
+    edition, other_edition = await make_edition(db, "gf_a"), await make_edition(db, "gf_b")
+    zoe = await add(db, Student(student_id="s2", name="Zoe Ñúñez", username="zoe", email="zoe@x.edu"))
+    ada = await add(db, Student(student_id="s1", name="Ada Lovelace"))
+    await make_submission(
+        db,
+        rubric=rubric,
+        edition=edition,
+        student=zoe,
+        general_feedback=GeneralFeedback(feedback="LLM text"),
+        manual_general_feedback="Line one\nLine, two",
+    )
+    await make_submission(
+        db, rubric=rubric, edition=edition, student=ada, general_feedback=GeneralFeedback(feedback="Good job")
+    )
+    await make_submission(db, rubric=rubric, edition=edition, label="Group 3", manual_general_feedback="Team text")
+    await make_submission(db, rubric=rubric, edition=edition, student=ada)  # no general feedback: no row
+    await make_submission(  # another edition: not exported
+        db, rubric=rubric, edition=other_edition, student=ada, general_feedback=GeneralFeedback(feedback="Old")
+    )
+
+    resp = await client.get(
+        "/submissions/general-feedback.csv", params={"rubric_id": rubric.id, "edition_id": edition.id}
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    assert "gf_csv_gf_a_general_feedback.csv" in resp.headers["content-disposition"]
+    assert resp.content.startswith("﻿".encode())
+    rows = list(csv.reader(io.StringIO(resp.content.decode("utf-8-sig"))))
+    assert rows == [
+        ["ID number", "Full name", "Username", "Email address", "General feedback"],
+        ["s1", "Ada Lovelace", "", "", "Good job"],
+        ["", "Group 3", "", "", "Team text"],
+        ["s2", "Zoe Ñúñez", "zoe", "zoe@x.edu", "Line one\nLine, two"],
+    ]
+
+
+async def test_export_general_feedback_csv_unknown_edition_404(client):
+    rubric = await make_rubric(client.db, "gf_csv404")
+    resp = await client.get(
+        "/submissions/general-feedback.csv", params={"rubric_id": rubric.id, "edition_id": 999999999}
+    )
     assert resp.status_code == 404
