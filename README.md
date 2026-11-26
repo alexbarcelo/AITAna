@@ -239,6 +239,7 @@ general_feedback_instructions: |  # optional -- one "general feedback" for the w
 questions:
   - id: answer1          # label; also the default answer-slot name (PDF field / notebook tag)
     field: answer1       # optional override if the answer slot is named differently
+    weight: 2            # optional, default 1 -- multiplies this question's level score (0 = not counted)
     title: "Short question title"
     question: |
       The actual question/task text posed to the student.
@@ -319,8 +320,13 @@ after overriding some of them) without re-grading anything else. Without
 `general_feedback_instructions`, no general feedback is written.
 
 Blank answers get the rubric's score-0 level without an LLM call --
-`not_attempted` for the default scale. The grading overview's **Score** is
-the graded answers' total score over the best possible total.
+`not_attempted` for the default scale. A submission's **raw score** is the
+sum over the questions of `weight x level score` (the level scores are the
+rubric's own, so a nonlinear scale such as 0/1/2/5 is graded as such), and
+its **score** is that raw score over the best possible one (every question
+at the top level), in %. Both show in the grading overview (greyed out as
+partial while a question is still ungraded) and in the general feedback CSV
+(left blank there until every question that counts is graded).
 
 Grading models are managed in the web UI: the **Model** picker (top right)
 selects the *active* model this browser grades with, and **Manage models...**

@@ -101,7 +101,10 @@ benefit.
 
 `Question` has both a `title` (short label, UI-only -- lists/headers) and a
 `question` (the actual task text sent to the LLM) -- don't conflate them;
-`title` is never part of the grading prompt. `context` is optional
+`title` is never part of the grading prompt. `weight` (default 1, `>= 0`,
+at least one question `> 0` per rubric -- `RubricIn`) multiplies the
+question's level score in the submission's score (see "Grading overview
+statistics"); never sent to the LLM. `context` is optional
 environment/state info (mainly useful for a lab: what the student's
 environment already looks like at this point) included in the prompt only
 when set. `model_answer` is likewise optional: a worked/canonical answer,
@@ -466,10 +469,14 @@ an `info` dict in the same shape as `AnsweredQuestion.grading_info`, so
   needs a `Grade`); the `info` dict is the only audit record.
 - **CSV export**: `GET /submissions/general-feedback.csv?rubric_id=&edition_id=`
   (both required: one rubric x edition = one LMS assignment), one row per
-  submission with an effective general feedback: `ID number`, `Full name`,
-  `Username`, `Email address`, `General feedback` -- Moodle's own field
-  labels, so its gradebook CSV import maps them without renaming. UTF-8 with
-  BOM (Moodle strips it). Unrostered submissions (label/unmatched) get a row
+  submission (with or without general feedback): `ID number`, `Full name`,
+  `Username`, `Email address` (Moodle's own field labels, so its gradebook
+  CSV import maps them without renaming), `Score` (weighted, % of the
+  maximum, no `%` sign), `Raw score` and `General feedback` (blank when
+  there is none). Both scores come from `grading/scoring.py` and are
+  **blank until every question with weight > 0 has an effective grade** --
+  an unfinished grading is never exported as a grade. UTF-8 with BOM
+  (Moodle strips it). Unrostered submissions (label/unmatched) get a row
   with blank user columns. See "Exports" for where the UI offers it.
 - **Grading overview**: a submission with an effective general feedback gets
   an icon next to its name in `GradingGrid.tsx` -- native `title` tooltip
@@ -723,16 +730,30 @@ grid (`components/GradeStats.tsx`), a sortable per-student "Score" column, a
 per-question footer row. All are computed client-side from the listed
 submissions (no stats endpoint), always from `effectiveGrade`.
 
-- **"Score" is the graded answers' total score over the best possible
-  total** (every one of those answers at the scale's highest-scoring level),
-  from the rubric's `GradingLevel.score`s (`gradeStats` in
-  `lib/gradeStats.ts`). 100% = all top marks. With negative-scoring levels it
-  can go below 0% (the histogram clamps that into its lowest bin). Only
-  comparable within one rubric.
-- Ungraded answers and levels no longer in the scale are left out of the
-  score, but ungraded answers still show as a neutral segment in the
-  distribution bars. Distribution bars and legends list levels in score
-  order.
+- **A submission's score is weighted**: raw = sum over the rubric's
+  questions of `Question.weight x GradingLevel.score` of its effective
+  grade; score = raw over the best possible raw (every question at the
+  scale's top level). `submissionScore` (`lib/gradeStats.ts`) mirrors the
+  backend's `weighted_score` (`grading/scoring.py`, used by the CSV export)
+  -- keep both in sync. The maximum always covers **every** question, never
+  just the graded ones: an ungraded answer (or a level no longer in the
+  scale) adds 0 and makes the score `complete: false`, shown greyed out in
+  the grid's "Score"/"Raw" columns -- so a failed question can't inflate a
+  grade. Weight-0 questions are ignored entirely. 100% = all top marks;
+  with negative-scoring levels it can go below 0% (the histogram clamps
+  that into its lowest bin). Only comparable within one rubric.
+- **Score breakdown** (`components/ScoreBreakdown.tsx`): the submission
+  page's header shows the score + raw score, and clicking it (or a grid
+  row's Score/Raw cell) opens a per-question table (weight, effective grade,
+  level score, weighted points) from `submissionScore`'s `questions`. The
+  popover is portalled to `<body>` with fixed positioning so the grid's
+  scroll container doesn't clip it.
+- The summary panel's student statistics (mean, median, histogram) use only
+  complete submissions. Per-question figures (footer row, hardest/easiest)
+  are unweighted: that question's graded answers' total over the best
+  possible total (`gradeStats`); ungraded answers show as a neutral segment
+  in the distribution bars. Distribution bars and legends list levels in
+  score order.
 
 ## Choosing the grading model (`api/routers/llm.py`)
 

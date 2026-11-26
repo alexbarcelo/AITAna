@@ -332,8 +332,8 @@ export interface paths {
         };
         /**
          * Export General Feedback Csv
-         * @description Every general feedback of one rubric x edition (i.e. one LMS
-         *     assignment) as CSV, for importing into Moodle's gradebook -- see
+         * @description Score and general feedback of every submission of one rubric x
+         *     edition (i.e. one LMS assignment) as CSV, for importing into Moodle's gradebook -- see
          *     `feedback_export.render_general_feedback_csv`. Declared before
          *     `/{submission_id}` so the path isn't taken for an id.
          */
@@ -1576,6 +1576,11 @@ export interface components {
              * @default false
              */
             include_images: boolean;
+            /**
+             * Weight
+             * @default 1
+             */
+            weight: number;
         };
         /**
          * RubricIn

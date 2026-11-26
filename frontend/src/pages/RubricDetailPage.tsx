@@ -168,6 +168,14 @@ export default function RubricDetailPage() {
             <div className="mb-2 flex items-center justify-between">
               <h2 className="flex items-center gap-2 font-medium">
                 {i + 1}. {q.title}
+                {(q.weight ?? 1) !== 1 && (
+                  <span
+                    className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-normal text-slate-500"
+                    title="This question's level score is multiplied by its weight in the submission's score."
+                  >
+                    weight {q.weight}
+                  </span>
+                )}
                 {q.needs_python_sandbox && (
                   <span
                     className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-normal text-slate-500"

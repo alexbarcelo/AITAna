@@ -11,6 +11,7 @@ import GeneralFeedbackEditor from '../components/GeneralFeedbackEditor'
 import MatchStudentDialog from '../components/MatchStudentDialog'
 import QuestionDetails from '../components/QuestionDetails'
 import RenameLabelDialog from '../components/RenameLabelDialog'
+import { ScoreBreakdownButton, ScoreSummary } from '../components/ScoreBreakdown'
 import StatusBadge from '../components/StatusBadge'
 import { UntaggedCellsBadge, UntaggedCellsSummary } from '../components/UntaggedCells'
 import {
@@ -23,6 +24,7 @@ import {
   type Question,
   type Submission,
 } from '../api/types'
+import { submissionScore } from '../lib/gradeStats'
 import { parseId } from '../lib/ids'
 
 export default function SubmissionDetailPage() {
@@ -38,44 +40,55 @@ export default function SubmissionDetailPage() {
   const inProgress = IN_PROGRESS_STATUSES.includes(submission.status)
   const fileInfo = FORMAT_FILE_INFO[submission.rubric.format]
   const segmented = SEGMENTED_FORMATS.includes(submission.rubric.format)
+  const score = submissionScore(submission.answers, submission.rubric.questions, submission.rubric.grading_scale)
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="flex items-center gap-1 text-xl font-semibold">
-            {submission.student || submission.label ? submissionName(submission) : 'Unmatched'} &middot;{' '}
-            {submission.rubric.title}
-            {submission.label && !submission.student && (
-              <RenameLabelDialog submissionId={submission.id} currentLabel={submission.label} />
+      <div className="space-y-3">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="flex items-center gap-1 text-xl font-semibold">
+              {submission.student || submission.label ? submissionName(submission) : 'Unmatched'} &middot;{' '}
+              {submission.rubric.title}
+              {submission.label && !submission.student && (
+                <RenameLabelDialog submissionId={submission.id} currentLabel={submission.label} />
+              )}
+              {submission.batch_internal_id && !submission.label && (
+                <MatchStudentDialog submissionId={submission.id} currentStudentId={submission.student?.student_id} />
+              )}
+            </h1>
+            <p className="text-sm text-slate-500">
+              {/* A labelled submission's label is already the heading -- nothing to show before the edition. */}
+              {!submission.student && submission.label ? null : (
+                <>{submission.student ? submission.student.student_id : submission.batch_internal_id} &middot; </>
+              )}
+              {submission.edition.name}
+              {submission.batch_id && (
+                <>
+                  {' '}
+                  &middot;{' '}
+                  <Link to={`/?batch_id=${submission.batch_id}`} className="hover:underline">
+                    batch
+                  </Link>
+                </>
+              )}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            {submission.answers.length > 0 && (
+              <ScoreBreakdownButton score={score} scale={submission.rubric.grading_scale} className="px-1.5 py-0.5">
+                <ScoreSummary score={score} />
+              </ScoreBreakdownButton>
             )}
-            {submission.batch_internal_id && !submission.label && (
-              <MatchStudentDialog submissionId={submission.id} currentStudentId={submission.student?.student_id} />
-            )}
-          </h1>
-          <p className="text-sm text-slate-500">
-            {/* A labelled submission's label is already the heading -- nothing to show before the edition. */}
-            {!submission.student && submission.label ? null : (
-              <>{submission.student ? submission.student.student_id : submission.batch_internal_id} &middot; </>
-            )}
-            {submission.edition.name}
-            {submission.batch_id && (
-              <>
-                {' '}
-                &middot;{' '}
-                <Link to={`/?batch_id=${submission.batch_id}`} className="hover:underline">
-                  batch
-                </Link>
-              </>
-            )}
-          </p>
+            <SubmissionGradingInfoTooltip answers={submission.answers} />
+            <StatusBadge status={submission.status} />
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <SubmissionGradingInfoTooltip answers={submission.answers} />
-          <StatusBadge status={submission.status} />
+        {/* Actions on their own line: next to the title they squeezed into two-line buttons. */}
+        <div className="flex flex-wrap items-center gap-2">
           <a
             href={`${API_URL}/submissions/${submission.id}/file`}
-            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
+            className="whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm font-medium text-slate-700"
           >
             Download {fileInfo.fileLabel}
           </a>
@@ -83,7 +96,7 @@ export default function SubmissionDetailPage() {
             <a
               href={`${API_URL}/submissions/${submission.id}/original`}
               title={`The file as uploaded${submission.original_filename ? ` (${submission.original_filename})` : ''}, before conversion to PDF`}
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
+              className="whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm font-medium text-slate-700"
             >
               Download original
             </a>
@@ -91,7 +104,7 @@ export default function SubmissionDetailPage() {
           <a
             href={`${API_URL}/submissions/${submission.id}/feedback.html`}
             title="This student's grades and feedback as one self-contained HTML page, to hand back"
-            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
+            className="whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm font-medium text-slate-700"
           >
             Feedback report
           </a>
@@ -99,7 +112,7 @@ export default function SubmissionDetailPage() {
             <Link
               to={`/submissions/${submission.id}/segments`}
               title="Review where each answer starts and ends in the PDF"
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
+              className="whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm font-medium text-slate-700"
             >
               Edit segmentation
             </Link>
@@ -116,7 +129,7 @@ export default function SubmissionDetailPage() {
             }}
             disabled={regrade.isPending}
             title="Force re-grading: re-extracts the file and replaces the LLM grades/feedback (manual grades are kept)"
-            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-50"
+            className="whitespace-nowrap rounded-md border border-slate-300 bg-white px-4 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-50"
           >
             {regrade.isPending ? 'Re-grading...' : 'Re-grade'}
           </button>

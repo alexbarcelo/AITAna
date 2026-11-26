@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import Course, Rubric, Submission
 from ..grading.models import ExtractedImage, GradingLevel, ordered_levels
+from ..grading.scoring import Score, weighted_score
 from ..worker.tasks import extract_submission_file
 
 logger = logging.getLogger(__name__)
@@ -246,30 +247,56 @@ def feedback_filename(submission: Submission) -> str:
 # Header names follow Moodle's own user-field labels (as in its roster export,
 # see `students.py`'s Atenea import), so its gradebook CSV import can map
 # "ID number" (or "Username"/"Email address") to the user without renaming.
-GENERAL_FEEDBACK_CSV_HEADER = ("ID number", "Full name", "Username", "Email address", "General feedback")
+GENERAL_FEEDBACK_CSV_HEADER = (
+    "ID number",
+    "Full name",
+    "Username",
+    "Email address",
+    "Score",
+    "Raw score",
+    "General feedback",
+)
 
 
-def render_general_feedback_csv(submissions: list[Submission]) -> str:
-    """One row per submission that has an effective general feedback (TA
-    override, else the LLM's), sorted by name; needs `student` loaded. A
-    submission with no roster student (labelled, or unmatched batch item)
-    still gets a row, with its label/folder as the name and the user columns
-    blank. Starts with a UTF-8 BOM so spreadsheet apps detect the encoding;
-    Moodle strips it on import. Multi-line feedback stays in one quoted cell."""
+def _format_number(value: float | None) -> str:
+    """Up to two decimals, no trailing zeros, `.` as separator: `85`, `72.5`."""
+    if value is None:
+        return ""
+    return f"{round(value, 2):.2f}".rstrip("0").rstrip(".")
+
+
+def submission_score(rubric: Rubric, submission: Submission) -> Score:
+    levels = {a.question_id: (a.effective_grade.level if a.effective_grade else None) for a in submission.answers}
+    return weighted_score(rubric.questions, levels, rubric.grading_scale)
+
+
+def render_general_feedback_csv(rubric: Rubric, submissions: list[Submission]) -> str:
+    """One row per submission of `rubric`, sorted by name; needs `student`
+    loaded. `Score` is the weighted score in % of the maximum, `Raw score`
+    the sum of weight x level score (grading/scoring.py); both are blank
+    until every question that counts is graded, so an unfinished grading is
+    never imported as a grade. `General feedback` is the effective one (TA
+    override, else the LLM's), blank if there is none. A submission with no
+    roster student (labelled, or unmatched batch item) gets its label/folder
+    as the name and the user columns blank. Starts with a UTF-8 BOM so
+    spreadsheet apps detect the encoding; Moodle strips it on import.
+    Multi-line feedback stays in one quoted cell."""
     out = io.StringIO()
     out.write("\ufeff")
     writer = csv.writer(out)
     writer.writerow(GENERAL_FEEDBACK_CSV_HEADER)
-    rows = [s for s in submissions if s.effective_general_feedback]
-    for submission in sorted(rows, key=lambda s: (s.display_name.casefold(), s.id)):
+    for submission in sorted(submissions, key=lambda s: (s.display_name.casefold(), s.id)):
         student = submission.student
+        score = submission_score(rubric, submission)
         writer.writerow(
             (
                 student.student_id if student else "",
                 submission.display_name,
                 (student.username or "") if student else "",
                 (student.email or "") if student else "",
-                submission.effective_general_feedback,
+                _format_number(score.percent) if score.complete else "",
+                _format_number(score.raw) if score.complete else "",
+                submission.effective_general_feedback or "",
             )
         )
     return out.getvalue()

@@ -4,9 +4,9 @@ import io
 from sqlalchemy import func, select
 
 from aitana.db import AnsweredQuestion, Course, Edition, Rubric, Student, Submission, SubmissionStatus
-from aitana.grading.models import ConvertedDocument, GeneralFeedback, Grade, Question, SubmissionFormat
+from aitana.grading.models import ConvertedDocument, GeneralFeedback, Grade, GradingLevel, Question, SubmissionFormat
 
-from .factories import add, make_edition, make_rubric, make_submission, reload, save
+from .factories import add, make_edition, make_rubric, make_submission, question, reload, save
 
 
 async def _make_student(client) -> int:
@@ -935,23 +935,49 @@ async def test_delete_submission_not_found(client):
 
 async def test_export_general_feedback_csv(client):
     db = client.db
-    rubric = await make_rubric(db, "gf_csv")
+    rubric = await make_rubric(
+        db,
+        "gf_csv",
+        questions=[question("q1", weight=2), question("q2"), question("q3", weight=0)],
+        grading_scale=[
+            GradingLevel(id="none", description="", score=0),
+            GradingLevel(id="half", description="", score=1),
+            GradingLevel(id="full", description="", score=4),  # nonlinear on purpose
+        ],
+    )
     edition, other_edition = await make_edition(db, "gf_a"), await make_edition(db, "gf_b")
     zoe = await add(db, Student(student_id="s2", name="Zoe Ñúñez", username="zoe", email="zoe@x.edu"))
     ada = await add(db, Student(student_id="s1", name="Ada Lovelace"))
+
+    def answers(**levels):
+        return [
+            AnsweredQuestion(question_id=qid, student_answer="x", grade=Grade(level=level, feedback="f"))
+            for qid, level in levels.items()
+        ]
+
+    zoe_answers = answers(q1="half", q2="full")  # q3 weighs 0: not needed for a complete score
+    zoe_answers[1].manual_grade = Grade(level="half", feedback="TA")  # the override counts
     await make_submission(
         db,
         rubric=rubric,
         edition=edition,
         student=zoe,
+        answers=zoe_answers,
         general_feedback=GeneralFeedback(feedback="LLM text"),
         manual_general_feedback="Line one\nLine, two",
     )
     await make_submission(
-        db, rubric=rubric, edition=edition, student=ada, general_feedback=GeneralFeedback(feedback="Good job")
+        db,
+        rubric=rubric,
+        edition=edition,
+        student=ada,
+        answers=answers(q1="full", q2="half", q3="none"),
+        general_feedback=GeneralFeedback(feedback="Good job"),
     )
-    await make_submission(db, rubric=rubric, edition=edition, label="Group 3", manual_general_feedback="Team text")
-    await make_submission(db, rubric=rubric, edition=edition, student=ada)  # no general feedback: no row
+    await make_submission(  # partly graded: no score yet
+        db, rubric=rubric, edition=edition, label="Group 3", answers=answers(q1="full"), manual_general_feedback="Team"
+    )
+    await make_submission(db, rubric=rubric, edition=edition, label="Group 4")  # nothing at all: still a row
     await make_submission(  # another edition: not exported
         db, rubric=rubric, edition=other_edition, student=ada, general_feedback=GeneralFeedback(feedback="Old")
     )
@@ -964,11 +990,13 @@ async def test_export_general_feedback_csv(client):
     assert "gf_csv_gf_a_general_feedback.csv" in resp.headers["content-disposition"]
     assert resp.content.startswith("﻿".encode())
     rows = list(csv.reader(io.StringIO(resp.content.decode("utf-8-sig"))))
+    # Maximum = (2 + 1) x 4 = 12. Ada: 2x4 + 1x1 = 9 (75%); Zoe: 2x1 + 1x1 = 3 (25%).
     assert rows == [
-        ["ID number", "Full name", "Username", "Email address", "General feedback"],
-        ["s1", "Ada Lovelace", "", "", "Good job"],
-        ["", "Group 3", "", "", "Team text"],
-        ["s2", "Zoe Ñúñez", "zoe", "zoe@x.edu", "Line one\nLine, two"],
+        ["ID number", "Full name", "Username", "Email address", "Score", "Raw score", "General feedback"],
+        ["s1", "Ada Lovelace", "", "", "75", "9", "Good job"],
+        ["", "Group 3", "", "", "", "", "Team"],
+        ["", "Group 4", "", "", "", "", ""],
+        ["s2", "Zoe Ñúñez", "zoe", "zoe@x.edu", "25", "3", "Line one\nLine, two"],
     ]
 
 

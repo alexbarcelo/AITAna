@@ -275,7 +275,7 @@ export default function SubmissionsPage() {
         />
         <ExportCard
           title="General feedback (CSV)"
-          description="Each student's general feedback, by ID number: import it into Moodle's gradebook."
+          description="Each student's score, raw score and general feedback, by ID number: import it into Moodle's gradebook."
           href={
             singleRubric && singleEditionId != null && generalFeedbackCount > 0
               ? `${API_URL}/submissions/general-feedback.csv?rubric_id=${singleRubric.id}&edition_id=${singleEditionId}`

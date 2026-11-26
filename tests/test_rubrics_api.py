@@ -238,6 +238,35 @@ async def test_grading_scale_needs_exactly_one_zero_level(client):
     assert "exactly one level with score 0" in resp.text
 
 
+async def _post_weights(client, weights) -> object:
+    courses = (await client.get("/courses")).json()
+    course_id = courses[0]["id"] if courses else await _make_course(client)
+    questions = [{**_question_payload(), "id": f"q{i}", "weight": w} for i, w in enumerate(weights)]
+    return await client.post("/rubrics", json={"title": "Weighted", "course_id": course_id, "questions": questions})
+
+
+async def test_question_weight_defaults_to_one(client):
+    course_id = await _make_course(client)
+    resp = await client.post(
+        "/rubrics", json={"title": "Unweighted", "course_id": course_id, "questions": [_question_payload()]}
+    )
+    assert resp.status_code == 201
+    assert resp.json()["questions"][0]["weight"] == 1
+
+
+async def test_question_weights_accept_zero_but_not_all_zero_or_negative(client):
+    resp = await _post_weights(client, [2.5, 0])
+    assert resp.status_code == 201, resp.text
+    assert [q["weight"] for q in resp.json()["questions"]] == [2.5, 0]
+
+    resp = await _post_weights(client, [0, 0])
+    assert resp.status_code == 422
+    assert "weight above 0" in resp.text
+
+    resp = await _post_weights(client, [1, -1])
+    assert resp.status_code == 422
+
+
 async def test_grading_scale_rejects_duplicate_ids(client):
     dupes = [{"id": "a", "description": "A", "score": 0}, {"id": "a", "description": "A again", "score": 1}]
     resp = await _post_scale(client, dupes)

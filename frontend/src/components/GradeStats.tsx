@@ -1,5 +1,5 @@
 import { gradeColor, prettifyLevel } from '../lib/gradeColor'
-import { formatScore, gradeStats, median, type GradeStats } from '../lib/gradeStats'
+import { formatScore, gradeStats, median, submissionScore, type GradeStats } from '../lib/gradeStats'
 import { orderedLevels } from '../lib/gradingScale'
 import { effectiveGrade, type Submission, type SubmissionRubric } from '../api/types'
 
@@ -50,8 +50,10 @@ const HISTOGRAM_BINS = 5
 /**
  * Whole-batch/rubric summary above the grading grid: headline numbers, the
  * overall grade distribution, how student scores spread out, and which
- * questions went worst/best. "Score" is the graded answers' total over the
- * best possible total, from the rubric's level scores (see `gradeStats`).
+ * questions went worst/best. Student scores are weighted (`submissionScore`)
+ * and only fully graded submissions count, so an unfinished grading doesn't
+ * drag them down; a question's score is its graded answers' total over the
+ * best possible total (`gradeStats`).
  */
 export function GradingStatsSummary({ submissions, rubric }: { submissions: Submission[]; rubric: SubmissionRubric }) {
   const scale = rubric.grading_scale
@@ -61,8 +63,12 @@ export function GradingStatsSummary({ submissions, rubric }: { submissions: Subm
   const expectedAnswers = submissions.length * rubric.questions.length
 
   const studentScores = submissions
-    .map((s) => gradeStats(s.answers, scale).meanScore)
+    .map((s) => submissionScore(s.answers, rubric.questions, scale))
+    .filter((score) => score.complete)
+    .map((score) => score.score)
     .filter((score): score is number => score !== null)
+  const meanStudentScore =
+    studentScores.length > 0 ? studentScores.reduce((sum, score) => sum + score, 0) / studentScores.length : null
   const fullyGraded = submissions.filter((s) =>
     rubric.questions.every((q) => {
       const a = s.answers.find((ans) => ans.question_id === q.id)
@@ -102,9 +108,9 @@ export function GradingStatsSummary({ submissions, rubric }: { submissions: Subm
         />
         <StatTile
           label="Mean score"
-          value={formatScore(overall.meanScore)}
-          detail="of the maximum"
-          title="Total score of every graded answer over the best possible total (every answer at the top level), from the rubric's level scores."
+          value={formatScore(meanStudentScore)}
+          detail={`${studentScores.length} fully graded`}
+          title="Mean of the fully graded submissions' weighted scores (raw score over the best possible raw score)."
         />
         <StatTile
           label="Median student"
@@ -164,7 +170,7 @@ export function GradingStatsSummary({ submissions, rubric }: { submissions: Subm
         <div className="space-y-2">
           <h3 className="text-xs font-medium uppercase text-slate-500">Student scores</h3>
           {studentScores.length === 0 ? (
-            <p className="text-xs text-slate-400">No graded submissions yet.</p>
+            <p className="text-xs text-slate-400">No fully graded submissions yet.</p>
           ) : (
             <div>
               <div className="flex h-24 items-end gap-[2px] border-b border-slate-200">

@@ -90,6 +90,12 @@ class RubricIn(BaseModel):
     questions: list[Question]
 
     @model_validator(mode="after")
+    def _some_question_weighs(self) -> "RubricIn":
+        if self.questions and not any(q.weight > 0 for q in self.questions):
+            raise ValueError("at least one question must have a weight above 0")
+        return self
+
+    @model_validator(mode="after")
     def _toggles_supported_by_format(self) -> "RubricIn":
         for q in self.questions:
             if q.include_outputs and self.format not in OUTPUT_FORMATS:

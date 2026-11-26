@@ -1,4 +1,4 @@
-import { effectiveGrade, type AnsweredQuestion, type GradingScale } from '../api/types'
+import { effectiveGrade, type AnsweredQuestion, type GradingScale, type Question } from '../api/types'
 import { findLevel, maxScore, orderedLevels } from './gradingScale'
 
 /**
@@ -55,6 +55,79 @@ export function gradeStats(answers: AnsweredQuestion[], scale: GradingScale): Gr
     blank,
     meanScore: scored > 0 && maxScore(scale) > 0 ? scoreSum / (scored * maxScore(scale)) : null,
   }
+}
+
+/** One question's contribution to a submission's score (`SubmissionScore.questions`). */
+export interface QuestionScore {
+  question: Question
+  weight: number
+  /** The answer's effective grade level, `null` if not graded (or no answer). */
+  level: string | null
+  /** True when that grade is a TA's manual override. */
+  manual: boolean
+  /** The level's score in the scale, `null` if ungraded or the level is no longer in the scale. */
+  levelScore: number | null
+  /** `weight x levelScore` (0 when `levelScore` is `null`). */
+  points: number
+  /** `weight x` the scale's top score. */
+  maxPoints: number
+}
+
+export interface SubmissionScore {
+  /** Per question, in rubric order -- weight-0 questions included (they add nothing). */
+  questions: QuestionScore[]
+  /** Sum over the rubric's questions of weight x effective level score (ungraded = 0). */
+  raw: number
+  /** `raw` with every question at the scale's top level. */
+  max: number
+  /** `raw / max` (1 = all top marks), `null` if nothing can be scored. */
+  score: number | null
+  /** Every question that counts (weight > 0) has a grade the scale knows. */
+  complete: boolean
+}
+
+/**
+ * One submission's weighted score -- mirrors the backend's `weighted_score`
+ * (`grading/scoring.py`), which the general feedback CSV uses; keep both in
+ * sync. The maximum always covers every question of the rubric, so an
+ * unfinished grading shows a running total that only goes up (`complete`
+ * says whether it's final).
+ */
+export function submissionScore(
+  answers: AnsweredQuestion[],
+  questions: Question[],
+  scale: GradingScale,
+): SubmissionScore {
+  const top = maxScore(scale)
+  let raw = 0
+  let max = 0
+  let complete = true
+  const rows: QuestionScore[] = []
+  for (const question of questions) {
+    const weight = question.weight ?? 1
+    const answer = answers.find((a) => a.question_id === question.id)
+    const grade = answer ? effectiveGrade(answer) : null
+    const score = grade ? levelScore(grade.level, scale) : null
+    const points = score === null ? 0 : weight * score
+    rows.push({
+      question,
+      weight,
+      level: grade?.level ?? null,
+      manual: Boolean(grade && answer?.manual_grade),
+      levelScore: score,
+      points,
+      maxPoints: weight * top,
+    })
+    if (weight === 0) continue
+    max += weight * top
+    if (score === null) complete = false
+    raw += points
+  }
+  return { questions: rows, raw, max, score: max > 0 ? raw / max : null, complete }
+}
+
+export function formatRawScore(value: number): string {
+  return String(Math.round(value * 100) / 100)
 }
 
 export function median(values: number[]): number | null {

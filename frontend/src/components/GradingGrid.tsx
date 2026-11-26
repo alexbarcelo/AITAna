@@ -4,10 +4,18 @@ import AnswerImages from './AnswerImages'
 import GeneralFeedbackEditor from './GeneralFeedbackEditor'
 import GradeBadge from './GradeBadge'
 import QuestionDetails from './QuestionDetails'
+import { ScoreBreakdownButton } from './ScoreBreakdown'
 import { GradeDistributionBar, GradingStatsSummary } from './GradeStats'
 import { UntaggedCellsBadge } from './UntaggedCells'
 import { gradeColor, prettifyLevel } from '../lib/gradeColor'
-import { formatScore, gradeStats, type GradeStats } from '../lib/gradeStats'
+import {
+  formatRawScore,
+  formatScore,
+  gradeStats,
+  submissionScore,
+  type GradeStats,
+  type SubmissionScore,
+} from '../lib/gradeStats'
 import { orderedLevels } from '../lib/gradingScale'
 import {
   effectiveGeneralFeedback,
@@ -33,9 +41,13 @@ import {
  *
  * Statistics ride along at three levels, all computed client-side from the
  * listed submissions (no stats endpoint): a summary panel above the grid
- * (`GradingStatsSummary`), a per-student "Score" column (sortable), and a
- * per-question footer row -- each with a grade-distribution bar and the
- * score: total over the best possible total (`gradeStats`, `lib/gradeStats.ts`).
+ * (`GradingStatsSummary`), per-student "Score" (sortable) and "Raw" columns,
+ * and a per-question footer row. A student's score is weighted by the
+ * questions' weights (`submissionScore`, `lib/gradeStats.ts`; same rule as
+ * the general feedback CSV): raw = sum of weight x level score, score = raw
+ * over the best possible raw, shown greyed out as partial until every
+ * question that counts is graded. A question's footer score is its graded
+ * answers' total over the best possible total (`gradeStats`).
  *
  * A submission with a general feedback gets an icon next to its name: hover
  * previews the text, click opens it in a dialog (same `GeneralFeedbackEditor`
@@ -56,12 +68,13 @@ export default function GradingGrid({ submissions, rubric }: { submissions: Subm
 
   const scale = rubric.grading_scale
   const studentStats = new Map(submissions.map((s) => [s.id, gradeStats(s.answers, scale)]))
+  const studentScores = new Map(submissions.map((s) => [s.id, submissionScore(s.answers, rubric.questions, scale)]))
   const rowName = (s: Submission) => submissionName(s) ?? ''
   const rows = [...submissions].sort((a, b) => {
     if (sortBy !== 'name') {
       // Unscored rows always sink to the bottom, whichever direction.
-      const sa = studentStats.get(a.id)?.meanScore ?? null
-      const sb = studentStats.get(b.id)?.meanScore ?? null
+      const sa = studentScores.get(a.id)?.score ?? null
+      const sb = studentScores.get(b.id)?.score ?? null
       if (sa !== sb) {
         if (sa === null) return 1
         if (sb === null) return -1
@@ -99,10 +112,16 @@ export default function GradingGrid({ submissions, rubric }: { submissions: Subm
                   type="button"
                   onClick={() => setSortBy(nextSort[sortBy])}
                   className="uppercase hover:text-slate-900"
-                  title="This student's total score over the best possible total for their graded answers. Click to sort."
+                  title="Weighted score: the raw score over the best possible raw score (every question at the top level). Greyed out while some question is not graded yet. Click to sort; click a student's score for its breakdown."
                 >
                   Score {sortBy === 'score-desc' ? '↓' : sortBy === 'score-asc' ? '↑' : ''}
                 </button>
+              </th>
+              <th
+                className="sticky top-0 z-10 whitespace-nowrap border-b border-r border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium uppercase text-slate-500"
+                title="Raw score: sum over the questions of weight x level score, over the best possible."
+              >
+                Raw
               </th>
               {rubric.questions.map((q) => (
                 <th
@@ -128,7 +147,10 @@ export default function GradingGrid({ submissions, rubric }: { submissions: Subm
                   </div>
                 </td>
                 <td className="border-r border-slate-200 px-3 py-2">
-                  <ScoreCell stats={studentStats.get(s.id)!} scale={scale} />
+                  <ScoreCell stats={studentStats.get(s.id)!} scale={scale} weighted={studentScores.get(s.id)!} />
+                </td>
+                <td className="whitespace-nowrap border-r border-slate-200 px-3 py-2 text-xs tabular-nums">
+                  <RawScore score={studentScores.get(s.id)!} scale={scale} />
                 </td>
                 {rubric.questions.map((q) => {
                   const answer = s.answers.find((a) => a.question_id === q.id)
@@ -181,6 +203,7 @@ export default function GradingGrid({ submissions, rubric }: { submissions: Subm
               <th className="sticky bottom-0 left-0 z-20 border-r border-t border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium uppercase text-slate-500">
                 Per question
               </th>
+              <td className="sticky bottom-0 z-10 border-r border-t border-slate-200 bg-slate-50" />
               <td className="sticky bottom-0 z-10 border-r border-t border-slate-200 bg-slate-50" />
               {rubric.questions.map((q) => (
                 <td key={q.id} className="sticky bottom-0 z-10 border-t border-slate-200 bg-slate-50 px-2 py-2">
@@ -261,17 +284,43 @@ function GeneralFeedbackDialog({ submission, onClose }: { submission: Submission
   )
 }
 
-/** Score + distribution bar -- one student's row, or one question's column. */
-function ScoreCell({ stats, scale }: { stats: GradeStats; scale: SubmissionRubric['grading_scale'] }) {
+/** Score + distribution bar -- one student's row (weighted score, `weighted`),
+ * or one question's column (`stats.meanScore`). */
+function ScoreCell({
+  stats,
+  scale,
+  weighted,
+}: {
+  stats: GradeStats
+  scale: SubmissionRubric['grading_scale']
+  weighted?: SubmissionScore
+}) {
+  const partial = weighted !== undefined && !weighted.complete
+  const numberClass = `w-9 text-right text-xs font-medium tabular-nums ${partial ? 'text-slate-400' : 'text-slate-900'}`
   return (
     <div className="flex min-w-24 items-center gap-2">
-      <span className="w-9 text-right text-xs font-medium tabular-nums text-slate-900">
-        {formatScore(stats.meanScore)}
-      </span>
+      {weighted ? (
+        <ScoreBreakdownButton score={weighted} scale={scale} className={`shrink-0 ${numberClass}`}>
+          {formatScore(weighted.score)}
+        </ScoreBreakdownButton>
+      ) : (
+        <span className={numberClass}>{formatScore(stats.meanScore)}</span>
+      )}
       <div className="flex-1">
         <GradeDistributionBar stats={stats} scale={scale} className="h-2" />
       </div>
     </div>
+  )
+}
+
+function RawScore({ score, scale }: { score: SubmissionScore; scale: SubmissionRubric['grading_scale'] }) {
+  return (
+    <ScoreBreakdownButton score={score} scale={scale} className="px-1">
+      <span className={score.complete ? 'font-medium text-slate-900' : 'text-slate-400'}>
+        {formatRawScore(score.raw)}
+      </span>
+      <span className="text-slate-400"> / {formatRawScore(score.max)}</span>
+    </ScoreBreakdownButton>
   )
 }
 

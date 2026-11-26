@@ -229,6 +229,8 @@ type DraftQuestion = {
   needsPythonSandbox: boolean
   includeOutputs: boolean
   includeImages: boolean
+  /** Kept as typed, so the number input can be cleared while editing. */
+  weight: string
 }
 
 function emptyQuestion(): DraftQuestion {
@@ -244,6 +246,7 @@ function emptyQuestion(): DraftQuestion {
     needsPythonSandbox: false,
     includeOutputs: false,
     includeImages: false,
+    weight: '1',
   }
 }
 
@@ -265,7 +268,17 @@ function toQuestion(q: DraftQuestion, format: SubmissionFormat): Question {
     needs_python_sandbox: q.needsPythonSandbox,
     include_outputs: OUTPUT_FORMATS.includes(format) && q.includeOutputs,
     include_images: IMAGE_FORMATS.includes(format) && q.includeImages,
+    weight: Number(q.weight),
   }
+}
+
+/** Why these questions' weights would be rejected (mirrors the backend:
+ * every weight a number >= 0, at least one above 0), or `null`. */
+function weightsProblem(questions: DraftQuestion[]): string | null {
+  const weights = questions.map((q) => (q.weight.trim() === '' ? NaN : Number(q.weight)))
+  if (weights.some((w) => !Number.isFinite(w) || w < 0)) return 'Every question weight must be a number >= 0.'
+  if (!weights.some((w) => w > 0)) return 'At least one question must have a weight above 0.'
+  return null
 }
 
 function questionToDraft(q: Question): DraftQuestion {
@@ -281,6 +294,7 @@ function questionToDraft(q: Question): DraftQuestion {
     needsPythonSandbox: q.needs_python_sandbox,
     includeOutputs: q.include_outputs ?? false,
     includeImages: q.include_images ?? false,
+    weight: String(q.weight ?? 1),
   }
 }
 
@@ -574,6 +588,23 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
                   className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
                 />
               </div>
+              <div className="w-24">
+                <label
+                  className="block text-xs font-medium text-slate-600"
+                  title="How much this question counts toward the score: its level score is multiplied by this. 0 = graded and given feedback, but not counted."
+                >
+                  Weight
+                </label>
+                <input
+                  required
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={q.weight}
+                  onChange={(e) => updateQuestion(i, { weight: e.target.value })}
+                  className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
+                />
+              </div>
               <div className="flex-1">
                 <label className="block text-xs font-medium text-slate-600">
                   {SEGMENTED_FORMATS.includes(format) ? 'Label in the document (optional)' : 'Answer slot (optional)'}
@@ -701,12 +732,17 @@ function ManualRubricForm({ rubric, onDone }: { rubric?: Rubric; onDone?: () => 
         </button>
         <button
           type="submit"
-          disabled={mutation.isPending || gradingScaleProblem(rowsToScale(gradingScaleRows)) !== null}
+          disabled={
+            mutation.isPending ||
+            gradingScaleProblem(rowsToScale(gradingScaleRows)) !== null ||
+            weightsProblem(questions) !== null
+          }
           className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
           {isEdit ? 'Save changes' : 'Create rubric'}
         </button>
       </div>
+      {weightsProblem(questions) && <p className="text-sm text-red-600">{weightsProblem(questions)}</p>}
       {mutation.isError && (
         <p className="text-sm text-red-600">
           {(mutation.error as { message?: string })?.message ??

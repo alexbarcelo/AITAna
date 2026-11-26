@@ -311,8 +311,8 @@ async def list_submissions(
 async def export_general_feedback_csv(
     rubric_id: int, edition_id: int, session: AsyncSession = Depends(get_session)
 ) -> Response:
-    """Every general feedback of one rubric x edition (i.e. one LMS
-    assignment) as CSV, for importing into Moodle's gradebook -- see
+    """Score and general feedback of every submission of one rubric x
+    edition (i.e. one LMS assignment) as CSV, for importing into Moodle's gradebook -- see
     `feedback_export.render_general_feedback_csv`. Declared before
     `/{submission_id}` so the path isn't taken for an id."""
     rubric = await get_rubric_or_404(session, rubric_id)
@@ -325,7 +325,7 @@ async def export_general_feedback_csv(
         .where(Submission.rubric_id == rubric.id, Submission.edition_id == edition.id)
     )
     return Response(
-        content=render_general_feedback_csv(list(submissions)),
+        content=render_general_feedback_csv(rubric, list(submissions)),
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": content_disposition(

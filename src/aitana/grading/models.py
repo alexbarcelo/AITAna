@@ -329,6 +329,10 @@ class Question(BaseModel):
     # notebook's outputs) to the grading call as multimodal input -- needs a
     # vision-capable model. Only for formats in `extraction.IMAGE_FORMATS`.
     include_images: bool = False
+    # How much this question counts toward the submission's score (see
+    # grading/scoring.py): its level score is multiplied by it. 0 = graded
+    # and given feedback, but left out of the score. Never sent to the LLM.
+    weight: float = Field(default=1.0, ge=0, allow_inf_nan=False)
 
     @property
     def answer_key(self) -> str:

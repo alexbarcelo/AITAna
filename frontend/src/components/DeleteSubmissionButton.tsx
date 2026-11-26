@@ -56,7 +56,7 @@ export default function DeleteSubmissionButton({
       type="button"
       onClick={handleClick}
       disabled={deleteSubmission.isPending}
-      className="rounded-md border border-red-200 bg-white px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+      className="whitespace-nowrap rounded-md border border-red-200 bg-white px-4 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
     >
       {deleteSubmission.isPending ? 'Deleting...' : 'Delete'}
     </button>
