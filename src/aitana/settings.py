@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # same seed-only role as the two above -- reasoning effort is otherwise a
     # per-model setting (LlmModel.reasoning_effort).
     llm_reasoning_effort: str | None = None
+
+    # How many of one submission's questions the worker grades at once
+    # (concurrent LLM calls). Total in flight is this x the Celery worker's
+    # --concurrency. 1 = one question at a time (e.g. a local Ollama).
+    grading_concurrency: int = Field(default=4, ge=1)
 
     @field_validator("database_url")
     @classmethod

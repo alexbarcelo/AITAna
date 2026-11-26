@@ -40,7 +40,7 @@ def _fake_create_agent(expected: Grade, captured: dict | None = None):
         captured = {}
 
     class _FakeCompiledAgent:
-        def invoke(self, state):
+        async def ainvoke(self, state):
             captured["state"] = state
             return {"structured_response": expected}
 
@@ -65,35 +65,35 @@ def _question(**overrides) -> Question:
     return Question(**defaults)
 
 
-def test_grade_answer_short_circuits_blank_answers_without_calling_llm():
+async def test_grade_answer_short_circuits_blank_answers_without_calling_llm():
     question = _question()
     fake_model = _FakeChatModel(Grade(level="solid", feedback="should never be returned"))
 
-    result = grade_answer(fake_model, question, "   ", DEFAULT_GRADING_SCALE)
+    result = await grade_answer(fake_model, question, "   ", DEFAULT_GRADING_SCALE)
 
     assert result.level == "not_attempted"  # the default scale's score-0 level
     assert "No answer" in result.feedback
 
 
-def test_grade_answer_blank_short_circuit_uses_the_zero_level_of_a_custom_scale():
+async def test_grade_answer_blank_short_circuit_uses_the_zero_level_of_a_custom_scale():
     """The blank-answer short-circuit doesn't hardcode "not_attempted" --
     it's whichever level scores 0, wherever it sits in the list."""
     question = _question()
     fake_model = _FakeChatModel(Grade(level="pass", feedback="should never be returned"))
 
-    result = grade_answer(fake_model, question, "", PASS_FAIL)
+    result = await grade_answer(fake_model, question, "", PASS_FAIL)
 
     assert result.level == "fail"
 
 
-def test_grade_answer_returns_llm_structured_output_for_nonblank_answers(monkeypatch):
+async def test_grade_answer_returns_llm_structured_output_for_nonblank_answers(monkeypatch):
     question = _question()
     expected = Grade(level="almost_there", feedback="Close, but missing the fix.")
     fake_model = _FakeChatModel(expected)
 
     monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected))
 
-    result = grade_answer(fake_model, question, "My answer text", DEFAULT_GRADING_SCALE)
+    result = await grade_answer(fake_model, question, "My answer text", DEFAULT_GRADING_SCALE)
 
     assert result == expected
 
@@ -152,11 +152,11 @@ def test_build_system_prompt_includes_rubric_context_before_question_and_its_con
     assert prompt.index("# Assignment context") < prompt.index("# Question") < prompt.index("# Context")
 
 
-def test_grade_answer_passes_rubric_context_into_trace_prompt(monkeypatch):
+async def test_grade_answer_passes_rubric_context_into_trace_prompt(monkeypatch):
     expected = Grade(level="solid", feedback="ok")
     monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected))
     traces: list[GradeTrace] = []
-    grade_answer(
+    await grade_answer(
         _FakeChatModel(expected),
         _question(),
         "answer",
@@ -203,7 +203,7 @@ def test_build_system_prompt_includes_python_tool_section_when_needs_python_sand
     assert "Python sandbox" in prompt
 
 
-def test_grade_answer_passes_no_tools_to_create_agent_when_sandbox_not_needed(monkeypatch):
+async def test_grade_answer_passes_no_tools_to_create_agent_when_sandbox_not_needed(monkeypatch):
     """A question that doesn't need the sandbox still goes through
     create_agent (see grading._grade_with_tools) but with an empty tools
     list, rather than skipping the agent path entirely."""
@@ -215,13 +215,13 @@ def test_grade_answer_passes_no_tools_to_create_agent_when_sandbox_not_needed(mo
 
     monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected, captured))
 
-    result = grade_answer(fake_model, question, "My answer text", DEFAULT_GRADING_SCALE)
+    result = await grade_answer(fake_model, question, "My answer text", DEFAULT_GRADING_SCALE)
 
     assert result == expected
     assert captured["tools"] == []
 
 
-def test_grade_answer_emits_trace_on_blank_short_circuit():
+async def test_grade_answer_emits_trace_on_blank_short_circuit():
     """on_trace still fires for a blank answer, even though no LLM call is
     made -- system_prompt is populated (it's cheap to build), but there's no
     thinking/tool_calls/usage to report."""
@@ -229,7 +229,7 @@ def test_grade_answer_emits_trace_on_blank_short_circuit():
     fake_model = _FakeChatModel(Grade(level="solid", feedback="unused"))
     captured: list[GradeTrace] = []
 
-    result = grade_answer(
+    result = await grade_answer(
         fake_model,
         question,
         "   ",
@@ -253,7 +253,7 @@ def test_grade_answer_emits_trace_on_blank_short_circuit():
     assert trace.prompt_tokens is None
 
 
-def test_grade_answer_emits_trace_for_a_real_llm_call(monkeypatch):
+async def test_grade_answer_emits_trace_for_a_real_llm_call(monkeypatch):
     question = _question()
     expected = Grade(level="almost_there", feedback="Close.")
     fake_model = _FakeChatModel(expected)
@@ -261,7 +261,7 @@ def test_grade_answer_emits_trace_for_a_real_llm_call(monkeypatch):
 
     monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected))
 
-    result = grade_answer(
+    result = await grade_answer(
         fake_model,
         question,
         "My answer text",
@@ -280,18 +280,18 @@ def test_grade_answer_emits_trace_for_a_real_llm_call(monkeypatch):
     assert trace.elapsed_seconds >= 0
 
 
-def test_grade_answer_without_on_trace_calls_nothing():
+async def test_grade_answer_without_on_trace_calls_nothing():
     """Every pre-existing call site (no on_trace given) sees no behavior
     change at all -- the callback is simply never invoked."""
     question = _question()
     fake_model = _FakeChatModel(Grade(level="solid", feedback="f"))
 
-    result = grade_answer(fake_model, question, "", DEFAULT_GRADING_SCALE)
+    result = await grade_answer(fake_model, question, "", DEFAULT_GRADING_SCALE)
 
     assert result.level == "not_attempted"
 
 
-def test_grade_answer_trace_extracts_tool_calls_and_thinking(monkeypatch):
+async def test_grade_answer_trace_extracts_tool_calls_and_thinking(monkeypatch):
     """A needs_python_sandbox question's agent run produces intermediate
     AIMessage/ToolMessage traffic -- the trace should capture the tool call
     (name/args/output) and any reasoning content/usage metadata found on the
@@ -316,14 +316,14 @@ def test_grade_answer_trace_extracts_tool_calls_and_thinking(monkeypatch):
 
     def _create_agent(*, model, tools, response_format):
         class _FakeCompiledAgent:
-            def invoke(self, state):
+            async def ainvoke(self, state):
                 return {"structured_response": expected, "messages": messages}
 
         return _FakeCompiledAgent()
 
     monkeypatch.setattr(grading, "create_agent", _create_agent)
 
-    result = grade_answer(
+    result = await grade_answer(
         fake_model,
         question,
         "My answer text",
@@ -409,7 +409,7 @@ def test_extract_thinking_surfaces_redacted_thinking_as_a_marker():
     assert _extract_thinking(messages) == "[reasoning segment redacted by the provider]"
 
 
-def test_grade_answer_routes_through_create_agent_when_needs_python_sandbox(monkeypatch):
+async def test_grade_answer_routes_through_create_agent_when_needs_python_sandbox(monkeypatch):
     """The needs_python_sandbox path builds an agent (with the sandbox tool
     bound in) instead of calling with_structured_output directly, and reads
     the result back off the agent's `structured_response` state key.
@@ -426,7 +426,7 @@ def test_grade_answer_routes_through_create_agent_when_needs_python_sandbox(monk
     question = _question(needs_python_sandbox=True)
     fake_model = _FakeChatModel(Grade(level="solid", feedback="should never be returned"))
 
-    result = grade_answer(fake_model, question, "My answer text", DEFAULT_GRADING_SCALE)
+    result = await grade_answer(fake_model, question, "My answer text", DEFAULT_GRADING_SCALE)
 
     assert result == expected
     assert captured["model"] is fake_model
@@ -447,7 +447,7 @@ def test_build_system_prompt_outputs_and_images_sections_only_when_enabled():
     assert "none were found" in build_system_prompt(toggled, DEFAULT_GRADING_SCALE, image_count=0)
 
 
-def test_grade_answer_attaches_images_to_human_message(monkeypatch):
+async def test_grade_answer_attaches_images_to_human_message(monkeypatch):
     from aitana.grading.models import ExtractedImage
 
     expected = Grade(level="solid", feedback="Nice plot.")
@@ -455,7 +455,7 @@ def test_grade_answer_attaches_images_to_human_message(monkeypatch):
     monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected, captured))
     traces: list[GradeTrace] = []
 
-    grade_answer(
+    await grade_answer(
         _FakeChatModel(expected),
         _question(include_images=True),
         "plt.hist(x)",
@@ -472,23 +472,23 @@ def test_grade_answer_attaches_images_to_human_message(monkeypatch):
     assert traces[0].image_count == 1
 
 
-def test_grade_answer_without_images_keeps_plain_string_message(monkeypatch):
+async def test_grade_answer_without_images_keeps_plain_string_message(monkeypatch):
     expected = Grade(level="solid", feedback="ok")
     captured: dict = {}
     monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected, captured))
 
-    grade_answer(_FakeChatModel(expected), _question(), "answer", DEFAULT_GRADING_SCALE)
+    await grade_answer(_FakeChatModel(expected), _question(), "answer", DEFAULT_GRADING_SCALE)
 
     assert captured["state"]["messages"][1].content == "answer"
 
 
-def test_grade_answer_blank_text_with_images_still_calls_llm(monkeypatch):
+async def test_grade_answer_blank_text_with_images_still_calls_llm(monkeypatch):
     from aitana.grading.models import ExtractedImage
 
     expected = Grade(level="almost_there", feedback="graded from the figure")
     monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected))
 
-    result = grade_answer(
+    result = await grade_answer(
         _FakeChatModel(expected),
         _question(include_images=True),
         "",
@@ -570,11 +570,11 @@ def test_build_grading_info_is_sparse_when_provider_reports_nothing():
     assert info["reasoning_effort"] is None
 
 
-def test_grade_answer_trace_carries_grading_info(monkeypatch):
+async def test_grade_answer_trace_carries_grading_info(monkeypatch):
     expected = Grade(level="solid", feedback="ok")
     monkeypatch.setattr(grading, "create_agent", _fake_create_agent(expected))
     captured: list[GradeTrace] = []
-    grade_answer(
+    await grade_answer(
         _FakeChatModel(expected),
         _question(),
         "answer",

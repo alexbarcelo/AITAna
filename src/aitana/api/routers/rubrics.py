@@ -1,11 +1,9 @@
 from datetime import UTC, datetime
-from functools import partial
 from pathlib import Path
 from typing import Any
 
 import yaml
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -346,16 +344,10 @@ async def test_rubric_answer(
     llm_model = await require_llm_model(session, model_id)
     try:
         chat_model = get_chat_model(llm_model.provider, llm_model.model, reasoning_effort=llm_model.reasoning_effort)
-        # grade_answer() makes a blocking network call to the LLM -- unlike
-        # the batch pipeline (worker/tasks.py), which runs it in a separate
-        # Celery process, this is a single quick "try it" call, so a
-        # threadpool hop off the event loop is enough.
-        return await run_in_threadpool(
-            partial(grade_answer, rubric_context=rubric.context),
-            chat_model,
-            question,
-            payload.answer,
-            rubric.grading_scale,
+        # A single quick "try it" call, awaited right here (grade_answer is
+        # async) instead of going through the Celery pipeline.
+        return await grade_answer(
+            chat_model, question, payload.answer, rubric.grading_scale, rubric_context=rubric.context
         )
     except Exception as exc:  # noqa: BLE001 -- surface any LLM/config failure as a clean error, not a raw 500
         raise HTTPException(status_code=502, detail=f"Grading failed: {exc}") from exc

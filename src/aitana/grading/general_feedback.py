@@ -116,7 +116,7 @@ def _general_feedback_info(
     return info
 
 
-def write_general_feedback(
+async def write_general_feedback(
     chat_model: BaseChatModel,
     instructions: str,
     grading_scale: list[GradingLevel],
@@ -133,7 +133,7 @@ def write_general_feedback(
     logger.debug("General feedback system prompt:\n%s", system_prompt)
     start = time.perf_counter()
     agent = create_agent(model=chat_model, tools=[], response_format=_GeneralFeedbackOutput)
-    result = agent.invoke({"messages": [SystemMessage(content=system_prompt), build_human_message(items)]})
+    result = await agent.ainvoke({"messages": [SystemMessage(content=system_prompt), build_human_message(items)]})
     elapsed = time.perf_counter() - start
     raw = result["structured_response"]
     logger.info("General feedback written in %.2fs", elapsed)

@@ -35,6 +35,11 @@ export default function AnswerGradeEditor({
 
   return (
     <div className="space-y-2">
+      {answer.error && (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">
+          LLM grading failed: {answer.error} -- regrade this question to retry.
+        </p>
+      )}
       {grade && <p className="text-sm text-slate-600">{grade.feedback}</p>}
       {answer.manual_grade && answer.grade && (
         <div className="rounded border border-dashed border-slate-200 p-2 text-xs text-slate-500">

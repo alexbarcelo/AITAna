@@ -110,3 +110,27 @@ def test_run_command_includes_scoped_net_permission(monkeypatch):
     assert not any(flag.startswith("--allow-run") for flag in cmd)
     assert not any(flag.startswith("--allow-ffi") for flag in cmd)
     assert "--allow-net" in " ".join(cmd) and "--allow-net=true" not in cmd
+
+
+async def test_arun_awaits_the_subprocess_and_parses_its_output(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(sandbox, "python_sandbox_available", lambda: True)
+    envelope = json.dumps({"stdout": "42\n", "stderr": None, "success": True}).encode()
+    captured = {}
+
+    class _Proc:
+        async def communicate(self):
+            return envelope, b""
+
+    async def _fake_exec(*cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    result = await sandbox.PythonSandboxTool()._arun("print(6 * 7)")
+
+    assert result == "42\n"
+    assert captured["cmd"][0] == "deno"
+    assert captured["cmd"][-1] == "print(6 * 7)"

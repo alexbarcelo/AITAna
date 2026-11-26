@@ -634,7 +634,7 @@ backend only so far, no frontend consumes it yet.
   per-provider handling, since `tool_calls`/`usage_metadata` are shapes every
   LangChain chat-model integration normalizes the same way, unlike reasoning
   content. All three read off `result["messages"]`, the full
-  `agent.invoke(...)` result `grade_answer` keeps instead of discarding
+  `agent.ainvoke(...)` result `grade_answer` keeps instead of discarding
   everything but `structured_response`.
 - **`GradingTrace`** (`db/models.py`, table `grading_traces`):
   `submission_id` (FK, `ON DELETE CASCADE`), `question_id`, `trace`
@@ -1041,12 +1041,10 @@ record, or a background job.
 
 Two things worth knowing if you touch this:
 - **It calls the LLM directly inside the request handler**, unlike
-  `worker/tasks.py`'s Celery-isolated grading -- `grade_answer`'s
-  `.invoke()` is a blocking call, and blocking the shared FastAPI event loop
-  for the duration of one LLM round-trip would stall every other concurrent
-  request. `run_in_threadpool` (from `fastapi.concurrency`) hops it off the
-  event loop without needing a full task-queue+poll flow for what's a single
-  quick "try it" call, not the batch pipeline.
+  `worker/tasks.py`'s Celery-isolated grading -- `grade_answer` is async
+  (`agent.ainvoke`), so the handler just awaits it without blocking other
+  requests; no task-queue+poll flow for what's a single quick "try it"
+  call, not the batch pipeline.
 - **Errors are caught broadly and turned into `502`s**, not left to bubble
   into a raw `500` -- a missing/bad LLM provider config (see `llm.py`) is a
   very plausible thing to hit while iterating on a rubric before its real
@@ -1334,11 +1332,28 @@ pending -> extracting (raw file -> {answer_key: text}, via whichever
                      committed BEFORE the LLM client is constructed, so a
                      missing API key / bad provider config still leaves the
                      extracted answers visible, not just an opaque failure)
-        -> graded (each answer's grade filled in one LLM call at a time via
-                    `_grade_answers`, committed after every single question
-                    so polling clients see partial progress)
+        -> graded (each answer's grade filled in by `_grade_answers`,
+                    committed as each question finishes so polling
+                    clients see partial progress)
    or -> failed (error message captured on the row)
 ```
+
+**Questions are graded concurrently and independently.** `_grade_answers`
+runs one `grade_answer` per question as asyncio tasks, at most
+`GRADING_CONCURRENCY` (setting, default 4) LLM calls at once per submission
+-- so a worker has up to that x Celery `--concurrency` calls in flight; use
+1 for a local Ollama or a tightly rate-limited key. Only the LLM calls run
+concurrently: results are written and committed one at a time from the
+`as_completed` loop, since an `AsyncSession` isn't safe for concurrent use.
+A question whose call raises gets `AnsweredQuestion.error` (no grade, no
+trace) and the others carry on. If any answer ends with an `error`, the
+submission is `failed` with a summary naming those questions, its other
+grades kept, and the general feedback is skipped (it would digest an
+incomplete grading); a regrade of just those questions ("Regrade question",
+`?question_id=`) retries them and ends `graded` once none is left.
+`_rebuild_answers` clears `error` along with `grade`, and carries it over
+for the untouched questions of a single-question regrade. The UI shows it on
+the answer (`AnswerGradeEditor.tsx`) and as a red `!` in the grading grid.
 
 Generic documents (`generic_document`) have extra states before `pending` ->
 `extracting`: see "Generic-document submissions" above.
@@ -1348,13 +1363,19 @@ LLM step" ordering -- otherwise a provider misconfiguration hides the
 extraction result too.
 
 Celery tasks are sync and the database layer is async, so each task runs
-`asyncio.run(...)` around its body with its own short-lived, unpooled engine
-(`db.session.task_session`, `NullPool`): asyncpg connections belong to the
-event loop that opened them, and each `asyncio.run()` gets a new loop. One
-connection per task, no pooling across tasks -- fine for this app's volume;
-if grading throughput ever becomes a bottleneck, look here first (e.g. a
-long-lived per-worker-process event loop and engine via `celery_app.py`'s
-`worker_process_init`/`worker_process_shutdown` signals).
+its body through `_run_async` (`worker/tasks.py`): one long-lived
+`asyncio.Runner` per worker process (created on first use, per pid, closed
+on `worker_process_shutdown`), **not** a fresh `asyncio.run()` per task.
+The reason is the LLM clients: `langchain-openai` and `langchain-anthropic`
+cache one async httpx client per process (`lru_cache`), whose pooled
+connections belong to the loop that first used them -- with a new loop per
+task, the second task's calls would hit connections tied to a closed loop.
+This assumes Celery's default prefork pool (one task at a time per
+process); a threads/gevent pool would need rethinking. Each task still gets
+its own short-lived, unpooled engine (`db.session.task_session`,
+`NullPool`) -- one connection per task, fine for this app's volume; a
+per-process pooled engine on the same loop is the next step if that ever
+matters.
 
 ## Downloading the original file
 
@@ -1594,11 +1615,12 @@ behave in tests exactly as they do deployed:
 - `tests/test_worker_tasks.py` drives the worker's task bodies
   (`_grade_submission`, `_grade_answers`, `_prepare`) against the test
   database with a fake chat model in the same style as
-  `tests/test_grading.py`'s -- its `create_agent` replacement must share
-  *one* grade queue across calls (`grade_answer` builds a fresh agent per
-  question), or every question grades identically instead of in sequence.
-  This includes the failure path (extracted answers survive a broken
-  provider) and a submission deleted mid-run.
+  `tests/test_grading.py`'s -- its `create_agent` replacement (with an
+  async `ainvoke`) answers per question, read off the system prompt, not
+  from a queue: questions are graded concurrently, so call order isn't
+  guaranteed. This includes the failure paths (extracted answers survive a
+  broken provider, one failing question leaves the others graded) and a
+  submission deleted mid-run.
 
 `tests/test_llm.py` needs no live services, but does need all four
 provider packages installed (the dev dependency group's job, see

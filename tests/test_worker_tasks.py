@@ -35,17 +35,26 @@ from aitana.worker.tasks import _grade_answers
 from .factories import add, reload
 
 
-def _fake_create_agent(grades: list[Grade]):
+def _question_id(state) -> str:
+    """Which question an agent call is for, read off its system prompt
+    (`_q` sets `question=f"{qid}?"`)."""
+    system = state["messages"][0].content
+    return system.split("# Question\n", 1)[1].split("?", 1)[0]
+
+
+def _fake_create_agent(grades: dict[str, Grade | Exception]):
     """Builds a fake `create_agent` replacement (see grading._grade_with_tools)
-    that pops from a *shared* queue. grade_answer() calls create_agent() fresh
-    for every question, so each call's agent.invoke() must consume the next
-    grade in order, not restart from the first.
+    answering each question with `grades[question_id]` (raised if it's an
+    exception). Keyed by question, not a queue: `_grade_answers` grades
+    questions concurrently, so calls have no guaranteed order.
     """
-    remaining = list(grades)
 
     class _FakeCompiledAgent:
-        def invoke(self, state):
-            return {"structured_response": remaining.pop(0)}
+        async def ainvoke(self, state):
+            result = grades[_question_id(state)]
+            if isinstance(result, Exception):
+                raise result
+            return {"structured_response": result}
 
     def _create_agent(*, model, tools, response_format):
         return _FakeCompiledAgent()
@@ -79,11 +88,11 @@ async def test_grade_answers_persists_every_question(db, monkeypatch):
         [_q("answer1"), _q("answer2"), _q("answer3")],
         [AnsweredQuestion(question_id=f"answer{i}", student_answer=f"a{i}") for i in (1, 2, 3)],
     )
-    grades = [
-        Grade(level="solid", feedback="f1"),
-        Grade(level="almost_there", feedback="f2"),
-        Grade(level="some_effort", feedback="f3"),
-    ]
+    grades = {
+        "answer1": Grade(level="solid", feedback="f1"),
+        "answer2": Grade(level="almost_there", feedback="f2"),
+        "answer3": Grade(level="some_effort", feedback="f3"),
+    }
     monkeypatch.setattr("aitana.grading.grading.create_agent", _fake_create_agent(grades))
     await _grade_answers(
         db, submission, submission.rubric.questions, object(), DEFAULT_GRADING_SCALE, "openai", "gpt-4o-mini"
@@ -92,7 +101,7 @@ async def test_grade_answers_persists_every_question(db, monkeypatch):
     fresh = await reload(db, Submission, submission.id)
     assert [a.grade.level if a.grade else None for a in fresh.answers] == ["solid", "almost_there", "some_effort"]
 
-    traces = await _traces(db)
+    traces = sorted(await _traces(db), key=lambda t: t.question_id)
     assert [t.question_id for t in traces] == ["answer1", "answer2", "answer3"]
     assert all(t.submission_id == submission.id for t in traces)
     assert [t.trace.grade.level for t in traces] == ["solid", "almost_there", "some_effort"]
@@ -106,7 +115,9 @@ async def test_grade_answers_records_reasoning_effort(db, monkeypatch):
     _grade_submission) lands in both the answer's audit info and the trace."""
     submission = await _setup(db, [_q("q1")], [AnsweredQuestion(question_id="q1", student_answer="a")])
 
-    monkeypatch.setattr("aitana.grading.grading.create_agent", _fake_create_agent([Grade(level="solid", feedback="f")]))
+    monkeypatch.setattr(
+        "aitana.grading.grading.create_agent", _fake_create_agent({"q1": Grade(level="solid", feedback="f")})
+    )
     await _grade_answers(
         db,
         submission,
@@ -226,7 +237,8 @@ async def test_grade_answers_only_question_id(db, monkeypatch):
     )
 
     monkeypatch.setattr(
-        "aitana.grading.grading.create_agent", _fake_create_agent([Grade(level="some_effort", feedback="new")])
+        "aitana.grading.grading.create_agent",
+        _fake_create_agent({"answer2": Grade(level="some_effort", feedback="new")}),
     )
     await _grade_answers(
         db,
@@ -275,13 +287,12 @@ async def test_grade_answers_forwards_images_only_for_include_images(db, monkeyp
         format=SubmissionFormat.NOTEBOOK,
     )
 
-    seen: list = []
-    remaining = [Grade(level="solid", feedback="1"), Grade(level="solid", feedback="2")]
+    seen: dict = {}
 
     class _Agent:
-        def invoke(self, state):
-            seen.append(state["messages"][1].content)
-            return {"structured_response": remaining.pop(0)}
+        async def ainvoke(self, state):
+            seen[_question_id(state)] = state["messages"][1].content
+            return {"structured_response": Grade(level="solid", feedback="f")}
 
     monkeypatch.setattr("aitana.grading.grading.create_agent", lambda **kwargs: _Agent())
     image = ExtractedImage(mime_type="image/png", data="AAAA")
@@ -296,8 +307,8 @@ async def test_grade_answers_forwards_images_only_for_include_images(db, monkeyp
         images={"answer1": [image], "answer2": [image]},
     )
 
-    assert seen[0] == "a1"  # include_images off: plain text, image ignored
-    assert seen[1][1] == {"type": "image", "base64": "AAAA", "mime_type": "image/png"}
+    assert seen["answer1"] == "a1"  # include_images off: plain text, image ignored
+    assert seen["answer2"][1] == {"type": "image", "base64": "AAAA", "mime_type": "image/png"}
     assert sorted(t.trace.image_count for t in await _traces(db)) == [0, 1]
 
 
@@ -318,7 +329,9 @@ async def test_grade_submission_extracts_grades_and_finishes(db, monkeypatch):
     submission = await _setup_pending(db, monkeypatch, ExtractionResult(answers={"answer1": "x", "answer2": "y"}))
     monkeypatch.setattr(
         "aitana.grading.grading.create_agent",
-        _fake_create_agent([Grade(level="solid", feedback="1"), Grade(level="some_effort", feedback="2")]),
+        _fake_create_agent(
+            {"answer1": Grade(level="solid", feedback="1"), "answer2": Grade(level="some_effort", feedback="2")}
+        ),
     )
     db.expunge_all()
 
@@ -339,7 +352,7 @@ def _fake_general_feedback_agent(seen: list, feedback: str = "Good work overall.
     from types import SimpleNamespace
 
     class _Agent:
-        def invoke(self, state):
+        async def ainvoke(self, state):
             seen.append(state["messages"])
             return {"structured_response": SimpleNamespace(feedback=feedback)}
 
@@ -367,7 +380,9 @@ async def test_grade_submission_writes_general_feedback_from_effective_grades(db
     await db.commit()
     monkeypatch.setattr(
         "aitana.grading.grading.create_agent",
-        _fake_create_agent([Grade(level="solid", feedback="f1"), Grade(level="some_effort", feedback="f2")]),
+        _fake_create_agent(
+            {"answer1": Grade(level="solid", feedback="f1"), "answer2": Grade(level="some_effort", feedback="f2")}
+        ),
     )
     seen: list = []
     monkeypatch.setattr("aitana.grading.general_feedback.create_agent", _fake_general_feedback_agent(seen))
@@ -461,7 +476,9 @@ async def test_grade_submission_general_feedback_failure_is_not_fatal(db, monkey
     )
     monkeypatch.setattr(
         "aitana.grading.grading.create_agent",
-        _fake_create_agent([Grade(level="solid", feedback="1"), Grade(level="solid", feedback="2")]),
+        _fake_create_agent(
+            {"answer1": Grade(level="solid", feedback="1"), "answer2": Grade(level="solid", feedback="2")}
+        ),
     )
 
     def _broken(**kwargs):
@@ -612,3 +629,141 @@ async def test_prepare_converts_pdf_and_waits_for_segmentation(db, monkeypatch):
     assert "Exercise 1: my answer" in stored["r/s/1/document.md"].decode()
     assert saved.document.page_start_lines == [1]
     assert saved.segments is None
+
+
+# ---- independent, concurrent questions ----
+
+
+async def test_grade_answers_one_failing_question_does_not_stop_the_others(db, monkeypatch):
+    submission = await _setup(
+        db,
+        [_q("answer1"), _q("answer2"), _q("answer3")],
+        [AnsweredQuestion(question_id=f"answer{i}", student_answer=f"a{i}") for i in (1, 2, 3)],
+    )
+    monkeypatch.setattr(
+        "aitana.grading.grading.create_agent",
+        _fake_create_agent(
+            {
+                "answer1": Grade(level="solid", feedback="f1"),
+                "answer2": RuntimeError("rate limited"),
+                "answer3": Grade(level="some_effort", feedback="f3"),
+            }
+        ),
+    )
+    await _grade_answers(db, submission, submission.rubric.questions, object(), DEFAULT_GRADING_SCALE, "o", "m")
+
+    fresh = await reload(db, Submission, submission.id)
+    assert [a.grade.level if a.grade else None for a in fresh.answers] == ["solid", None, "some_effort"]
+    assert [a.error for a in fresh.answers] == [None, "rate limited", None]
+    assert sorted(t.question_id for t in await _traces(db)) == ["answer1", "answer3"]
+
+
+async def test_grade_answers_runs_calls_concurrently_up_to_the_limit(db, monkeypatch):
+    import asyncio
+
+    submission = await _setup(
+        db,
+        [_q(f"answer{i}") for i in range(1, 6)],
+        [AnsweredQuestion(question_id=f"answer{i}", student_answer=f"a{i}") for i in range(1, 6)],
+    )
+    in_flight = 0
+    peak = 0
+
+    class _Agent:
+        async def ainvoke(self, state):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return {"structured_response": Grade(level="solid", feedback="f")}
+
+    monkeypatch.setattr("aitana.grading.grading.create_agent", lambda **kwargs: _Agent())
+    await _grade_answers(
+        db, submission, submission.rubric.questions, object(), DEFAULT_GRADING_SCALE, "o", "m", concurrency=2
+    )
+
+    assert peak == 2
+    fresh = await reload(db, Submission, submission.id)
+    assert all(a.grade is not None for a in fresh.answers)
+
+
+async def test_grade_submission_with_a_failed_question_keeps_the_rest_and_skips_general_feedback(db, monkeypatch):
+    submission = await _setup_pending(
+        db,
+        monkeypatch,
+        ExtractionResult(answers={"answer1": "x", "answer2": "y"}),
+        general_feedback_instructions="Summarize.",
+    )
+    monkeypatch.setattr(
+        "aitana.grading.grading.create_agent",
+        _fake_create_agent({"answer1": Grade(level="solid", feedback="1"), "answer2": TimeoutError()}),
+    )
+    monkeypatch.setattr(
+        "aitana.grading.general_feedback.create_agent", lambda **kw: pytest.fail("no general feedback on failure")
+    )
+    db.expunge_all()
+
+    await tasks._grade_submission(db, submission.id)
+
+    fresh = await reload(db, Submission, submission.id)
+    assert fresh.status == SubmissionStatus.FAILED
+    assert "1 of 2 question(s): answer2" in fresh.error
+    assert fresh.answers[0].grade.level == "solid"
+    assert fresh.answers[1].grade is None
+    assert fresh.answers[1].error == "TimeoutError"  # no message: the exception type stands in
+    assert fresh.general_feedback is None
+
+
+async def test_single_question_regrade_of_the_failed_one_finishes_graded(db, monkeypatch):
+    submission = await _setup_pending(db, monkeypatch, ExtractionResult(answers={"answer1": "x", "answer2": "y"}))
+    submission.answers = [
+        AnsweredQuestion(question_id="answer1", student_answer="x", grade=Grade(level="solid", feedback="kept")),
+        AnsweredQuestion(question_id="answer2", student_answer="y", error="rate limited"),
+    ]
+    await db.commit()
+    monkeypatch.setattr(
+        "aitana.grading.grading.create_agent", _fake_create_agent({"answer2": Grade(level="solid", feedback="ok")})
+    )
+    db.expunge_all()
+
+    await tasks._grade_submission(db, submission.id, only_question_id="answer2")
+
+    fresh = await reload(db, Submission, submission.id)
+    assert fresh.status == SubmissionStatus.GRADED
+    assert [a.grade.feedback for a in fresh.answers] == ["kept", "ok"]
+    assert [a.error for a in fresh.answers] == [None, None]
+
+
+def test_rebuild_answers_keeps_other_questions_errors_on_single_question_regrade():
+    from aitana.worker.tasks import _rebuild_answers
+
+    previous = [
+        AnsweredQuestion(question_id="answer1", student_answer="a1", error="boom"),
+        AnsweredQuestion(question_id="answer2", student_answer="a2", error="boom"),
+    ]
+    extracted = ExtractionResult(answers={"answer1": "a1", "answer2": "a2"})
+    questions = [_q("answer1"), _q("answer2")]
+
+    assert [a.error for a in _rebuild_answers(questions, extracted, previous, keep_grades_except="answer2")] == [
+        "boom",
+        None,
+    ]
+    assert [a.error for a in _rebuild_answers(questions, extracted, previous)] == [None, None]
+
+
+def test_run_async_reuses_one_event_loop_across_tasks():
+    """Provider SDKs cache async HTTP clients per process; their connections
+    must not outlive the loop, so every task in a worker process shares one."""
+    import asyncio
+
+    loops = []
+
+    async def _body():
+        loops.append(asyncio.get_running_loop())
+
+    tasks._run_async(_body())
+    tasks._run_async(_body())
+    assert loops[0] is loops[1]
+    assert not loops[0].is_closed()
+    tasks._close_runner()

@@ -1,10 +1,16 @@
 """Celery tasks: convert/segment generic documents, extract answers from a
 submission's stored file and grade each question.
 
-Celery tasks run sync and the database layer is async, so each task wraps
-its work in `asyncio.run(...)` with its own unpooled engine
-(`db.session.task_session`) -- asyncpg connections are bound to the event
-loop that opened them.
+Celery tasks run sync and the database layer is async, so each task runs
+its work on its worker process's own long-lived event loop (`_run_async`)
+with its own unpooled engine (`db.session.task_session`). Not a fresh
+`asyncio.run(...)` per task: the OpenAI/Anthropic integrations cache one
+async HTTP client per process, whose pooled connections belong to the loop
+that first used them -- closing that loop after each task would break the
+next task's LLM calls.
+
+A submission's questions are graded concurrently (`GRADING_CONCURRENCY` at
+a time) and independently: one failing question doesn't stop the others.
 
 Every state change is committed right away, so polling clients see progress
 (including each graded question). A submission deleted while a task works on
@@ -15,10 +21,14 @@ it (`DELETE ...?force=true`) makes the next commit match no row
 import asyncio
 import base64
 import logging
+import os
 import tempfile
+from collections.abc import Coroutine
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+from celery.signals import worker_process_shutdown
 from langchain_core.language_models.chat_models import BaseChatModel
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,11 +62,13 @@ from ..grading.models import (
     DocumentImage,
     ExtractedImage,
     ExtractionResult,
+    Grade,
     GradeTrace,
     GradingLevel,
     Question,
 )
 from ..grading.segmentation import suggest_segments
+from ..settings import get_settings
 from .celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -64,6 +76,30 @@ logger = logging.getLogger(__name__)
 
 class SubmissionGone(Exception):
     """The submission row disappeared mid-task (deleted with `force`)."""
+
+
+_runner: asyncio.Runner | None = None
+_runner_pid: int | None = None
+
+
+def _run_async(coro: Coroutine[Any, Any, None]) -> None:
+    """Run a task body on this worker process's event loop, created on first
+    use and kept for the process's lifetime (see the module docstring for
+    why not `asyncio.run`). Per pid, so a loop never crosses a fork. Assumes
+    one task at a time per process -- Celery's default prefork pool."""
+    global _runner, _runner_pid
+    if _runner is None or _runner_pid != os.getpid():
+        _runner = asyncio.Runner()
+        _runner_pid = os.getpid()
+    _runner.run(coro)
+
+
+@worker_process_shutdown.connect
+def _close_runner(**_kwargs: Any) -> None:
+    global _runner
+    if _runner is not None and _runner_pid == os.getpid():
+        _runner.close()
+        _runner = None
 
 
 async def _commit(session: AsyncSession) -> None:
@@ -96,7 +132,7 @@ async def _load_submission(session: AsyncSession, submission_id: int) -> Submiss
 
 @celery_app.task(name="aitana.grade_submission")
 def grade_submission(submission_id: int, only_question_id: str | None = None, model_id: int | None = None) -> None:
-    asyncio.run(_run_grade_submission(submission_id, only_question_id, model_id))
+    _run_async(_run_grade_submission(submission_id, only_question_id, model_id))
 
 
 async def _run_grade_submission(submission_id: int, only_question_id: str | None, model_id: int | None) -> None:
@@ -167,12 +203,21 @@ async def _grade_submission(
             images=extracted.images,
             rubric_context=rubric.context,
         )
-        if has_general_feedback(rubric.general_feedback_instructions):
-            _write_general_feedback(
-                submission, chat_model, llm_model.provider, llm_model.model, llm_model.reasoning_effort
+        if failed := [a.question_id for a in submission.answers if a.error is not None]:
+            # Every other question is graded and kept; a regrade of just
+            # these (or of the whole submission) retries them. No general
+            # feedback: it would digest an incomplete grading.
+            submission.status = SubmissionStatus.FAILED
+            submission.error = (
+                f"Grading failed for {len(failed)} of {len(submission.answers)} question(s): {', '.join(failed)}. "
+                "See each answer's error; regrade to retry."
             )
-
-        submission.status = SubmissionStatus.GRADED
+        else:
+            if has_general_feedback(rubric.general_feedback_instructions):
+                await _write_general_feedback(
+                    submission, chat_model, llm_model.provider, llm_model.model, llm_model.reasoning_effort
+                )
+            submission.status = SubmissionStatus.GRADED
         submission.updated_at = datetime.now(UTC)
         await _commit(session)
     except SubmissionGone:
@@ -187,7 +232,7 @@ def regenerate_general_feedback(submission_id: int, model_id: int | None = None)
     """Rewrite only a graded submission's general feedback, from its current
     effective grades (e.g. after a TA overrode some) -- no re-extraction, no
     per-question LLM calls."""
-    asyncio.run(_run_regenerate_general_feedback(submission_id, model_id))
+    _run_async(_run_regenerate_general_feedback(submission_id, model_id))
 
 
 async def _run_regenerate_general_feedback(submission_id: int, model_id: int | None) -> None:
@@ -212,7 +257,9 @@ async def _regenerate_general_feedback(session: AsyncSession, submission_id: int
         logger.exception("General feedback of submission %s failed", submission_id)
         submission.error = f"General feedback failed: {exc}"
     else:
-        _write_general_feedback(submission, chat_model, llm_model.provider, llm_model.model, llm_model.reasoning_effort)
+        await _write_general_feedback(
+            submission, chat_model, llm_model.provider, llm_model.model, llm_model.reasoning_effort
+        )
     submission.status = SubmissionStatus.GRADED
     submission.updated_at = datetime.now(UTC)
     await _commit(session)
@@ -224,12 +271,12 @@ def prepare_submission(submission_id: int, segment_model_id: int | None = None) 
     `segment_model_id`, ask that model for a segmentation suggestion. Always
     ends in `awaiting_segmentation` (or `failed` if conversion failed) --
     grading only starts once a professor confirms the segments."""
-    asyncio.run(_run_prepare_submission(submission_id, segment_model_id))
+    _run_async(_run_prepare_submission(submission_id, segment_model_id))
 
 
 @celery_app.task(name="aitana.suggest_segments")
 def suggest_segments_task(submission_id: int, model_id: int | None = None) -> None:
-    asyncio.run(_run_suggest_segments(submission_id, model_id))
+    _run_async(_run_suggest_segments(submission_id, model_id))
 
 
 async def _run_prepare_submission(submission_id: int, segment_model_id: int | None) -> None:
@@ -316,7 +363,7 @@ async def _suggest(session: AsyncSession, submission: Submission, model_id: int 
         markdown = storage.download_bytes(submission.document.markdown_object_key).decode("utf-8")
         llm_model = await resolve_llm_model(session, model_id)
         chat_model = get_chat_model(llm_model.provider, llm_model.model, reasoning_effort=llm_model.reasoning_effort)
-        segments = await asyncio.to_thread(suggest_segments, chat_model, markdown, submission.rubric.questions)
+        segments = await suggest_segments(chat_model, markdown, submission.rubric.questions)
         submission.segments = segments
         submission.segmentation_source = SegmentationSource.LLM
         submission.segmented_at = datetime.now(UTC)
@@ -327,7 +374,7 @@ async def _suggest(session: AsyncSession, submission: Submission, model_id: int 
     await _commit(session)
 
 
-def _write_general_feedback(
+async def _write_general_feedback(
     submission: Submission, chat_model: BaseChatModel, provider: str, model: str, reasoning_effort: str | None
 ) -> None:
     """Write the general feedback (`grading/general_feedback.py`) from the
@@ -341,7 +388,7 @@ def _write_general_feedback(
         for a in submission.answers
     ]
     try:
-        submission.general_feedback = write_general_feedback(
+        submission.general_feedback = await write_general_feedback(
             chat_model,
             rubric.general_feedback_instructions or "",
             rubric.grading_scale,
@@ -409,7 +456,8 @@ def _rebuild_answers(
     question no longer in the rubric is dropped along with the question.
 
     With `keep_grades_except` set (single-question re-grade), the previous
-    LLM `grade` is also carried over for every *other* question.
+    LLM `grade` (or grading `error`) is also carried over for every *other*
+    question.
 
     `student_answer` includes the cell outputs when `q.include_outputs` is
     set; `image_count` is what `_grade_answers` will attach for
@@ -432,6 +480,7 @@ def _rebuild_answers(
             if keep_grades_except is not None and q.id != keep_grades_except:
                 answer.grade = prev.grade
                 answer.grading_info = prev.grading_info
+                answer.error = prev.error
         answers.append(answer)
     return answers
 
@@ -449,15 +498,23 @@ async def _grade_answers(
     only_question_id: str | None = None,
     images: dict[str, list[ExtractedImage]] | None = None,
     rubric_context: str | None = None,
+    concurrency: int | None = None,
 ) -> None:
-    """Grade each question in order, committing after every single one (so
-    polling clients see partial progress).
+    """Grade the questions concurrently (at most `concurrency` LLM calls at
+    once, default `GRADING_CONCURRENCY`), committing each result as soon as
+    it arrives, so polling clients see partial progress.
+
+    Questions are independent: a question whose call raises gets its
+    `AnsweredQuestion.error` set (and no grade), and the others carry on.
+    The caller decides what that means for the submission. Only the LLM
+    calls run concurrently -- every session write and commit happens here,
+    one at a time (an `AsyncSession` isn't safe for concurrent use).
 
     `answers` is a JSONB column, and the grade is written into it in place
     -- `flag_modified` is what makes that in-place change reach the database
     (see `PydanticJSONB`); without it every grade would be silently dropped.
 
-    Also adds a `GradingTrace` row per question, captured via
+    Also adds a `GradingTrace` row per graded question, captured via
     `grade_answer`'s `on_trace` hook, committed together with that
     question's grade. The trace's compact `info` summary is also stored on
     the answer itself (`AnsweredQuestion.grading_info`) for the submission
@@ -467,32 +524,59 @@ async def _grade_answers(
     `images` (`ExtractionResult.images`, by answer key) are attached only for
     questions with `include_images`.
     """
-    for i, question in enumerate(questions):
-        if only_question_id is not None and question.id != only_question_id:
-            continue
+    limit = asyncio.Semaphore(concurrency or get_settings().grading_concurrency)
+
+    async def _grade_one(i: int, question: Question) -> tuple[int, Grade | None, GradeTrace | None, Exception | None]:
         captured_trace: GradeTrace | None = None
 
         def _capture(trace: GradeTrace) -> None:
             nonlocal captured_trace
             captured_trace = trace
 
-        grade = grade_answer(
-            chat_model,
-            question,
-            submission.answers[i].student_answer,
-            grading_scale,
-            provider=provider,
-            model=model,
-            reasoning_effort=reasoning_effort,
-            on_trace=_capture,
-            images=(images or {}).get(question.answer_key, []) if question.include_images else (),
-            rubric_context=rubric_context,
-        )
-        if captured_trace is not None:
-            session.add(GradingTrace(submission_id=submission.id, question_id=question.id, trace=captured_trace))
+        async with limit:
+            try:
+                grade = await grade_answer(
+                    chat_model,
+                    question,
+                    submission.answers[i].student_answer,
+                    grading_scale,
+                    provider=provider,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    on_trace=_capture,
+                    images=(images or {}).get(question.answer_key, []) if question.include_images else (),
+                    rubric_context=rubric_context,
+                )
+            except Exception as exc:  # noqa: BLE001 -- recorded on the answer, the other questions go on
+                return i, None, None, exc
+        return i, grade, captured_trace, None
 
-        submission.answers[i].grade = grade
-        submission.answers[i].grading_info = captured_trace.info if captured_trace is not None else None
-        flag_modified(submission, "answers")
-        submission.updated_at = datetime.now(UTC)
-        await _commit(session)
+    pending = [
+        asyncio.create_task(_grade_one(i, question))
+        for i, question in enumerate(questions)
+        if only_question_id is None or question.id == only_question_id
+    ]
+    try:
+        for next_done in asyncio.as_completed(pending):
+            i, grade, trace, exc = await next_done
+            answer = submission.answers[i]
+            if exc is not None:
+                logger.error("Grading %s of submission %s failed", questions[i].id, submission.id, exc_info=exc)
+                answer.grade = None
+                answer.grading_info = None
+                answer.error = str(exc) or type(exc).__name__
+            else:
+                if trace is not None:
+                    session.add(GradingTrace(submission_id=submission.id, question_id=questions[i].id, trace=trace))
+                answer.grade = grade
+                answer.grading_info = trace.info if trace is not None else None
+                answer.error = None
+            flag_modified(submission, "answers")
+            submission.updated_at = datetime.now(UTC)
+            await _commit(session)
+    finally:
+        # Only reached early when a commit failed (e.g. the submission was
+        # deleted): don't leave LLM calls running for it.
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)

@@ -146,16 +146,21 @@ export default function GradingGrid({ submissions, rubric }: { submissions: Subm
                         title={
                           (grade
                             ? `${prettifyLevel(grade.level)}${answer?.manual_grade ? ' (edited by a TA)' : ''}`
-                            : clickable
-                              ? 'Not graded -- click to grade manually'
-                              : 'Not graded yet') + untaggedNote
+                            : answer?.error
+                              ? `LLM grading failed: ${answer.error}`
+                              : clickable
+                                ? 'Not graded -- click to grade manually'
+                                : 'Not graded yet') + untaggedNote
                         }
                         className="relative flex h-8 w-full min-w-20 items-center justify-center rounded disabled:cursor-default"
                         style={step ? { backgroundColor: step.hex } : undefined}
                       >
-                        {!step && (
-                          <span className={`text-xs ${clickable ? 'text-slate-400' : 'text-slate-300'}`}>—</span>
-                        )}
+                        {!step &&
+                          (answer?.error ? (
+                            <span className="text-xs font-semibold text-red-600">!</span>
+                          ) : (
+                            <span className={`text-xs ${clickable ? 'text-slate-400' : 'text-slate-300'}`}>—</span>
+                          ))}
                         {answer?.manual_grade && (
                           <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-white ring-1 ring-slate-500" />
                         )}
@@ -282,6 +287,10 @@ function GradeLegend({ scale }: { scale: SubmissionRubric['grading_scale'] }) {
       <span className="inline-flex items-center gap-1">
         <span className="inline-block h-3 w-3 rounded bg-slate-50 ring-1 ring-inset ring-slate-200" />
         Not graded yet
+      </span>
+      <span className="inline-flex items-center gap-1">
+        <span className="text-[10px] font-semibold text-red-600">!</span>
+        LLM grading failed
       </span>
       <span className="inline-flex items-center gap-1">
         <span className="text-[10px] font-semibold text-amber-600">+N</span>

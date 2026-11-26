@@ -87,7 +87,7 @@ def segmentation_schema(questions: list[Question]) -> type[BaseModel]:
     )
 
 
-def suggest_segments(chat_model: BaseChatModel, markdown: str, questions: list[Question]) -> list[AnswerSegment]:
+async def suggest_segments(chat_model: BaseChatModel, markdown: str, questions: list[Question]) -> list[AnswerSegment]:
     """Ask the LLM where each answer starts (and, optionally, ends).
     Sanitizes the result instead of trusting it: out-of-range lines and a
     line claimed twice become `None` for the later question, an end line
@@ -97,7 +97,7 @@ def suggest_segments(chat_model: BaseChatModel, markdown: str, questions: list[Q
     line_count = len(markdown.split("\n"))
     agent = create_agent(model=chat_model, tools=[], response_format=segmentation_schema(questions))
     start = time.perf_counter()
-    result = agent.invoke(
+    result = await agent.ainvoke(
         {
             "messages": [
                 SystemMessage(content=build_system_prompt(questions)),

@@ -14,9 +14,9 @@ thin: spawn `deno run <permissions> jsr:@langchain/pyodide-sandbox@0.0.4 -c
 <code>` and parse a JSON envelope off stdout. That JSR package is Deno's
 sandboxed Python runtime (Pyodide, i.e. CPython compiled to WASM) -- the
 real security boundary -- and is independent of the Python-side wrapper
-version. This module re-implements just the (stateless, sync) slice of that
-wrapper directly against this project's own langchain-core, so the two
-version ranges never have to coexist. If `langchain-sandbox` ever relaxes
+version. This module re-implements just the (stateless) slice of that
+wrapper (sync `_run` plus an async `_arun`) directly against this project's
+own langchain-core, so the two version ranges never have to coexist. If `langchain-sandbox` ever relaxes
 its `langchain-core` pin, revisit whether this module is still worth
 carrying separately.
 
@@ -29,6 +29,7 @@ statements. Nothing else needs network, filesystem, env, subprocess, or FFI
 access, so every other Deno permission stays off.
 """
 
+import asyncio
 import json
 import logging
 import shutil
@@ -93,14 +94,42 @@ class PythonSandboxTool(BaseTool):
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
 
     def _run(self, code: str, **kwargs: Any) -> str:  # noqa: ARG002 -- run_manager etc. unused
+        cmd = self._command(code)
+        start = time.perf_counter()
+        try:
+            proc = subprocess.run(  # noqa: S603 -- fixed argv, no shell, `code` passed as a single arg
+                cmd, capture_output=True, text=True, timeout=self.timeout_seconds, check=False
+            )
+        except subprocess.TimeoutExpired:
+            return self._timed_out()
+        return self._result(proc.stdout, proc.stderr, time.perf_counter() - start)
+
+    async def _arun(self, code: str, **kwargs: Any) -> str:  # noqa: ARG002 -- run_manager etc. unused
+        """What the grading agent calls (`ainvoke`): the same subprocess, awaited
+        instead of blocking the event loop the other questions grade on."""
+        cmd = self._command(code)
+        start = time.perf_counter()
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_seconds)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return self._timed_out()
+        return self._result(stdout.decode(), stderr.decode(), time.perf_counter() - start)
+
+    def _command(self, code: str) -> list[str]:
         if not python_sandbox_available():
             raise RuntimeError(
                 "This question needs the Python sandbox tool, but Deno is not installed "
                 "(or not on PATH) in this environment. Install it from https://deno.land, "
                 "or see AGENTS.md's 'Python sandbox' section."
             )
-
-        cmd = [
+        logger.info("Running python sandbox (%d char(s) of code)...", len(code))
+        logger.debug("Code:\n%s", code)
+        return [
             "deno",
             "run",
             "--allow-env",
@@ -113,26 +142,19 @@ class PythonSandboxTool(BaseTool):
             code,
         ]
 
-        logger.info("Running python sandbox (%d char(s) of code)...", len(code))
-        logger.debug("Code:\n%s", code)
-        start = time.perf_counter()
-        try:
-            proc = subprocess.run(  # noqa: S603 -- fixed argv, no shell, `code` passed as a single arg
-                cmd, capture_output=True, text=True, timeout=self.timeout_seconds, check=False
-            )
-        except subprocess.TimeoutExpired:
-            logger.warning("Python sandbox timed out after %.0fs", self.timeout_seconds)
-            return f"Execution timed out after {self.timeout_seconds:.0f} seconds."
-        elapsed = time.perf_counter() - start
+    def _timed_out(self) -> str:
+        logger.warning("Python sandbox timed out after %.0fs", self.timeout_seconds)
+        return f"Execution timed out after {self.timeout_seconds:.0f} seconds."
 
-        if not proc.stdout:
+    def _result(self, raw_stdout: str, raw_stderr: str, elapsed: float) -> str:
+        if not raw_stdout:
             # The JSON envelope below comes from the sandboxed script itself;
             # nothing on stdout means Deno (or the JSR fetch) failed before
             # that script ever ran -- stderr is the only useful signal then.
-            logger.warning("Python sandbox produced no output in %.2fs: %s", elapsed, proc.stderr)
-            return f"Sandbox failed to run: {proc.stderr.strip() or '(no output)'}"
+            logger.warning("Python sandbox produced no output in %.2fs: %s", elapsed, raw_stderr)
+            return f"Sandbox failed to run: {raw_stderr.strip() or '(no output)'}"
 
-        envelope = json.loads(proc.stdout)
+        envelope = json.loads(raw_stdout)
         stdout = envelope.get("stdout") or ""
         stderr = envelope.get("stderr")
         success = bool(envelope.get("success"))

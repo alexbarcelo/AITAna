@@ -148,14 +148,14 @@ def build_human_message(student_answer: str, images: Sequence[ExtractedImage] = 
     return HumanMessage(content=blocks)
 
 
-def _grade_with_tools(
+async def _grade_with_tools(
     chat_model: BaseChatModel, tools: list[BaseTool], system_prompt: str, human_message: HumanMessage, schema: type
 ) -> dict:
     """Call an agent with the available tools for this answer.
     Note that this is typically overkill for no-tool answers, but
     you know: DRY.
 
-    Returns the agent's full invoke() result (not just structured_response)
+    Returns the agent's full ainvoke() result (not just structured_response)
     -- grade_answer's trace-building needs the intermediate `messages` too
     (for whatever thinking/tool-call content they carry), not just the final
     parsed grade.
@@ -165,7 +165,7 @@ def _grade_with_tools(
         tools=tools,
         response_format=schema,
     )
-    return agent.invoke({"messages": [SystemMessage(content=system_prompt), human_message]})
+    return await agent.ainvoke({"messages": [SystemMessage(content=system_prompt), human_message]})
 
 
 def _model_identity(chat_model: BaseChatModel) -> str:
@@ -392,7 +392,7 @@ def build_grading_info(
     return info
 
 
-def grade_answer(
+async def grade_answer(
     chat_model: BaseChatModel,
     question: Question,
     student_answer: str,
@@ -406,6 +406,10 @@ def grade_answer(
     rubric_context: str | None = None,
 ) -> Grade:
     """Grade one answer, returning the `Grade`.
+
+    Async (`agent.ainvoke`): the worker grades a submission's questions
+    concurrently on one event loop, and the API's `test-answer` endpoint
+    awaits it directly.
 
     `provider`/`model` and `on_trace` are optional and keyword-only
     (`POST /rubrics/{id}/test-answer` passes neither). When `on_trace` is
@@ -495,7 +499,7 @@ def grade_answer(
         tools.append(get_python_sandbox_tool())
 
     human_message = build_human_message(student_answer, images)
-    result = _grade_with_tools(chat_model, tools, system_prompt, human_message, schema)
+    result = await _grade_with_tools(chat_model, tools, system_prompt, human_message, schema)
     raw = result["structured_response"]
     messages: list[BaseMessage] = result.get("messages", [])
 

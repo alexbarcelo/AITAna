@@ -1087,6 +1087,8 @@ export interface components {
             grading_info?: {
                 [key: string]: unknown;
             } | null;
+            /** Error */
+            error?: string | null;
             manual_grade?: components["schemas"]["Grade"] | null;
             /** Manual Graded At */
             manual_graded_at?: string | null;

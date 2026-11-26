@@ -228,6 +228,10 @@ class AnsweredQuestion(BaseModel):
     # Compact audit info about the LLM call behind `grade` (grading.py's
     # `build_grading_info`). Display-only, keys vary by provider.
     grading_info: dict[str, Any] | None = None
+    # Why the last LLM grading of this question failed (then `grade` is
+    # None). Per answer: one failing question doesn't stop the others
+    # (worker/tasks.py's `_grade_answers`). Cleared when it grades again.
+    error: str | None = None
     manual_grade: Grade | None = None
     manual_graded_at: datetime | None = None
 

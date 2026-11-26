@@ -556,7 +556,7 @@ def _patch_chat_model(monkeypatch, grade: Grade) -> None:
     monkeypatch.setattr("aitana.api.routers.rubrics.get_chat_model", lambda provider, model, **kwargs: _FakeChatModel())
 
     class _FakeCompiledAgent:
-        def invoke(self, state):
+        async def ainvoke(self, state):
             return {"structured_response": grade}
 
     def _fake_create_agent(*, model, tools, response_format):
