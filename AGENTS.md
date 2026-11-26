@@ -57,7 +57,7 @@ code that touches either.
   single submission's are (see "Batch submission import"). No course column,
   same as rubrics/submissions never storing one either (always derivable
   through the rubric). `type: BatchType` records which zip layout was used
-  (`atenea` today). `item_count` is set once, at creation.
+  (`moodle` today). `item_count` is set once, at creation.
 - **`Submission`** (`submissions`) -- normally one per student x rubric.
   `rubric_id` and `edition_id` are required FKs, `student_id` and `batch_id`
   optional ones. `edition_id` is set on *every* submission, even when its
@@ -73,7 +73,7 @@ code that touches either.
   submissions"); grading doesn't need a student at all. `batch_id` and
   `batch_internal_id` are set together, only for a batch-created submission
   -- `batch_internal_id` is that item's per-student folder name from the zip,
-  kept verbatim (e.g., for an Atenea batch, `<surname(s)>
+  kept verbatim (e.g., for a Moodle batch, `<surname(s)>
   <name>_<internal_id>_assignsubmission_file`), so the feedback zip export
   can write each file back under the folder name the LMS expects.
 - **`GradingTrace`** (`grading_traces`) -- one per real LLM grading call; see
@@ -494,9 +494,9 @@ The submissions list shows both bulk exports as `ExportCard`s
 (`SubmissionsPage.tsx`) **always**, greyed out with a hint naming the
 missing filter, so a TA sees that they exist and what they're for:
 "Feedback reports (zip)" (`GET /batches/{id}/feedback.zip`, needs a batch:
-the zip reuses the batch's folder names, Atenea's feedback-files upload)
+the zip reuses the batch's folder names, Moodle's feedback-files upload)
 and "General feedback (CSV)" (needs one rubric and one edition -- a batch or
-a fixed-edition rubric pins the edition; Atenea's gradebook import). Keep
+a fixed-edition rubric pins the edition; Moodle's gradebook import). Keep
 card text to a title and one line; a new bulk export gets a card too.
 
 ## Python sandbox for grading
@@ -1079,24 +1079,42 @@ All behind a native `confirm()` naming what's deleted, same as rubrics.
 ## Batch student import (`api/routers/students.py`)
 
 `POST /students/import` -- multipart (`file`, `format` form field). Bulk
-creates/updates roster entries from a CSV, alongside the existing one-at-a-
-time `POST /students`.
+creates/updates roster entries from a roster file, alongside the existing
+one-at-a-time `POST /students`.
 
-- **`StudentImportFormat`** is the enum of supported CSV shapes -- currently
-  just `atenea` (UPC's Moodle instance's roster export). Same
+- **`StudentImportFormat`** is the enum of supported roster shapes --
+  `atenea` (UPC's Moodle instance's roster export, CSV) and `learnsql`
+  (LearnSQL's student list, `.ods` or CSV). Same
   registered-parser-function shape as `SubmissionFormat`/`_EXTRACTORS`
   (`grading/extraction/__init__.py`, see "Pluggable submission formats"
   above): `_IMPORT_PARSERS: dict[StudentImportFormat, Callable[[bytes],
   list[_ImportedStudentRow]]]`. Add a new format by writing one
   `(bytes) -> list[_ImportedStudentRow]` function and registering it there --
-  nothing else in the endpoint changes.
-- **`_parse_atenea_csv`** expects `ID number` and `First name` columns
-  (matched case-insensitively against the header row, see below for why
-  both are required); `Last name`/`Username`/`Email address`/`Group` are all
-  optional. `csv.Sniffer` picks the delimiter off the header line (comma or
-  tab both seen in the wild from Atenea's different export paths), falling
-  back to comma if sniffing is inconclusive.
-- **`ID number` and `First name` are the only required columns**, for two
+  nothing else in the endpoint changes. A format that is just "these column
+  names" is a `_RosterColumns` plus a one-line parser over the shared
+  `_students_from_table` (as both existing ones are).
+- **Atenea** (`_ATENEA_COLUMNS`): `ID number` and `First name` required
+  (matched case-insensitively against the header row, see below for why);
+  `Last name`/`Username`/`Email address` optional; anything else (`Group`)
+  ignored. `csv.Sniffer` picks the delimiter off the header line (comma,
+  semicolon or tab), falling back to comma if sniffing is inconclusive.
+- **LearnSQL** (`_LEARNSQL_COLUMNS`): header `Nom, Cognoms, Número ID,
+  Institució, Departament, Adreça electrònica, Suspès, Darrera descàrrega des
+  d'aquest curs`. Only `Número ID` (-> `student_id`), `Nom` + `Cognoms` (->
+  `name`) and `Adreça electrònica` (-> `email`) are read; no username.
+  Headers are NFC-normalized before matching, for the accents.
+  **LearnSQL exports `.ods`, read with the standard library only**
+  (`_read_ods`: an `.ods` is a zip holding `content.xml`), not odfpy/pandas
+  -- a roster is a flat list of text cells. It takes the first sheet,
+  expands `number-columns-repeated`/`number-rows-repeated` (how ODF stores
+  runs of identical cells, including thousands of blank ones after the
+  data; trailing blanks are not expanded), and reads a numeric cell from
+  `office:value` rather than its displayed text (which may have thousands
+  separators). ODS vs. CSV is sniffed from the content (zip magic), not the
+  filename. If an ODS ever needs more than this (several sheets, formulas,
+  dates), that's the point to reconsider a library.
+- **The student id and first-name columns are the only required ones**
+  (`ID number`/`First name` for Atenea, `Número ID`/`Nom` for LearnSQL), for two
   different reasons, both enforced the same way (missing header column ->
   `422` before any row is even read; missing/blank value in a data row ->
   `422` that aborts the **whole** import, nothing written, not even rows
@@ -1120,7 +1138,7 @@ time `POST /students`.
 - **`name`** is `First name` + `Last name` joined with a space when `Last
   name` is present, else just `First name` (the task that requested this
   format specifically wanted `First name` to work alone when `Last name` is
-  blank).
+  blank). LearnSQL: `Nom` + `Cognoms`, same rule.
 - **`username: str | None`** (`db/models.py`) is purely
   informational metadata -- not a lookup key (`student_id` fills that
   role). A `Group` column in the CSV, if present, is silently ignored --
@@ -1151,19 +1169,19 @@ per subfolder in the zip, each enqueued for grading immediately, same as
   edition if it has one, else the uploader must supply one) -- imported
   from `submissions.py` rather than duplicated.
 - **`BatchType`** is the enum of supported zip layouts -- currently just
-  `atenea` (UPC's Moodle instance's per-assignment "download all
+  `moodle` (Moodle's per-assignment "download all
   submissions" export). Same registered-parser-function shape as
   `StudentImportFormat`/`_IMPORT_PARSERS` above:
   `_BATCH_PARSERS: dict[BatchType, Callable[[zipfile.ZipFile],
   list[_BatchItem]]]`. Add a new layout by writing one
   `(zipfile.ZipFile) -> list[_BatchItem]` function and registering it there.
-- **`_parse_atenea_zip`** expects one top-level folder per student
-  submission, each folder containing exactly one file. An Atenea export
+- **`_parse_moodle_zip`** expects one top-level folder per student
+  submission, each folder containing exactly one file. A Moodle export
   names each folder `<surname(s)> <name>_<internal_id>_assignsubmission_
   file` -- this is stored **verbatim**, not parsed into its name/
   internal-id parts, as `Submission.batch_internal_id`. A later, separate
   feedback-export feature reads that id back off the submission to write
-  grades into the originating Atenea assignment against the same item --
+  grades into the originating Moodle assignment against the same item --
   this is the reason the id is kept as-is rather than normalized. A folder
   is read off its own directory entry in the zip (not merely inferred from
   file paths), so a folder with zero files (e.g. a student who never
@@ -1183,11 +1201,11 @@ per subfolder in the zip, each enqueued for grading immediately, same as
   one (below). Grading runs anyway (`worker/tasks.py` never touches
   `submission.student`); only per-student attribution is deferred.
 - **`_match_student`** makes a best-effort auto-match right at upload time,
-  so most items don't stay unmatched: it strips Atenea's fixed `_<internal_
+  so most items don't stay unmatched: it strips Moodle's fixed `_<internal_
   id>_assignsubmission_file` suffix off the folder name, tokenizes what's
   left into lowercase, accent-folded words (`_name_tokens`), and compares
   that *set* against each roster student's `Student.name` tokenized the
-  same way. Set comparison, not string comparison, because Atenea's folder
+  same way. Set comparison, not string comparison, because Moodle's folder
   names are "surname(s) first name" while `Student.name` (see "Batch
   student import" above) is "first name surname(s)" -- token order differs,
   token *content* doesn't. Only commits when **exactly one** student's
@@ -1270,7 +1288,7 @@ distinct from "Unmatched" (a batch item not linked to a student *yet*).
   label isn't a safe path segment.
 - **Batch upload** (`POST /batches`): `match_students` form field (default
   `true`). `false` skips `_match_student` entirely and sets `label` to the
-  folder name minus Atenea's suffix (`_folder_label`; for a Moodle group
+  folder name minus Moodle's suffix (`_folder_label`; for a Moodle group
   assignment that's the group name). `batch_internal_id` is still stored
   verbatim, so the feedback zip works unchanged.
 - **Display**: `Submission.display_name`/`.file_identifier` (backend, used

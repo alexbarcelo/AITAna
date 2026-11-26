@@ -1,4 +1,4 @@
-"""Batch upload of submissions from a zip export (e.g. Atenea's per-assignment
+"""Batch upload of submissions from a zip export (e.g. Moodle's per-assignment
 "download all submissions" zip): one subfolder per student, all against the
 same rubric.
 
@@ -80,8 +80,8 @@ def _is_junk(path: PurePosixPath) -> bool:
     return not path.parts or path.parts[0] == "__MACOSX" or any(part.startswith(".") for part in path.parts)
 
 
-def _parse_atenea_zip(zf: zipfile.ZipFile) -> list[_BatchItem]:
-    """Atenea's assignment-submission export: one top-level folder per
+def _parse_moodle_zip(zf: zipfile.ZipFile) -> list[_BatchItem]:
+    """Moodle's assignment-submission export: one top-level folder per
     student submission (named `<surname(s)> <name>_<internal_id>_
     assignsubmission_file`), each containing exactly one file. The folder
     name is kept verbatim, not parsed into name/internal-id parts -- see
@@ -131,17 +131,17 @@ def _parse_atenea_zip(zf: zipfile.ZipFile) -> list[_BatchItem]:
 
 
 _BATCH_PARSERS: dict[BatchType, Callable[[zipfile.ZipFile], list[_BatchItem]]] = {
-    BatchType.ATENEA: _parse_atenea_zip,
+    BatchType.MOODLE: _parse_moodle_zip,
 }
 
-# Strips Atenea's fixed `_<internal_id>_assignsubmission_file` suffix off a
+# Strips Moodle's fixed `_<internal_id>_assignsubmission_file` suffix off a
 # folder name, leaving just the "<surname(s)> <name>" part to match against
 # Student.name.
-_ATENEA_FOLDER_NAME_SUFFIX_RE = re.compile(r"_\d+_assignsubmission_file$", re.IGNORECASE)
+_MOODLE_FOLDER_NAME_SUFFIX_RE = re.compile(r"_\d+_assignsubmission_file$", re.IGNORECASE)
 
 
 def _name_tokens(text: str) -> frozenset[str]:
-    """Lowercase, accent-folded word tokens, order-independent -- an Atenea
+    """Lowercase, accent-folded word tokens, order-independent -- a Moodle
     folder name is "<surname(s)> <first name>" while `Student.name` is
     "<first name> <surname(s)>" (see `_parse_atenea_csv` in
     `api/routers/students.py`), so token-*set* equality is what actually
@@ -156,7 +156,7 @@ def _match_student(folder_name: str, students: list[Student]) -> Student | None:
     identical token set -- an empty or ambiguous result (no student, or more
     than one sharing a name) is left for a human to resolve via `PUT
     /submissions/{id}/student` instead of risking a wrong guess."""
-    folder_tokens = _name_tokens(_ATENEA_FOLDER_NAME_SUFFIX_RE.sub("", folder_name))
+    folder_tokens = _name_tokens(_MOODLE_FOLDER_NAME_SUFFIX_RE.sub("", folder_name))
     if not folder_tokens:
         return None
     matches = [student for student in students if _name_tokens(student.name) == folder_tokens]
@@ -164,9 +164,9 @@ def _match_student(folder_name: str, students: list[Student]) -> Student | None:
 
 
 def _folder_label(folder_name: str) -> str:
-    """Label for a batch item when students aren't matched: the folder name without Atenea's fixed
+    """Label for a batch item when students aren't matched: the folder name without Moodle's fixed
     suffix, or the whole folder name if stripping leaves nothing."""
-    return _ATENEA_FOLDER_NAME_SUFFIX_RE.sub("", folder_name).strip() or folder_name
+    return _MOODLE_FOLDER_NAME_SUFFIX_RE.sub("", folder_name).strip() or folder_name
 
 
 class BatchUploadResult(BaseModel):
@@ -190,7 +190,7 @@ async def create_batch(
 
     `match_students=false` makes every item a labelled submission (e.g.
     group projects): no roster auto-match, and `Submission.label` is the
-    folder name minus Atenea's `_<id>_assignsubmission_file` suffix (the
+    folder name minus Moodle's `_<id>_assignsubmission_file` suffix (the
     group name, for a group assignment). `batch_internal_id` is still kept
     verbatim either way, for the feedback zip."""
     rubric = await get_rubric_or_404(session, rubric_id)
@@ -291,7 +291,7 @@ async def download_batch_feedback(batch_id: int, session: AsyncSession = Depends
     each inside a folder named after `Submission.batch_internal_id` -- the
     exact per-student folder name from the original upload (see its
     docstring). Re-uploading this zip as-is into the originating LMS (e.g.
-    Moodle/Atenea's "upload multiple feedback files in a zip" for an
+    Moodle's "upload multiple feedback files in a zip" for an
     assignment) then lines each file back up with the right student, the
     same way the LMS's own per-submission export named these folders in the
     first place."""

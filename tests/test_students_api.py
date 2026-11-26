@@ -1,3 +1,7 @@
+import io
+import zipfile
+
+
 async def test_create_and_list_students(client):
     resp = await client.post("/students", json={"student_id": "s1", "name": "Ada Lovelace"})
     assert resp.status_code == 201
@@ -195,6 +199,143 @@ async def test_import_students_unknown_format(client):
         files={"file": ("roster.csv", ATENEA_CSV, "text/csv")},
     )
     assert resp.status_code == 422
+
+
+LEARNSQL_HEADER = (
+    "Nom",
+    "Cognoms",
+    "Número ID",
+    "Institució",
+    "Departament",
+    "Adreça electrònica",
+    "Suspès",
+    "Darrera descàrrega des d'aquest curs",
+)
+
+
+def _learnsql_ods(rows_xml: str) -> bytes:
+    """A minimal .ods: header row from LEARNSQL_HEADER, then `rows_xml`, then
+    the huge repeated blank rows/cells LibreOffice writes after the data."""
+    header = "".join(
+        f'<table:table-cell office:value-type="string"><text:p>{name}</text:p></table:table-cell>'
+        for name in LEARNSQL_HEADER
+    )
+    content = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"'
+        ' xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"'
+        ' xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"'
+        ' xmlns:xlink="http://www.w3.org/1999/xlink">'
+        '<office:body><office:spreadsheet><table:table table:name="Students">'
+        '<table:table-column table:number-columns-repeated="8"/>'
+        f"<table:table-row>{header}"
+        '<table:table-cell table:number-columns-repeated="16376"/></table:table-row>'
+        f"{rows_xml}"
+        '<table:table-row table:number-rows-repeated="1048570">'
+        '<table:table-cell table:number-columns-repeated="16384"/></table:table-row>'
+        "</table:table></office:spreadsheet></office:body></office:document-content>"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("mimetype", "application/vnd.oasis.opendocument.spreadsheet")
+        archive.writestr("content.xml", content)
+    return buf.getvalue()
+
+
+def _ods_text_cell(text: str) -> str:
+    return f'<table:table-cell office:value-type="string"><text:p>{text}</text:p></table:table-cell>'
+
+
+async def test_import_students_learnsql_csv(client):
+    csv_bytes = (
+        ";".join(LEARNSQL_HEADER)
+        + "\nAda;Lovelace Byron;s1;UPC;FIB;ada@example.com;No;Mai\n"
+        + "Alan;;s2;UPC;FIB;;No;Mai\n"
+    ).encode()
+    resp = await client.post(
+        "/students/import",
+        data={"format": "learnsql"},
+        files={"file": ("roster.csv", csv_bytes, "text/csv")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["created"] == 2
+
+    by_id = {s["student_id"]: s for s in (await client.get("/students")).json()}
+    assert by_id["s1"]["name"] == "Ada Lovelace Byron"
+    assert by_id["s1"]["email"] == "ada@example.com"
+    assert by_id["s1"]["username"] is None
+    assert by_id["s2"]["name"] == "Alan"
+    assert by_id["s2"]["email"] is None
+
+
+async def test_import_students_learnsql_ods(client):
+    rows = (
+        # Two identical adjacent cells (Institució, Departament) stored as one
+        # repeated cell; the email as a hyperlink; a numeric ID cell whose
+        # displayed text has a thousands separator.
+        "<table:table-row>"
+        + _ods_text_cell("Ada")
+        + _ods_text_cell("Lovelace<text:s/>Byron")
+        + '<table:table-cell office:value-type="float" office:value="12345"><text:p>12.345</text:p></table:table-cell>'
+        + '<table:table-cell table:number-columns-repeated="2" office:value-type="string"><text:p>UPC</text:p>'
+        "</table:table-cell>" + '<table:table-cell office:value-type="string"><text:p>'
+        '<text:a xlink:href="mailto:ada@example.com">ada@example.com</text:a></text:p></table:table-cell>'
+        + _ods_text_cell("No")
+        + '<table:table-cell table:number-columns-repeated="16377"/>'
+        "</table:table-row>"
+        # Missing Cognoms and email: blank cells in the middle.
+        "<table:table-row>"
+        + _ods_text_cell("Alan")
+        + "<table:table-cell/>"
+        + _ods_text_cell("s2")
+        + '<table:table-cell table:number-columns-repeated="16381"/>'
+        "</table:table-row>"
+    )
+    resp = await client.post(
+        "/students/import",
+        data={"format": "learnsql"},
+        files={"file": ("roster.ods", _learnsql_ods(rows), "application/vnd.oasis.opendocument.spreadsheet")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["created"] == 2
+
+    by_id = {s["student_id"]: s for s in (await client.get("/students")).json()}
+    assert by_id["12345"]["name"] == "Ada Lovelace Byron"
+    assert by_id["12345"]["email"] == "ada@example.com"
+    assert by_id["s2"]["name"] == "Alan"
+    assert by_id["s2"]["email"] is None
+
+
+async def test_import_students_learnsql_missing_id_value_names_the_row(client):
+    rows = "<table:table-row>" + _ods_text_cell("Ada") + _ods_text_cell("Lovelace") + "</table:table-row>"
+    resp = await client.post(
+        "/students/import",
+        data={"format": "learnsql"},
+        files={"file": ("roster.ods", _learnsql_ods(rows), "application/vnd.oasis.opendocument.spreadsheet")},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"].startswith('Row 2: missing required "Número ID"')
+    assert (await client.get("/students")).json() == []
+
+
+async def test_import_students_learnsql_rejects_atenea_file(client):
+    resp = await client.post(
+        "/students/import",
+        data={"format": "learnsql"},
+        files={"file": ("roster.csv", ATENEA_CSV, "text/csv")},
+    )
+    assert resp.status_code == 422
+    assert "Número ID" in resp.json()["detail"]
+
+
+async def test_import_students_learnsql_unreadable_ods(client):
+    resp = await client.post(
+        "/students/import",
+        data={"format": "learnsql"},
+        files={"file": ("roster.ods", b"PK\x03\x04not really a zip", "application/octet-stream")},
+    )
+    assert resp.status_code == 422
+    assert "ODS" in resp.json()["detail"]
 
 
 async def test_delete_student(client):

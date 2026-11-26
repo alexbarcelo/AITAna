@@ -956,7 +956,7 @@ async def test_delete_rubric_blocked_by_batches(client):
     course_id = await _make_course(client)
     rubric = await _make_rubric(client, course_id)
     edition = await add(client.db, Edition(name="2026/27", slug="2026_27"))
-    await add(client.db, Batch(rubric=rubric, edition=edition, type=BatchType.ATENEA))
+    await add(client.db, Batch(rubric=rubric, edition=edition, type=BatchType.MOODLE))
     resp = await client.delete(f"/rubrics/{rubric.id}")
     assert resp.status_code == 409
     assert "batches" in resp.json()["detail"]

@@ -269,13 +269,13 @@ export default function SubmissionsPage() {
       <div className="grid gap-3 sm:grid-cols-2">
         <ExportCard
           title="Feedback reports (zip)"
-          description="Each student's feedback report, in the batch's folders: upload it to Atenea as feedback files."
+          description="Each student's feedback report, in the batch's folders: upload it to Moodle as feedback files."
           href={batch ? `${API_URL}/batches/${batch.id}/feedback.zip` : undefined}
           hint={batchId ? undefined : 'Select a batch to enable'}
         />
         <ExportCard
           title="General feedback (CSV)"
-          description="Each student's general feedback, by ID number: import it into Atenea's gradebook."
+          description="Each student's general feedback, by ID number: import it into Moodle's gradebook."
           href={
             singleRubric && singleEditionId != null && generalFeedbackCount > 0
               ? `${API_URL}/submissions/general-feedback.csv?rubric_id=${singleRubric.id}&edition_id=${singleEditionId}`

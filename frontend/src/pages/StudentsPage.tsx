@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useCreateStudent, useDeleteStudent, useImportStudents, useStudents } from '../api/hooks'
 import { TrashIcon } from '../components/DeleteSubmissionButton'
-import { STUDENT_IMPORT_FORMAT_LABELS } from '../api/types'
+import { STUDENT_IMPORT_FORMAT_HINTS, STUDENT_IMPORT_FORMAT_LABELS } from '../api/types'
 import type { StudentImportFormat } from '../api/types'
 
 const IMPORT_FORMAT_OPTIONS = Object.keys(STUDENT_IMPORT_FORMAT_LABELS) as StudentImportFormat[]
@@ -158,9 +158,8 @@ function ImportStudentsForm() {
       <div>
         <h2 className="text-sm font-medium text-slate-900">Batch import</h2>
         <p className="text-sm text-slate-500">
-          Upload a roster CSV to create or update several students at once. ID number and First name are required
-          columns. An existing student (matched by ID number) has its name/username/email overwritten with the file's
-          values.
+          Upload a roster file to create or update several students at once. An existing student (matched by student ID)
+          has its name/username/email overwritten with the file's values.
         </p>
       </div>
       <div className="flex flex-wrap items-end gap-3">
@@ -179,11 +178,17 @@ function ImportStudentsForm() {
           </select>
         </div>
         <div>
-          <label className="block text-xs font-medium text-slate-600">CSV file</label>
+          <label className="block text-xs font-medium text-slate-600">
+            {format === 'learnsql' ? 'ODS or CSV file' : 'CSV file'}
+          </label>
           <input
             required
             type="file"
-            accept=".csv,text/csv"
+            accept={
+              format === 'learnsql'
+                ? '.ods,.csv,application/vnd.oasis.opendocument.spreadsheet,text/csv'
+                : '.csv,text/csv'
+            }
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
             className="mt-1 text-sm"
           />
@@ -196,6 +201,7 @@ function ImportStudentsForm() {
           Import
         </button>
       </div>
+      <p className="text-xs text-slate-500">{STUDENT_IMPORT_FORMAT_HINTS[format]}</p>
       {importStudents.isSuccess && (
         <p className="text-sm text-emerald-600">
           Imported successfully: {importStudents.data.created} created, {importStudents.data.updated} updated.

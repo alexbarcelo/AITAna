@@ -46,7 +46,7 @@ def _zip_bytes(folders: dict[str, list[tuple[str, bytes]]]) -> bytes:
     return buf.getvalue()
 
 
-_ATENEA_ZIP = _zip_bytes(
+_MOODLE_ZIP = _zip_bytes(
     {
         "Lovelace Ada_1001_assignsubmission_file": [("answers.pdf", b"%PDF-1.4 ada")],
         "Turing Alan_1002_assignsubmission_file": [("answers.pdf", b"%PDF-1.4 alan")],
@@ -64,14 +64,14 @@ async def test_create_batch_uploads_files_and_enqueues_grading(client):
 
     resp = await client.post(
         "/batches",
-        data={"rubric_id": rubric_id, "type": "atenea"},
-        files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+        data={"rubric_id": rubric_id, "type": "moodle"},
+        files={"file": ("submissions.zip", _MOODLE_ZIP, "application/zip")},
     )
     assert resp.status_code == 202
     body = resp.json()
     assert body["created"] == 2
     assert body["batch"]["item_count"] == 2
-    assert body["batch"]["type"] == "atenea"
+    assert body["batch"]["type"] == "moodle"
 
     folder_names = {s["batch_internal_id"] for s in body["submissions"]}
     assert folder_names == {
@@ -88,7 +88,7 @@ async def test_create_batch_uploads_files_and_enqueues_grading(client):
 
 
 async def test_create_batch_auto_matches_students_by_folder_name(client):
-    """Atenea folder names are "<surname(s)> <first name>", the reverse
+    """Moodle folder names are "<surname(s)> <first name>", the reverse
     order of Student.name ("<first name> <surname(s)>") -- the match has to
     be order-independent to work at all."""
     course_id = await _make_course(client)
@@ -99,8 +99,8 @@ async def test_create_batch_auto_matches_students_by_folder_name(client):
 
     resp = await client.post(
         "/batches",
-        data={"rubric_id": rubric_id, "type": "atenea"},
-        files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+        data={"rubric_id": rubric_id, "type": "moodle"},
+        files={"file": ("submissions.zip", _MOODLE_ZIP, "application/zip")},
     )
     assert resp.status_code == 202
     submissions = {s["batch_internal_id"]: s for s in resp.json()["submissions"]}
@@ -111,7 +111,7 @@ async def test_create_batch_auto_matches_students_by_folder_name(client):
 async def test_create_batch_without_student_matching_is_labelled(client):
     """match_students=false (group projects): no auto-match even when a
     roster student's name fits, and each item is labelled by its folder
-    name minus Atenea's suffix."""
+    name minus Moodle's suffix."""
     course_id = await _make_course(client)
     edition_id = (await client.post("/editions", json={"name": "2026/27"})).json()["id"]
     rubric_id = await _make_rubric(client, course_id, edition_id)
@@ -119,8 +119,8 @@ async def test_create_batch_without_student_matching_is_labelled(client):
 
     resp = await client.post(
         "/batches",
-        data={"rubric_id": rubric_id, "type": "atenea", "match_students": "false"},
-        files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+        data={"rubric_id": rubric_id, "type": "moodle", "match_students": "false"},
+        files={"file": ("submissions.zip", _MOODLE_ZIP, "application/zip")},
     )
     assert resp.status_code == 202
     submissions = {s["batch_internal_id"]: s for s in resp.json()["submissions"]}
@@ -140,7 +140,7 @@ async def test_create_batch_leaves_ambiguous_name_match_unmatched(client):
     zip_bytes = _zip_bytes({"Lovelace Ada_1001_assignsubmission_file": [("answers.pdf", b"%PDF-1.4")]})
     resp = await client.post(
         "/batches",
-        data={"rubric_id": rubric_id, "type": "atenea"},
+        data={"rubric_id": rubric_id, "type": "moodle"},
         files={"file": ("submissions.zip", zip_bytes, "application/zip")},
     )
     assert resp.status_code == 202
@@ -154,8 +154,8 @@ async def test_create_batch_uses_rubrics_edition_automatically(client):
 
     resp = await client.post(
         "/batches",
-        data={"rubric_id": rubric_id, "type": "atenea"},  # no edition_id
-        files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+        data={"rubric_id": rubric_id, "type": "moodle"},  # no edition_id
+        files={"file": ("submissions.zip", _MOODLE_ZIP, "application/zip")},
     )
     assert resp.status_code == 202
 
@@ -166,8 +166,8 @@ async def test_create_batch_without_edition_requires_explicit_one(client):
 
     resp = await client.post(
         "/batches",
-        data={"rubric_id": rubric_id, "type": "atenea"},
-        files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+        data={"rubric_id": rubric_id, "type": "moodle"},
+        files={"file": ("submissions.zip", _MOODLE_ZIP, "application/zip")},
     )
     assert resp.status_code == 422
 
@@ -175,8 +175,8 @@ async def test_create_batch_without_edition_requires_explicit_one(client):
 async def test_create_batch_unknown_rubric_404(client):
     resp = await client.post(
         "/batches",
-        data={"rubric_id": "999999999", "type": "atenea"},
-        files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+        data={"rubric_id": "999999999", "type": "moodle"},
+        files={"file": ("submissions.zip", _MOODLE_ZIP, "application/zip")},
     )
     assert resp.status_code == 404
 
@@ -194,7 +194,7 @@ async def test_create_batch_rejects_folder_with_no_files(client):
 
     resp = await client.post(
         "/batches",
-        data={"rubric_id": rubric_id, "type": "atenea"},
+        data={"rubric_id": rubric_id, "type": "moodle"},
         files={"file": ("submissions.zip", empty_folder_zip, "application/zip")},
     )
     assert resp.status_code == 422
@@ -218,7 +218,7 @@ async def test_create_batch_rejects_folder_with_multiple_files(client):
 
     resp = await client.post(
         "/batches",
-        data={"rubric_id": rubric_id, "type": "atenea"},
+        data={"rubric_id": rubric_id, "type": "moodle"},
         files={"file": ("submissions.zip", multi_file_zip, "application/zip")},
     )
     assert resp.status_code == 422
@@ -235,7 +235,7 @@ async def test_create_batch_rejects_file_extension_mismatching_rubric_format(cli
 
     resp = await client.post(
         "/batches",
-        data={"rubric_id": rubric_id, "type": "atenea"},
+        data={"rubric_id": rubric_id, "type": "moodle"},
         files={"file": ("submissions.zip", notebook_zip, "application/zip")},
     )
     assert resp.status_code == 422
@@ -255,7 +255,7 @@ async def test_create_generic_batch_converts_docx_items(client, minimal_docx):
     )
     resp = await client.post(
         "/batches",
-        data={"rubric_id": rubric_id, "type": "atenea"},
+        data={"rubric_id": rubric_id, "type": "moodle"},
         files={"file": ("submissions.zip", mixed_zip, "application/zip")},
     )
     assert resp.status_code == 202, resp.text
@@ -289,7 +289,7 @@ async def test_create_generic_batch_unreadable_docx_writes_nothing(client, minim
     )
     resp = await client.post(
         "/batches",
-        data={"rubric_id": rubric_id, "type": "atenea"},
+        data={"rubric_id": rubric_id, "type": "moodle"},
         files={"file": ("submissions.zip", bad_zip, "application/zip")},
     )
     assert resp.status_code == 422
@@ -305,7 +305,7 @@ async def test_create_batch_rejects_non_zip_file(client):
 
     resp = await client.post(
         "/batches",
-        data={"rubric_id": rubric_id, "type": "atenea"},
+        data={"rubric_id": rubric_id, "type": "moodle"},
         files={"file": ("submissions.zip", b"not a zip", "application/zip")},
     )
     assert resp.status_code == 422
@@ -318,8 +318,8 @@ async def test_filter_submissions_by_batch(client):
     created = (
         await client.post(
             "/batches",
-            data={"rubric_id": rubric_id, "type": "atenea"},
-            files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+            data={"rubric_id": rubric_id, "type": "moodle"},
+            files={"file": ("submissions.zip", _MOODLE_ZIP, "application/zip")},
         )
     ).json()
 
@@ -340,8 +340,8 @@ async def test_list_and_get_batch(client):
     created = (
         await client.post(
             "/batches",
-            data={"rubric_id": rubric_id, "type": "atenea"},
-            files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+            data={"rubric_id": rubric_id, "type": "moodle"},
+            files={"file": ("submissions.zip", _MOODLE_ZIP, "application/zip")},
         )
     ).json()
     batch_id = created["batch"]["id"]
@@ -379,8 +379,8 @@ async def test_download_batch_feedback_zip(client):
     created = (
         await client.post(
             "/batches",
-            data={"rubric_id": rubric_id, "type": "atenea"},
-            files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+            data={"rubric_id": rubric_id, "type": "moodle"},
+            files={"file": ("submissions.zip", _MOODLE_ZIP, "application/zip")},
         )
     ).json()
 
@@ -403,8 +403,8 @@ async def test_regrade_batch(client):
     created = (
         await client.post(
             "/batches",
-            data={"rubric_id": rubric_id, "type": "atenea"},
-            files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+            data={"rubric_id": rubric_id, "type": "moodle"},
+            files={"file": ("submissions.zip", _MOODLE_ZIP, "application/zip")},
         )
     ).json()
     batch_id = created["batch"]["id"]
@@ -425,8 +425,8 @@ async def test_regrade_batch_single_question(client):
     created = (
         await client.post(
             "/batches",
-            data={"rubric_id": rubric_id, "type": "atenea"},
-            files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+            data={"rubric_id": rubric_id, "type": "moodle"},
+            files={"file": ("submissions.zip", _MOODLE_ZIP, "application/zip")},
         )
     ).json()
     batch_id = created["batch"]["id"]
@@ -454,8 +454,8 @@ async def test_delete_batch(client):
     body = (
         await client.post(
             "/batches",
-            data={"rubric_id": rubric_id, "type": "atenea"},
-            files={"file": ("submissions.zip", _ATENEA_ZIP, "application/zip")},
+            data={"rubric_id": rubric_id, "type": "moodle"},
+            files={"file": ("submissions.zip", _MOODLE_ZIP, "application/zip")},
         )
     ).json()
     batch_id = body["batch"]["id"]

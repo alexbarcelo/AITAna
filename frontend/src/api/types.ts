@@ -102,7 +102,16 @@ export const OUTPUT_FORMATS: SubmissionFormat[] = ['notebook']
  * there.
  */
 export const STUDENT_IMPORT_FORMAT_LABELS: Record<StudentImportFormat, string> = {
-  atenea: 'Atenea export',
+  atenea: 'Atenea export (CSV)',
+  learnsql: 'LearnSQL student list (ODS or CSV)',
+}
+
+/** Which columns each import format reads, shown under the format picker. */
+export const STUDENT_IMPORT_FORMAT_HINTS: Record<StudentImportFormat, string> = {
+  atenea:
+    'Atenea roster CSV: ID number and First name are required; Last name, Username and Email address are optional.',
+  learnsql:
+    'The .ods LearnSQL exports, or that sheet saved as CSV: Número ID and Nom are required; Cognoms and Adreça electrònica are optional, other columns are ignored.',
 }
 
 /**
@@ -111,7 +120,7 @@ export const STUDENT_IMPORT_FORMAT_LABELS: Record<StudentImportFormat, string> =
  * whenever a new batch zip layout is registered there.
  */
 export const BATCH_TYPE_LABELS: Record<BatchType, string> = {
-  atenea: 'Atenea (per-assignment submissions export)',
+  moodle: 'Moodle (per-assignment submissions export)',
 }
 
 export type Course = components['schemas']['CourseOut']

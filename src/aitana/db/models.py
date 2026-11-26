@@ -161,9 +161,12 @@ class Rubric(Base):
 
 class BatchType(str, Enum):
     """Which zip layout a batch upload follows. Add a member plus a parser
-    registered in `api/routers/batches.py`'s `_BATCH_PARSERS` for another."""
+    registered in `api/routers/batches.py`'s `_BATCH_PARSERS` for another.
 
-    ATENEA = "atenea"
+    - `moodle`: Moodle's per-assignment "download all submissions" zip (e.g.
+      from Atenea, UPC's Moodle instance)."""
+
+    MOODLE = "moodle"
 
 
 class Batch(Base):

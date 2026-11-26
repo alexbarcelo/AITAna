@@ -56,10 +56,11 @@ export interface paths {
         put?: never;
         /**
          * Import Students
-         * @description Bulk-create/update students from an uploaded roster CSV.
+         * @description Bulk-create/update students from an uploaded roster file (CSV, or ODS
+         *     for `learnsql`).
          *
          *     All rows are parsed and validated before anything is written: a single
-         *     bad row (missing ID number or First name, or an ID number reused by two
+         *     bad row (missing student id or first name, or a student id reused by two
          *     rows in the same file) 422s the whole import instead of leaving a
          *     half-applied roster. An existing student (matched by `student_id`) has
          *     `name`/`username`/`email` overwritten wholesale with the row's values --
@@ -746,7 +747,7 @@ export interface paths {
          *
          *     `match_students=false` makes every item a labelled submission (e.g.
          *     group projects): no roster auto-match, and `Submission.label` is the
-         *     folder name minus Atenea's `_<id>_assignsubmission_file` suffix (the
+         *     folder name minus Moodle's `_<id>_assignsubmission_file` suffix (the
          *     group name, for a group assignment). `batch_internal_id` is still kept
          *     verbatim either way, for the feedback zip.
          */
@@ -795,7 +796,7 @@ export interface paths {
          *     each inside a folder named after `Submission.batch_internal_id` -- the
          *     exact per-student folder name from the original upload (see its
          *     docstring). Re-uploading this zip as-is into the originating LMS (e.g.
-         *     Moodle/Atenea's "upload multiple feedback files in a zip" for an
+         *     Moodle's "upload multiple feedback files in a zip" for an
          *     assignment) then lines each file back up with the right student, the
          *     same way the LMS's own per-submission export named these folders in the
          *     first place.
@@ -1121,9 +1122,12 @@ export interface components {
          * BatchType
          * @description Which zip layout a batch upload follows. Add a member plus a parser
          *     registered in `api/routers/batches.py`'s `_BATCH_PARSERS` for another.
+         *
+         *     - `moodle`: Moodle's per-assignment "download all submissions" zip (e.g.
+         *       from Atenea, UPC's Moodle instance).
          * @enum {string}
          */
-        BatchType: "atenea";
+        BatchType: "moodle";
         /** BatchUploadResult */
         BatchUploadResult: {
             batch: components["schemas"]["BatchOut"];
@@ -1702,13 +1706,16 @@ export interface components {
         };
         /**
          * StudentImportFormat
-         * @description Which roster-export shape an uploaded CSV follows. Only one today
-         *     (Atenea, UPC's Moodle instance) -- add a new member plus a matching
-         *     `_parse_*` function registered in `_IMPORT_PARSERS` for another, same
+         * @description Which roster-export shape an uploaded file follows -- add a new member
+         *     plus a matching parser registered in `_IMPORT_PARSERS` for another, same
          *     shape as `SubmissionFormat`/`_EXTRACTORS` in grading/extraction/.
+         *
+         *     - `atenea`: Atenea (UPC's Moodle instance) roster export, CSV.
+         *     - `learnsql`: LearnSQL's student list, as the `.ods` it exports or that
+         *       sheet saved as CSV.
          * @enum {string}
          */
-        StudentImportFormat: "atenea";
+        StudentImportFormat: "atenea" | "learnsql";
         /** StudentImportResult */
         StudentImportResult: {
             /** Created */

@@ -83,7 +83,7 @@ async def test_render_feedback_html_escapes_untrusted_content():
 
 
 async def test_render_feedback_html_unmatched_batch_submission_uses_folder_name():
-    batch = Batch(rubric=_rubric(), edition=Edition(name="2026/27", slug="2026-27"), type=BatchType.ATENEA)
+    batch = Batch(rubric=_rubric(), edition=Edition(name="2026/27", slug="2026-27"), type=BatchType.MOODLE)
     submission = _submission(
         student=None,
         batch=batch,
